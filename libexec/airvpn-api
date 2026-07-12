@@ -7,6 +7,7 @@ import binascii
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 import hmac
+import http.client
 import ipaddress
 import json
 import os
@@ -78,6 +79,15 @@ class GeneratorTransientError(AirVPNAPIError):
 
 class IdentityMismatchError(AirVPNAPIError):
     """Raised when generated identity differs from the installed profile."""
+
+
+@dataclass(frozen=True)
+class _GeneratorOutcome:
+    """Non-secret result crossing out of the authenticated helper frame."""
+
+    kind: str
+    manifest: str = ""
+    retry_after: int | None = None
 
 
 @dataclass(frozen=True)
@@ -991,11 +1001,11 @@ def _validate_generator_contract(server, device, expected_endpoint, timeout):
     return endpoint, port, _validate_timeout(timeout)
 
 
-def _open_private_descriptor(fd, mode):
+def _open_private_descriptor(fd, mode, buffering=-1):
     stream = None
     failed = False
     try:
-        stream = os.fdopen(fd, mode, closefd=True)
+        stream = os.fdopen(fd, mode, buffering, closefd=True)
     except (OSError, ValueError):
         failed = True
     if failed:
@@ -1016,11 +1026,12 @@ def _read_private_stream(stream, limit):
 
 
 def _close_private_stream(stream):
-    if stream is None or stream.closed:
+    if stream is None:
         return
     try:
-        stream.close()
-    except (OSError, ValueError):
+        if not stream.closed:
+            stream.close()
+    except Exception:
         pass
 
 
@@ -1060,7 +1071,11 @@ def _single_header(headers, name):
 
 def _retry_after(headers):
     value = _single_header(headers, "Retry-After")
-    if value is None or not re.fullmatch(r"0|[1-9][0-9]*", value):
+    if (
+        value is None
+        or len(value) > 5
+        or not re.fullmatch(r"0|[1-9][0-9]*", value)
+    ):
         return None
     retry_after = int(value)
     if retry_after > 86400:
@@ -1072,6 +1087,8 @@ def _classify_http_error(error):
     status = error.code
     if status == 429:
         return GeneratorRateLimitError(_retry_after(error.headers))
+    if status == 408:
+        return GeneratorTransientError("authenticated provider request failed")
     if status in (401, 403) or 400 <= status < 500:
         return GeneratorPermanentError("authenticated generation was rejected")
     return GeneratorTransientError("authenticated provider request failed")
@@ -1107,9 +1124,14 @@ def _open_generator_response(request, timeout):
         classified_error = _classify_http_error(error)
         try:
             error.close()
-        except OSError:
+        except (OSError, ValueError, http.client.HTTPException):
             pass
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        http.client.HTTPException,
+    ):
         classified_error = GeneratorTransientError(
             "authenticated provider request failed"
         )
@@ -1164,7 +1186,12 @@ def _read_generator_response(response):
                 media_type = _response_media_type(response.headers)
                 try:
                     payload = response.read(MAX_PROFILE_BYTES + 1)
-                except (OSError, ValueError, TypeError):
+                except (
+                    OSError,
+                    ValueError,
+                    TypeError,
+                    http.client.HTTPException,
+                ):
                     classified_error = GeneratorTransientError(
                         "authenticated provider response was rejected"
                     )
@@ -1179,7 +1206,12 @@ def _read_generator_response(response):
                     if media_type == "application/json" or stripped.startswith(b"{"):
                         try:
                             remote_error = json.loads(payload.decode("utf-8"))
-                        except (UnicodeError, json.JSONDecodeError, ValueError):
+                        except (
+                            UnicodeError,
+                            json.JSONDecodeError,
+                            ValueError,
+                            RecursionError,
+                        ):
                             remote_error = None
                         if isinstance(remote_error, dict):
                             classified_error = GeneratorPermanentError(
@@ -1191,7 +1223,13 @@ def _read_generator_response(response):
                             )
     except (GeneratorPermanentError, GeneratorTransientError) as error:
         classified_error = error
-    except (OSError, ValueError, TypeError):
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        http.client.HTTPException,
+        RecursionError,
+    ):
         classified_error = GeneratorTransientError(
             "authenticated provider response was rejected"
         )
@@ -1215,6 +1253,40 @@ def _parse_generated_profile(payload, expected_endpoint):
     return profile
 
 
+def _truncate_private_profile(stream):
+    truncated = False
+    try:
+        stream.seek(0)
+        stream.truncate(0)
+        truncated = True
+    except Exception:
+        try:
+            os.ftruncate(stream.fileno(), 0)
+            truncated = True
+        except Exception:
+            truncated = False
+    try:
+        stream.flush()
+    except Exception:
+        pass
+    return truncated
+
+
+def _prepare_private_profile_stream(stream):
+    ready = False
+    try:
+        if stream.seekable() is True:
+            position = stream.seek(0)
+            length = stream.truncate(0)
+            stream.flush()
+            ready = position == 0 and length in (None, 0)
+    except Exception:
+        ready = False
+    if not ready:
+        _truncate_private_profile(stream)
+        raise AirVPNAPIError("private profile descriptor must support staging")
+
+
 def _write_private_profile(stream, payload):
     offset = 0
     failed = False
@@ -1227,27 +1299,30 @@ def _write_private_profile(stream, payload):
             offset += written
         if not failed:
             stream.flush()
-    except (OSError, ValueError, TypeError):
+    except Exception:
         failed = True
     if failed or offset != len(payload):
+        _truncate_private_profile(stream)
         raise AirVPNAPIError("private descriptor write failed")
 
 
-def generate_profile(server, device, expected_endpoint, timeout, pin_identity):
-    """Generate, validate, optionally pin, and emit a canonical private profile."""
+def _generate_profile_secret_body(
+    server,
+    device,
+    expected_endpoint,
+    port,
+    timeout,
+    pin_identity,
+):
+    """Perform secret-bearing work; callers must classify every exception."""
 
-    expected_endpoint, port, timeout = _validate_generator_contract(
-        server,
-        device,
-        expected_endpoint,
-        timeout,
-    )
     key_stream = None
     output_stream = None
     installed_stream = None
     try:
         key_stream = _open_private_descriptor(3, "rb")
-        output_stream = _open_private_descriptor(4, "wb")
+        output_stream = _open_private_descriptor(4, "wb", buffering=0)
+        _prepare_private_profile_stream(output_stream)
         if pin_identity:
             installed_stream = _open_private_descriptor(5, "rb")
 
@@ -1296,6 +1371,77 @@ def generate_profile(server, device, expected_endpoint, timeout, pin_identity):
         _close_private_stream(key_stream)
         _close_private_stream(output_stream)
         _close_private_stream(installed_stream)
+
+
+def _run_generator_secret_boundary(
+    server,
+    device,
+    expected_endpoint,
+    port,
+    timeout,
+    pin_identity,
+):
+    """Return only a non-secret outcome after the secret frame exits normally."""
+
+    try:
+        manifest = _generate_profile_secret_body(
+            server,
+            device,
+            expected_endpoint,
+            port,
+            timeout,
+            pin_identity,
+        )
+    except IdentityMismatchError:
+        return _GeneratorOutcome("identity")
+    except GeneratorRateLimitError as error:
+        retry_after = error.retry_after
+        return _GeneratorOutcome("rate", retry_after=retry_after)
+    except GeneratorPermanentError:
+        return _GeneratorOutcome("permanent")
+    except GeneratorTransientError:
+        return _GeneratorOutcome("transient")
+    except AirVPNAPIError:
+        return _GeneratorOutcome("contract")
+    except Exception:
+        return _GeneratorOutcome("transient")
+    return _GeneratorOutcome("success", manifest=manifest)
+
+
+def generate_profile(server, device, expected_endpoint, timeout, pin_identity):
+    """Generate a profile while exposing only fresh, non-secret failures."""
+
+    expected_endpoint, port, timeout = _validate_generator_contract(
+        server,
+        device,
+        expected_endpoint,
+        timeout,
+    )
+    outcome = _run_generator_secret_boundary(
+        server,
+        device,
+        expected_endpoint,
+        port,
+        timeout,
+        pin_identity,
+    )
+    if outcome.kind == "success":
+        return outcome.manifest
+    if outcome.kind == "identity":
+        raise IdentityMismatchError(
+            "generated WireGuard profile identity does not match"
+        ) from None
+    if outcome.kind == "rate":
+        raise GeneratorRateLimitError(outcome.retry_after) from None
+    if outcome.kind == "permanent":
+        raise GeneratorPermanentError(
+            "authenticated generation was rejected"
+        ) from None
+    if outcome.kind == "contract":
+        raise AirVPNAPIError("authenticated generator input was rejected") from None
+    raise GeneratorTransientError(
+        "authenticated provider request failed"
+    ) from None
 
 
 def _build_parser():
