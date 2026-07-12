@@ -287,9 +287,9 @@ class ProfileRenderingTests(unittest.TestCase):
             key
             for profile in profiles
             for key in (
-                profile.private_key,
-                profile.public_key,
-                profile.preshared_key,
+                getattr(profile, "private_key", None),
+                getattr(profile, "public_key", None),
+                getattr(profile, "preshared_key", None),
             )
             if type(key) is str and key
         }
@@ -430,6 +430,53 @@ class ProfileRenderingTests(unittest.TestCase):
             )
 
         self.assertEqual(compared_lengths, [(44, 44), (44, 44), (44, 44)])
+
+        private_key = expected.private_key
+
+        class EvilAddress:
+            def __eq__(self, _other):
+                raise RuntimeError(f"address comparison retained {private_key}")
+
+        oversized_key = _dummy_wireguard_key(9) * 2048
+        forged_inputs = {
+            "non-profile object": object(),
+            "Address type": replace(expected, address=str(expected.address)),
+            "raising Address equality": replace(expected, address=EvilAddress()),
+            "private key type": replace(
+                expected,
+                private_key=expected.private_key.encode("ascii"),
+            ),
+            "MTU type": replace(expected, mtu="1320"),
+            "DNS type": replace(expected, dns=list(expected.dns)),
+            "oversized private key": replace(
+                expected,
+                private_key=oversized_key,
+            ),
+            "oversized public key": replace(
+                expected,
+                public_key=oversized_key,
+            ),
+            "oversized preshared key": replace(
+                expected,
+                preshared_key=oversized_key,
+            ),
+        }
+        for label, forged in forged_inputs.items():
+            operations = {
+                "expected": lambda forged=forged: (
+                    airvpn_api.profiles_have_same_identity(forged, expected)
+                ),
+                "candidate": lambda forged=forged: (
+                    airvpn_api.profiles_have_same_identity(expected, forged)
+                ),
+            }
+            for position, operation in operations.items():
+                with self.subTest(label=label, position=position):
+                    self._assert_redacted_profile_error(
+                        operation,
+                        expected,
+                        forged,
+                    )
 
     def test_identity_pinning_preserves_only_validated_table(self):
         current = self._parse(

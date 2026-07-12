@@ -459,16 +459,22 @@ def render_wireguard_profile(profile: WireGuardProfile) -> bytes:
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def profiles_have_same_identity(
-    expected: WireGuardProfile, candidate: WireGuardProfile
-) -> bool:
-    """Compare the fixed private key and address without exposing key material."""
-
+def _normalized_profiles_have_same_identity(expected, candidate):
     private_key_matches = hmac.compare_digest(
         expected.private_key,
         candidate.private_key,
     )
     return private_key_matches and expected.address == candidate.address
+
+
+def profiles_have_same_identity(
+    expected: WireGuardProfile, candidate: WireGuardProfile
+) -> bool:
+    """Compare the fixed private key and address without exposing key material."""
+
+    expected = _normalize_wireguard_profile(expected)
+    candidate = _normalize_wireguard_profile(candidate)
+    return _normalized_profiles_have_same_identity(expected, candidate)
 
 
 def _compose_pinned_profile(
@@ -478,7 +484,7 @@ def _compose_pinned_profile(
 
     current = _normalize_wireguard_profile(current)
     generated = _normalize_wireguard_profile(generated)
-    if not profiles_have_same_identity(current, generated):
+    if not _normalized_profiles_have_same_identity(current, generated):
         raise AirVPNAPIError("generated WireGuard profile identity does not match")
     return _normalize_wireguard_profile(
         WireGuardProfile(
