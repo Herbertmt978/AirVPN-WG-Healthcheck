@@ -376,6 +376,13 @@ classifies that shape as an endpoint transaction, verifies the backup endpoint, 
 the existing restore path. Upgrade instructions still require no pending marker before
 install, but an interrupted v1.0 transaction is not rendered unrecoverable by the new code.
 
+Pending classification occurs after fixed-path and lock validation but before profile-mode
+dispatch. A normal static run with no v2 marker never loads managed code. Static mode with
+a v2 marker securely loads the managed module solely to reconcile before any normal check;
+API mode with a v1 marker uses the built-in endpoint reconciler first. Every mode change,
+static restore, credential removal, and state purge refuses while either marker type remains
+unresolved.
+
 1. Acquire the existing per-interface lock and a global authenticated-API lock.
 2. Respect persistent request backoff, daily limits, and candidate-failure exclusions.
 3. Select a healthy alternate server and generate a candidate for the fixed device.
@@ -434,6 +441,13 @@ backup before removing the candidate or marker.
 - The public selector accepts at most 16 validated repeated server-name exclusions and
   filters them before scoring. Every failed managed candidate is recorded before rollback;
   pruning expiry makes it eligible again. Static selection supplies no exclusion list.
+
+An explicit root administrative `provision|adopt|rotate --dry-run` may bypass only the
+authentication/unknown-device suppression so a replacement key can be validated. It still
+acquires the global lock, records an attempt, obeys the rolling daily cap and rate-limit/
+transient backoff, and mutates no profile, Docker, or tunnel state. Success clears the
+authentication/device suppression; failure records the new classified result. Timer runs
+never receive this bypass.
 
 Persistent state is root-owned non-symlink data at
 `/var/lib/wg-healthcheck/<iface>.api-state`, directory mode `0700` and file mode `0600`.

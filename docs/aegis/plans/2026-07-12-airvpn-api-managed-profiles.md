@@ -14,7 +14,8 @@ release and migrate the download VM through a controlled rollback drill.
   common tunnel verification, static endpoint recovery, and mode selection.
 - `libexec/wg-healthcheck-managed` is a securely sourced Bash module that owns API state,
   managed-profile transactions, qBittorrent stop/start sequencing, and v2 reconciliation.
-  Static timer runs do not source it.
+  Static timer runs do not source it unless a pre-mode pending classifier finds a v2
+  journal that must be reconciled.
 - `libexec/airvpn-api` remains the Python provider boundary and gains strict profile
   parsing, fixed-origin authenticated generation, canonical rendering, identity pinning,
   and descriptor-only secret/profile transport.
@@ -345,7 +346,9 @@ contract and credential isolation remain intact.
   symlinked, oversized, multiline, non-ASCII, wrong-owner, wrong-mode, or under an unsafe
   parent, and require failure before provider, candidate, Docker, or network events.
   In the new suite cover root-owned mode-0644 managed-module validation and rejection of
-  symlink/writable source or parent.
+  symlink/writable source or parent. Add pre-mode pending classification tests proving
+  static/no-marker does not source the module, static/v2 loads it only for reconciliation,
+  and API/v1 runs the built-in endpoint reconciler before managed dispatch.
 - [ ] **Verify RED.** Run
   `bash tests/test_wg_healthcheck.sh` and
   `bash tests/test_wg_managed_profiles.sh`; require only the named new contracts to fail.
@@ -356,7 +359,8 @@ contract and credential isolation remain intact.
   module only for API mode or explicit managed commands. Add `open_installed_api_key` that
   validates the root-owned mode-0700 parent and root-owned regular non-symlink mode-0600,
   bounded, one-record file before opening a private descriptor; the provider independently
-  validates record bytes.
+  validates record bytes. Classify a pending marker before mode dispatch and load only the
+  owner required by its version.
 - [ ] **Verify GREEN.** Run both suites, Bash syntax, and ShellCheck on the two runtime
   files. Confirm current static tests remain byte-for-byte behavior compatible.
 - [ ] **Commit.** `git commit -m "Add dual-mode runtime dispatch"`.
@@ -383,6 +387,9 @@ name filter.
   tunnel work. Add provider tests for repeated `--exclude-server` (maximum 16), filtering
   before scoring, invalid names, and backward-compatible empty exclusions. Add integration
   failure → persisted exclusion → alternate selection → expiry/re-eligibility coverage.
+  Add explicit administrative dry-run coverage proving auth/device suppression bypass,
+  attempt accounting, daily/rate/transient limits retained, success clearing suppression,
+  failure reclassification, and timer runs remaining suppressed.
 - [ ] **Verify RED.** Require missing state functions to fail without touching candidate,
   Docker, or tunnel doubles.
 - [ ] **Implement minimal state owner.** Add strict versioned read/write/prune functions,
@@ -391,7 +398,8 @@ name filter.
   immediately after response/outcome persistence. Extend `select_candidate` with an empty-
   default exclusion collection and `select` with repeatable `--exclude-server`; record a
   failed managed candidate before rollback and supply only unexpired entries on the next
-  API selection.
+  API selection. Add an explicit-admin-dry-run flag that bypasses only auth/device
+  suppression and clears it only after a successful validation.
 - [ ] **Verify GREEN.** Run focused/full managed tests, syntax, and ShellCheck.
 - [ ] **Commit.** `git commit -m "Persist managed API backoff state"`.
 
@@ -470,7 +478,8 @@ only legacy no-flag path.
   `test_timer_failures_keep_static_endpoint_dispatch_in_static_mode` so unattended API
   recovery is proved rather than only administrative rotation. Add reset-state dry-run,
   worker/timer/lock/pending refusal, corrupt-state apply reset, and directory durability
-  tests.
+  tests. Require adopt/restore/mode-change/credential-removal/state-reset commands to refuse
+  both v1 and v2 unresolved markers.
 - [ ] **Verify RED.** Require only missing command owners to fail and assert zero Docker/
   network events for all dry runs.
 - [ ] **Implement minimal commands.** Wire provider FD contracts, candidate staging,
