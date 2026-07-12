@@ -61,7 +61,34 @@ setup_api_state_fixture() {
   touch -d '@900' -- "$AIRVPN_API_KEY_FILE"
   : > "$TEST_TMP/sync-events"
   owner_mode() {
-    if [[ -d "$1" ]]; then printf '0:700\n'; else printf '0:600\n'; fi
+    local mode
+    mode="$(stat -c '%a' -- "$1" 2>/dev/null)" || return 1
+    printf '0:%s\n' "$mode"
+  }
+  if [[ "$(id -u)" != 0 ]]; then
+    managed_api_credential_fd_metadata() {
+      local wgmanaged_output_variable="${1:?}" wgmanaged_credential_fd="${2:?}"
+      local wgmanaged_owner_pid wgmanaged_captured_metadata
+      [[ "$wgmanaged_output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+      [[ "$wgmanaged_output_variable" != wgmanaged_* ]] || return 1
+      validate_credential_fd_number "$wgmanaged_credential_fd" || return 1
+      wgmanaged_owner_pid=$BASHPID
+      [[ -f "/proc/$wgmanaged_owner_pid/fd/$wgmanaged_credential_fd" ]] || return 1
+      wgmanaged_captured_metadata="$(
+        stat -Lc '%d %i %Y %s' -- "/proc/$wgmanaged_owner_pid/fd/$wgmanaged_credential_fd" \
+          {wgmanaged_credential_fd}<&- 2>/dev/null
+      )" || return 1
+      printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_captured_metadata 0 600"
+    }
+  fi
+  MANAGED_TEST_ATTEMPT_EPOCH=1000
+  MANAGED_TEST_OUTCOME_EPOCH=1000
+  managed_wall_clock_epoch() {
+    case "${1-}" in
+      attempt) printf '%s\n' "$MANAGED_TEST_ATTEMPT_EPOCH" ;;
+      outcome) printf '%s\n' "$MANAGED_TEST_OUTCOME_EPOCH" ;;
+      *) return 1 ;;
+    esac
   }
   managed_sync_file() { printf 'file\n' >> "$TEST_TMP/sync-events"; }
   managed_sync_directory() { printf 'directory\n' >> "$TEST_TMP/sync-events"; }
@@ -91,6 +118,16 @@ write_canonical_test_state() {
 
 write_valid_test_key() {
   printf '%064d\n' 0 > "$1"
+}
+
+count_open_descriptors_for_path() {
+  local owner_pid="${1:?}" target="${2:?}" target_identity descriptor descriptor_identity count=0
+  target_identity="$(stat -Lc '%d:%i' -- "$target" 2>/dev/null)" || return 1
+  for descriptor in "/proc/$owner_pid/fd/"[0-9]*; do
+    descriptor_identity="$(stat -Lc '%d:%i' -- "$descriptor" 2>/dev/null)" || continue
+    [[ "$descriptor_identity" == "$target_identity" ]] && count=$((count + 1))
+  done
+  printf '%s\n' "$count"
 }
 
 source_managed_contract() {
@@ -475,6 +512,176 @@ test_api_state_backoff_is_exponential_jitter_bounded_and_retry_after_capped() {
   [[ "$rc" != 0 ]] || fail "Retry-After above 24 hours must be rejected"
 }
 
+test_output_variable_helpers_replace_collision_sentinels_and_reject_reserved_names() {
+  local opened_fd=sentinel index=sentinel computed=sentinel captured_metadata=sentinel
+  local credential_fd expected_metadata before_count after_count rc
+  local wgmanaged_rejected=sentinel helper_case
+  if [[ "$(uname -s)" != Linux ]]; then return 77; fi
+  source_managed_contract || return 1
+  setup_api_state_fixture
+  # Exercise the production metadata helper even when generic state fixtures inject
+  # root ownership for a normal-user run.
+  source "$MODULE"
+
+  before_count="$(count_open_descriptors_for_path "$BASHPID" "$AIRVPN_API_KEY_FILE")" || return 1
+  open_installed_api_key opened_fd || return 1
+  [[ "$opened_fd" =~ ^[0-9]+$ && -e "/proc/$BASHPID/fd/$opened_fd" ]] ||
+    fail "credential output named opened_fd must replace its caller sentinel" || return 1
+  after_count="$(count_open_descriptors_for_path "$BASHPID" "$AIRVPN_API_KEY_FILE")" || return 1
+  assert_eq "$((before_count + 1))" "$after_count" \
+    "credential success must expose exactly the one returned descriptor" || return 1
+  exec {opened_fd}<&-
+  assert_eq "$before_count" \
+    "$(count_open_descriptors_for_path "$BASHPID" "$AIRVPN_API_KEY_FILE")" \
+    "closing the returned descriptor must restore the credential FD baseline" || return 1
+
+  managed_api_state_defaults 1000 || return 1
+  managed_api_state_add_exclusion Alpha-1 1000 || return 1
+  managed_api_exclusion_args index 1000 || return 1
+  assert_eq '--exclude-server Alpha-1' "${index[*]}" \
+    "exclusion output named index must replace its caller sentinel" || return 1
+  managed_compute_backoff computed 1 0 '' || return 1
+  assert_eq 300 "$computed" "backoff output named computed must replace its caller sentinel" || return 1
+
+  exec {credential_fd}<"$AIRVPN_API_KEY_FILE"
+  expected_metadata="$(
+    stat -Lc '%d %i %Y %s %u %a' -- "/proc/$BASHPID/fd/$credential_fd" 2>/dev/null
+  )" || return 1
+  managed_api_credential_fd_metadata captured_metadata "$credential_fd" || return 1
+  assert_eq "$expected_metadata" "$captured_metadata" \
+    "credential metadata output named captured_metadata must replace its sentinel" || return 1
+  captured_metadata=sentinel
+  managed_capture_owner_mode captured_metadata "$AIRVPN_API_KEY_FILE" || return 1
+  assert_eq "$(owner_mode "$AIRVPN_API_KEY_FILE")" "$captured_metadata" \
+    "owner output named captured_metadata must replace its sentinel" || return 1
+
+  before_count="$(count_open_descriptors_for_path "$BASHPID" "$AIRVPN_API_KEY_FILE")" || return 1
+  set +e
+  open_installed_api_key wgmanaged_rejected
+  rc=$?
+  set +e
+  [[ "$rc" != 0 ]] || fail "credential output names using the reserved prefix must fail" || return 1
+  assert_eq sentinel "$wgmanaged_rejected" "rejected credential output must remain unchanged" || return 1
+  after_count="$(count_open_descriptors_for_path "$BASHPID" "$AIRVPN_API_KEY_FILE")" || return 1
+  assert_eq "$before_count" "$after_count" \
+    "rejected credential output must not leave an extra live key descriptor" || return 1
+
+  for helper_case in exclusions backoff credential_metadata owner_metadata; do
+    wgmanaged_rejected=sentinel
+    set +e
+    case "$helper_case" in
+      exclusions) managed_api_exclusion_args wgmanaged_rejected 1000 ;;
+      backoff) managed_compute_backoff wgmanaged_rejected 1 0 '' ;;
+      credential_metadata)
+        managed_api_credential_fd_metadata wgmanaged_rejected "$credential_fd"
+        ;;
+      owner_metadata)
+        managed_capture_owner_mode wgmanaged_rejected "$AIRVPN_API_KEY_FILE"
+        ;;
+    esac
+    rc=$?
+    set +e
+    [[ "$rc" != 0 ]] || fail "$helper_case must reject the reserved output prefix" || return 1
+    assert_eq sentinel "$wgmanaged_rejected" \
+      "$helper_case reserved output must remain unchanged" || return 1
+  done
+  exec {credential_fd}<&-
+}
+
+test_failed_credential_output_assignment_closes_new_descriptor() {
+  local -r read_only_output=sentinel
+  local before_count after_count rc
+  if [[ "$(uname -s)" != Linux ]]; then return 77; fi
+  source_managed_contract || return 1
+  setup_api_state_fixture
+  before_count="$(count_open_descriptors_for_path "$BASHPID" "$AIRVPN_API_KEY_FILE")" || return 1
+  set +e
+  open_installed_api_key read_only_output 2>/dev/null
+  rc=$?
+  set +e
+  [[ "$rc" != 0 ]] || fail "assignment into a read-only credential output must fail" || return 1
+  after_count="$(count_open_descriptors_for_path "$BASHPID" "$AIRVPN_API_KEY_FILE")" || return 1
+  assert_eq "$before_count" "$after_count" \
+    "failed credential output assignment must close its newly opened key descriptor"
+}
+
+test_managed_selector_replaces_every_collision_name_with_and_without_credential() {
+  local selector_fd='' helper_parent destination mode rc actual
+  local expected=$'Bravo-2\t198.51.100.11:1637\tGB\tLondon\t10000\t50\t1'
+  local candidate_output=sentinel output_variable=sentinel now=sentinel credential_fd=sentinel
+  local current_endpoint=sentinel private_fd=sentinel exclusion_arguments=sentinel
+  local selection_result_reference=sentinel wgmanaged_rejected=sentinel
+  local -a collision_names=(
+    candidate_output output_variable now credential_fd current_endpoint private_fd
+    exclusion_arguments selection_result_reference
+  )
+  if [[ "$(uname -s)" != Linux ]]; then return 77; fi
+  source_managed_contract || return 1
+  setup_api_state_fixture
+  managed_api_state_defaults 1000 || return 1
+  helper_parent="$TEST_TMP/trusted"
+  AIRVPN_API_HELPER="$helper_parent/airvpn-api"
+  AIRVPN_STATUS_URL='https://airvpn.org/api/status/?format=json'
+  AIRVPN_COUNTRIES='GB NL'
+  AIRVPN_WG_PORT=1637
+  AIRVPN_API_TIMEOUT=20
+  mkdir -p -- "$helper_parent"
+  chmod 755 -- "$helper_parent"
+  cat > "$AIRVPN_API_HELPER" <<'SELECTOR_COLLISION'
+#!/usr/bin/env bash
+set -u
+if [[ -n "${PROBE_FD:-}" && -e "/proc/self/fd/$PROBE_FD" ]]; then
+  printf 'credential-leaked\n' >> "$SELECTOR_EVENTS"
+  exit 91
+fi
+printf 'called\n' >> "$SELECTOR_EVENTS"
+printf 'Bravo-2\t198.51.100.11:1637\tGB\tLondon\t10000\t50\t1\n'
+SELECTOR_COLLISION
+  chmod 755 -- "$AIRVPN_API_HELPER"
+  SELECTOR_EVENTS="$TEST_TMP/selector-collision.events"
+  export SELECTOR_EVENTS
+
+  for mode in without-credential with-credential; do
+    selector_fd=''
+    PROBE_FD=''
+    if [[ "$mode" == with-credential ]]; then
+      exec {selector_fd}<"$AIRVPN_API_KEY_FILE"
+      PROBE_FD="$selector_fd"
+    fi
+    export PROBE_FD
+    : > "$SELECTOR_EVENTS"
+    for destination in "${collision_names[@]}"; do
+      printf -v "$destination" '%s' sentinel
+      managed_select_airvpn_candidate \
+        "$destination" 1000 "$selector_fd" '198.51.100.99:1637' || return 1
+      actual="${!destination}"
+      assert_eq "$expected" "$actual" \
+        "selector output $destination must replace its sentinel $mode" || return 1
+    done
+    assert_not_contains credential-leaked "$(<"$SELECTOR_EVENTS")" \
+      "selector helper must not inherit the supplied credential descriptor" || return 1
+    if [[ -n "$selector_fd" ]]; then
+      [[ -e "/proc/$BASHPID/fd/$selector_fd" ]] ||
+        fail "selector output handling must not consume the supplied credential" || return 1
+      exec {selector_fd}<&-
+    fi
+  done
+
+  exec {selector_fd}<"$AIRVPN_API_KEY_FILE"
+  PROBE_FD="$selector_fd"
+  export PROBE_FD
+  set +e
+  managed_select_airvpn_candidate \
+    wgmanaged_rejected 1000 "$selector_fd" '198.51.100.99:1637'
+  rc=$?
+  set +e
+  [[ "$rc" != 0 ]] || fail "selector must reject the reserved output prefix" || return 1
+  assert_eq sentinel "$wgmanaged_rejected" "rejected selector output must remain unchanged" || return 1
+  [[ -e "/proc/$BASHPID/fd/$selector_fd" ]] ||
+    fail "rejected selector output must not consume the supplied credential" || return 1
+  exec {selector_fd}<&-
+}
+
 test_api_state_auth_device_reset_only_on_identity_change() {
   local replacement rc
   source_managed_contract || return 1
@@ -685,6 +892,373 @@ test_api_state_failed_server_persists_then_expires_into_selector_argv() {
   [[ "$rc" != 0 ]] || fail "backward clock movement must block authenticated selection"
 }
 
+test_failed_candidate_always_attempts_exactly_one_ordered_rollback() {
+  local case_name rc expected_events
+  source_managed_contract || return 1
+  require_task5_contract || return 1
+  setup_api_state_fixture
+  declare -F managed_fail_candidate_before_rollback >/dev/null ||
+    fail "record-before-rollback seam is missing" || return 1
+
+  managed_api_state_add_exclusion() {
+    printf 'add\n' >> "$TEST_TMP/rollback-events"
+    (( ROLLBACK_ADD_FAIL == 0 ))
+  }
+  managed_api_state_write() {
+    printf 'write\n' >> "$TEST_TMP/rollback-events"
+    (( ROLLBACK_WRITE_FAIL == 0 ))
+  }
+  rollback_probe() {
+    printf 'rollback\n' >> "$TEST_TMP/rollback-events"
+    ROLLBACK_CALLS=$((ROLLBACK_CALLS + 1))
+    if (( ROLLBACK_CALLBACK_FAIL )); then return 1; fi
+    QBITTORRENT_TEST_STATE=running
+  }
+
+  for case_name in success add-failure write-failure rollback-failure combined-failure; do
+    ROLLBACK_ADD_FAIL=0
+    ROLLBACK_WRITE_FAIL=0
+    ROLLBACK_CALLBACK_FAIL=0
+    ROLLBACK_CALLS=0
+    QBITTORRENT_TEST_STATE=stopped
+    : > "$TEST_TMP/rollback-events"
+    case "$case_name" in
+      success) expected_events=$'add\nwrite\nrollback' ;;
+      add-failure)
+        ROLLBACK_ADD_FAIL=1
+        expected_events=$'add\nrollback'
+        ;;
+      write-failure)
+        ROLLBACK_WRITE_FAIL=1
+        expected_events=$'add\nwrite\nrollback'
+        ;;
+      rollback-failure)
+        ROLLBACK_CALLBACK_FAIL=1
+        expected_events=$'add\nwrite\nrollback'
+        ;;
+      combined-failure)
+        ROLLBACK_WRITE_FAIL=1
+        ROLLBACK_CALLBACK_FAIL=1
+        expected_events=$'add\nwrite\nrollback'
+        ;;
+    esac
+
+    set +e
+    managed_fail_candidate_before_rollback 1000 Alpha-1 rollback_probe
+    rc=$?
+    set +e
+    assert_eq "$expected_events" "$(<"$TEST_TMP/rollback-events")" \
+      "$case_name must persist first and invoke rollback exactly once" || return 1
+    assert_eq 1 "$ROLLBACK_CALLS" "$case_name must invoke exactly one rollback callback" || return 1
+    if [[ "$case_name" == success ]]; then
+      assert_eq 0 "$rc" "successful persistence and rollback must succeed" || return 1
+      assert_eq running "$QBITTORRENT_TEST_STATE" \
+        "successful rollback may re-enable qBittorrent" || return 1
+    else
+      [[ "$rc" != 0 ]] || fail "$case_name must return failure" || return 1
+    fi
+    if (( ROLLBACK_CALLBACK_FAIL )); then
+      assert_eq stopped "$QBITTORRENT_TEST_STATE" \
+        "$case_name must leave qBittorrent stopped when rollback cannot complete" || return 1
+    fi
+  done
+}
+
+test_suppressed_attempts_persist_pruned_high_water_and_surface_write_failure() {
+  local attempt_epoch rc persisted_before_failure
+  source_managed_contract || return 1
+  require_task5_contract || return 1
+  setup_api_state_fixture
+  managed_api_state_defaults 1000 || return 1
+  managed_api_state_refresh_identity 1000 || return 1
+  for attempt_epoch in 1000 1001 1002 1003 1004 1005; do
+    managed_api_record_attempt "$attempt_epoch" 0 || return 1
+  done
+
+  managed_api_state_defaults 1 || return 1
+  managed_api_state_load 1005 || return 1
+  set +e
+  managed_api_record_attempt 2000 0
+  rc=$?
+  set +e
+  assert_eq 75 "$rc" "daily-cap suppression must retain the normal suppression status" || return 1
+  grep -Fx 'observed_at=2000' "$AIRVPN_API_STATE_FILE" >/dev/null ||
+    fail "daily-cap suppression must durably advance observed_at" || return 1
+  grep -Fx 'attempt_count=6' "$AIRVPN_API_STATE_FILE" >/dev/null ||
+    fail "daily-cap suppression must not append a seventh attempt" || return 1
+  managed_api_state_defaults 1 || return 1
+  set +e; managed_api_state_load 1500 >/dev/null 2>&1; rc=$?; set +e
+  [[ "$rc" != 0 ]] || fail "restart must reject time before a suppressed daily high-water" || return 1
+
+  managed_api_state_defaults 3000 || return 1
+  managed_api_state_refresh_identity 3000 || return 1
+  managed_api_record_attempt 3000 0 || return 1
+  managed_api_record_outcome 3000 transient '' Alpha-1 0 || return 1
+  managed_api_state_defaults 1 || return 1
+  managed_api_state_load 3000 || return 1
+  set +e
+  managed_api_record_attempt 3100 0
+  rc=$?
+  set +e
+  assert_eq 75 "$rc" "backoff suppression must retain the normal suppression status" || return 1
+  grep -Fx 'observed_at=3100' "$AIRVPN_API_STATE_FILE" >/dev/null ||
+    fail "backoff suppression must durably advance observed_at" || return 1
+  managed_api_state_defaults 1 || return 1
+  set +e; managed_api_state_load 3050 >/dev/null 2>&1; rc=$?; set +e
+  [[ "$rc" != 0 ]] || fail "restart must reject time before a suppressed backoff high-water" || return 1
+
+  managed_api_state_load 3100 || return 1
+  persisted_before_failure="$(<"$AIRVPN_API_STATE_FILE")"
+  managed_api_state_write() { return 1; }
+  set +e
+  managed_api_record_attempt 3200 0
+  rc=$?
+  set +e
+  assert_eq 1 "$rc" "suppression persistence failure must not masquerade as rc75" || return 1
+  assert_eq "$persisted_before_failure" "$(<"$AIRVPN_API_STATE_FILE")" \
+    "failed suppression persistence must not corrupt the last durable state"
+}
+
+test_authenticated_suppression_persists_before_releasing_global_lock() {
+  local attempt_epoch rc expected_events
+  source_managed_contract || return 1
+  require_task5_contract || return 1
+  setup_api_state_fixture
+
+  managed_api_state_defaults 1000 || return 1
+  managed_api_state_refresh_identity 1000 || return 1
+  for attempt_epoch in 1000 1001 1002 1003 1004 1005; do
+    managed_api_record_attempt "$attempt_epoch" 0 || return 1
+  done
+  cp -- "$AIRVPN_API_STATE_FILE" "$TEST_TMP/daily-state"
+
+  managed_api_state_defaults 3000 || return 1
+  managed_api_state_refresh_identity 3000 || return 1
+  managed_api_record_attempt 3000 0 || return 1
+  managed_api_record_outcome 3000 auth '' Alpha-1 0 || return 1
+  cp -- "$AIRVPN_API_STATE_FILE" "$TEST_TMP/backoff-state"
+
+  : > "$TEST_TMP/suppression-lock-events"
+  SUPPRESSION_WRITE_FAIL=0
+  managed_global_api_lock_acquire() {
+    printf 'lock-acquired\n' >> "$TEST_TMP/suppression-lock-events"
+    MANAGED_API_LOCK_FD=99
+  }
+  managed_global_api_lock_release() {
+    printf 'lock-released\n' >> "$TEST_TMP/suppression-lock-events"
+    MANAGED_API_LOCK_FD=
+  }
+  managed_sync_file() {
+    [[ "${MANAGED_API_LOCK_FD:-}" == 99 ]] || {
+      printf 'sync-outside-lock\n' >> "$TEST_TMP/suppression-lock-events"
+      return 1
+    }
+    printf 'sync-file\n' >> "$TEST_TMP/suppression-lock-events"
+    (( SUPPRESSION_WRITE_FAIL == 0 ))
+  }
+  managed_sync_directory() {
+    [[ "${MANAGED_API_LOCK_FD:-}" == 99 ]] || {
+      printf 'sync-outside-lock\n' >> "$TEST_TMP/suppression-lock-events"
+      return 1
+    }
+    printf 'sync-directory\n' >> "$TEST_TMP/suppression-lock-events"
+  }
+  suppressed_provider_probe() {
+    printf 'unexpected-provider\n' >> "$TEST_TMP/suppression-lock-events"
+    return 1
+  }
+  suppressed_downstream_probe() {
+    printf 'unexpected-downstream\n' >> "$TEST_TMP/suppression-lock-events"
+    return 1
+  }
+
+  cp -- "$TEST_TMP/daily-state" "$AIRVPN_API_STATE_FILE"
+  chmod 600 -- "$AIRVPN_API_STATE_FILE"
+  MANAGED_TEST_ATTEMPT_EPOCH=2000
+  set +e
+  managed_run_authenticated_attempt 0 '' suppressed_provider_probe suppressed_downstream_probe
+  rc=$?
+  set +e
+  assert_eq 75 "$rc" "daily suppression must return rc75 through the locked wrapper" || return 1
+  expected_events=$'lock-acquired\nsync-file\nsync-file\nsync-directory\nlock-released'
+  assert_eq "$expected_events" "$(<"$TEST_TMP/suppression-lock-events")" \
+    "daily suppression must become durable before releasing the global lock" || return 1
+  grep -Fx 'observed_at=2000' "$AIRVPN_API_STATE_FILE" >/dev/null ||
+    fail "locked daily suppression must persist its high-water" || return 1
+
+  cp -- "$TEST_TMP/backoff-state" "$AIRVPN_API_STATE_FILE"
+  chmod 600 -- "$AIRVPN_API_STATE_FILE"
+  : > "$TEST_TMP/suppression-lock-events"
+  MANAGED_TEST_ATTEMPT_EPOCH=30000
+  set +e
+  managed_run_authenticated_attempt 0 '' suppressed_provider_probe suppressed_downstream_probe
+  rc=$?
+  set +e
+  assert_eq 75 "$rc" "backoff suppression must return rc75 through the locked wrapper" || return 1
+  assert_eq "$expected_events" "$(<"$TEST_TMP/suppression-lock-events")" \
+    "backoff suppression must prune and persist before releasing the global lock" || return 1
+  grep -Fx 'observed_at=30000' "$AIRVPN_API_STATE_FILE" >/dev/null ||
+    fail "locked backoff suppression must persist its high-water" || return 1
+  grep -Fx 'exclude_count=0' "$AIRVPN_API_STATE_FILE" >/dev/null ||
+    fail "locked backoff suppression must durably prune expired exclusions" || return 1
+
+  : > "$TEST_TMP/suppression-lock-events"
+  SUPPRESSION_WRITE_FAIL=1
+  MANAGED_TEST_ATTEMPT_EPOCH=31000
+  set +e
+  managed_run_authenticated_attempt 0 '' suppressed_provider_probe suppressed_downstream_probe
+  rc=$?
+  set +e
+  assert_eq 1 "$rc" "locked suppression write failure must return rc1" || return 1
+  assert_eq $'lock-acquired\nsync-file\nlock-released' \
+    "$(<"$TEST_TMP/suppression-lock-events")" \
+    "suppression write failure must release the lock without reaching provider work" || return 1
+  grep -Fx 'observed_at=30000' "$AIRVPN_API_STATE_FILE" >/dev/null ||
+    fail "failed locked suppression write must retain the last durable high-water"
+}
+
+test_authenticated_attempt_samples_private_fresh_time_after_lock_and_provider() {
+  local case_name credential_fd rc expected_rc expected_backoff expected_events
+  source_managed_contract || return 1
+  require_task5_contract || return 1
+  setup_api_state_fixture
+  : > "$TEST_TMP/clock-events"
+
+  managed_global_api_lock_acquire() {
+    [[ -n "$1" && -e "/proc/$BASHPID/fd/$1" ]] || return 1
+    printf 'lock-acquired\n' >> "$TEST_TMP/clock-events"
+    MANAGED_TEST_ATTEMPT_EPOCH=1100
+    MANAGED_API_LOCK_FD=99
+  }
+  managed_global_api_lock_release() {
+    [[ -z "${PROBE_FD:-}" || ! -e "/proc/$BASHPID/fd/$PROBE_FD" ]] || return 1
+    printf 'lock-released\n' >> "$TEST_TMP/clock-events"
+    MANAGED_API_LOCK_FD=
+  }
+  managed_wall_clock_epoch() {
+    local phase="${1-}"
+    [[ $# == 1 && ( "$phase" == attempt || "$phase" == outcome ) ]] || return 1
+    if [[ -n "${PROBE_FD:-}" && -e "/proc/$BASHPID/fd/$PROBE_FD" ]]; then
+      printf 'clock-credential-leaked:%s\n' "$phase" >> "$TEST_TMP/clock-events"
+      return 1
+    fi
+    printf 'clock:%s:%s\n' "$phase" \
+      "$([[ "$phase" == attempt ]] && printf '%s' "$MANAGED_TEST_ATTEMPT_EPOCH" || printf '%s' "$MANAGED_TEST_OUTCOME_EPOCH")" \
+      >> "$TEST_TMP/clock-events"
+    if [[ "$phase" == attempt ]]; then
+      printf '%s\n' "$MANAGED_TEST_ATTEMPT_EPOCH"
+    else
+      printf '%s\n' "$MANAGED_TEST_OUTCOME_EPOCH"
+    fi
+  }
+  timed_provider_probe() {
+    printf 'provider:%s\n' "$CLOCK_CASE" >> "$TEST_TMP/clock-events"
+    MANAGED_TEST_OUTCOME_EPOCH=1300
+    MANAGED_API_PROVIDER_RETRY_AFTER=''
+    MANAGED_API_PROVIDER_FAILED_SERVER=''
+    MANAGED_API_PROVIDER_JITTER=0
+    case "$CLOCK_CASE" in
+      transient)
+        MANAGED_API_PROVIDER_FAILED_SERVER=Alpha-1
+        return 6
+        ;;
+      retry-after)
+        MANAGED_API_PROVIDER_RETRY_AFTER=600
+        return 5
+        ;;
+      auth)
+        MANAGED_API_PROVIDER_FAILURE_CLASS=auth
+        return 4
+        ;;
+      device) return 7 ;;
+      regression)
+        MANAGED_TEST_OUTCOME_EPOCH=1099
+        return 6
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  timed_downstream_probe() {
+    printf 'unexpected-downstream\n' >> "$TEST_TMP/clock-events"
+    return 1
+  }
+
+  for case_name in transient retry-after auth device; do
+    rm -f -- "$AIRVPN_API_STATE_FILE"
+    : > "$TEST_TMP/clock-events"
+    CLOCK_CASE="$case_name"
+    MANAGED_TEST_ATTEMPT_EPOCH=1000
+    MANAGED_TEST_OUTCOME_EPOCH=1000
+    exec {credential_fd}<"$AIRVPN_API_KEY_FILE"
+    PROBE_FD="$credential_fd"
+    case "$case_name" in
+      transient)
+        expected_rc=6
+        expected_backoff=1600
+        ;;
+      retry-after)
+        expected_rc=5
+        expected_backoff=1900
+        ;;
+      auth)
+        expected_rc=4
+        expected_backoff=87700
+        ;;
+      device)
+        expected_rc=7
+        expected_backoff=87700
+        ;;
+    esac
+
+    set +e
+    managed_run_authenticated_attempt \
+      0 "$credential_fd" timed_provider_probe timed_downstream_probe
+    rc=$?
+    set +e
+    assert_eq "$expected_rc" "$rc" "$case_name must retain its provider status" || return 1
+    expected_events=$'lock-acquired\nclock:attempt:1100\nprovider:'"$case_name"$'\nclock:outcome:1300\nlock-released'
+    assert_eq "$expected_events" "$(<"$TEST_TMP/clock-events")" \
+      "$case_name must sample after lock wait and provider completion" || return 1
+    assert_eq 1100 "${MANAGED_API_ATTEMPT_EPOCHS[0]}" \
+      "$case_name request accounting must use post-lock time" || return 1
+    assert_eq 1300 "$MANAGED_API_OBSERVED_AT" \
+      "$case_name outcome must use post-provider time" || return 1
+    assert_eq "$expected_backoff" "$MANAGED_API_BACKOFF_UNTIL" \
+      "$case_name backoff must be anchored to post-provider time" || return 1
+    grep -Fx 'observed_at=1300' "$AIRVPN_API_STATE_FILE" >/dev/null ||
+      fail "$case_name post-provider observation must be durable" || return 1
+    if [[ "$case_name" == transient ]]; then
+      assert_eq 22900 "${MANAGED_API_EXCLUDE_EXPIRIES[0]}" \
+        "failed-server expiry must be anchored to post-provider time" || return 1
+    fi
+    [[ ! -e "/proc/$BASHPID/fd/$credential_fd" ]] ||
+      fail "$case_name managed attempt must close its credential owner descriptor" || return 1
+  done
+
+  rm -f -- "$AIRVPN_API_STATE_FILE"
+  : > "$TEST_TMP/clock-events"
+  CLOCK_CASE=regression
+  MANAGED_TEST_ATTEMPT_EPOCH=1000
+  MANAGED_TEST_OUTCOME_EPOCH=1000
+  exec {credential_fd}<"$AIRVPN_API_KEY_FILE"
+  PROBE_FD="$credential_fd"
+  set +e
+  managed_run_authenticated_attempt \
+    0 "$credential_fd" timed_provider_probe timed_downstream_probe
+  rc=$?
+  set +e
+  assert_eq 1 "$rc" "post-provider clock regression must fail closed" || return 1
+  expected_events=$'lock-acquired\nclock:attempt:1100\nprovider:regression\nclock:outcome:1099\nlock-released'
+  assert_eq "$expected_events" "$(<"$TEST_TMP/clock-events")" \
+    "clock regression must still release the global lock after outcome rejection" || return 1
+  grep -Fx 'observed_at=1100' "$AIRVPN_API_STATE_FILE" >/dev/null ||
+    fail "clock regression must retain the durable post-lock attempt high-water" || return 1
+  grep -Fx 'failure_class=none' "$AIRVPN_API_STATE_FILE" >/dev/null ||
+    fail "clock regression must not persist a backdated failure outcome" || return 1
+  assert_not_contains unexpected-downstream "$(<"$TEST_TMP/clock-events")" \
+    "clock regression must block downstream work"
+}
+
 test_linux_managed_selector_persists_failure_rotates_and_reenables() {
   local credential_fd expected selected helper_parent rc
   if [[ "$(uname -s)" != Linux ]]; then return 77; fi
@@ -695,7 +1269,6 @@ test_linux_managed_selector_persists_failure_rotates_and_reenables() {
   declare -F managed_fail_candidate_before_rollback >/dev/null ||
     fail "record-before-rollback seam is missing" || return 1
   setup_api_state_fixture
-  owner_mode() { stat -c '%u:%a' -- "$1" 2>/dev/null; }
   helper_parent="$TEST_TMP/trusted"
   AIRVPN_API_HELPER="$helper_parent/airvpn-api"
   AIRVPN_STATUS_URL='https://airvpn.org/api/status/?format=json'
@@ -791,7 +1364,7 @@ test_api_state_corruption_blocks_authenticated_and_downstream_callbacks() {
   : > "$TEST_TMP/events"
 
   set +e
-  managed_run_authenticated_attempt 1000 0 '' provider_probe downstream_probe
+  managed_run_authenticated_attempt 0 '' provider_probe downstream_probe
   rc=$?
   set +e
   [[ "$rc" != 0 ]] || fail "corrupt state must block the authenticated attempt" || return 1
@@ -817,6 +1390,28 @@ test_api_global_lock_requires_interface_lock_and_releases_before_downstream() {
 set -u
 source "$TEST_ROOT/wg-healthcheck"
 source "$TEST_ROOT/wg-healthcheck-managed"
+owner_mode() {
+  local mode
+  mode="$(stat -c '%a' -- "$1" 2>/dev/null)" || return 1
+  printf '0:%s\n' "$mode"
+}
+managed_api_credential_fd_metadata() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_credential_fd="${2:?}"
+  local wgmanaged_owner_pid wgmanaged_captured_metadata
+  [[ "$wgmanaged_output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  [[ "$wgmanaged_output_variable" != wgmanaged_* ]] || return 1
+  validate_credential_fd_number "$wgmanaged_credential_fd" || return 1
+  wgmanaged_owner_pid=$BASHPID
+  [[ -f "/proc/$wgmanaged_owner_pid/fd/$wgmanaged_credential_fd" ]] || return 1
+  wgmanaged_captured_metadata="$(
+    stat -Lc '%d %i %Y %s' -- "/proc/$wgmanaged_owner_pid/fd/$wgmanaged_credential_fd" \
+      {wgmanaged_credential_fd}<&- 2>/dev/null
+  )" || return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_captured_metadata 0 600"
+}
+managed_wall_clock_epoch() {
+  case "${1-}" in attempt|outcome) printf '1000\n' ;; *) return 1 ;; esac
+}
 IFACE="$1"
 AIRVPN_DEVICE=Device-One
 STATE_DIR="$TEST_ROOT/run"
@@ -858,7 +1453,7 @@ downstream_probe() {
   fi
   printf 'downstream:%s\n' "$IFACE" >> "$TEST_ROOT/events"
 }
-managed_run_authenticated_attempt 1000 0 '' provider_probe downstream_probe
+managed_run_authenticated_attempt 0 '' provider_probe downstream_probe
 WORKER
   chmod 700 -- "$script_path"
 
@@ -929,7 +1524,7 @@ test_authenticated_attempt_closes_supplied_credential_around_state_and_downstrea
     printf 'downstream\n' >> "$TEST_TMP/fd-events"
   }
 
-  managed_run_authenticated_attempt 1000 0 "$credential_fd" provider_probe downstream_probe || return 1
+  managed_run_authenticated_attempt 0 "$credential_fd" provider_probe downstream_probe || return 1
   assert_eq $'provider\ndownstream' "$(<"$TEST_TMP/fd-events")" \
     "only the authenticated provider callback may observe the supplied credential" || return 1
   set +e; IFS= read -r -u "$credential_fd" _ 2>/dev/null; rc=$?; set +e
@@ -980,7 +1575,7 @@ test_linux_global_lock_fd_never_aliases_supplied_credential() {
   }
   downstream_lock_probe() { printf 'downstream\n' >> "$TEST_TMP/alias-events"; }
 
-  managed_run_authenticated_attempt 1000 0 "$credential_fd" provider_lock_probe downstream_lock_probe || return 1
+  managed_run_authenticated_attempt 0 "$credential_fd" provider_lock_probe downstream_lock_probe || return 1
   assert_eq $'provider-locked\ndownstream' "$(<"$TEST_TMP/alias-events")" \
     "provider must retain the distinct global lock until its outcome is durable" || return 1
   [[ -z "${MANAGED_API_LOCK_FD:-}" ]] || fail "global lock descriptor must clear after release" || return 1
@@ -1021,7 +1616,7 @@ test_linux_credential_identity_uses_exact_provider_fd_across_replacement() {
   identity_downstream() { printf 'downstream\n' >> "$TEST_TMP/identity-events"; }
 
   set +e
-  managed_run_authenticated_attempt 1000 0 "$first_fd" provider_old_auth identity_downstream
+  managed_run_authenticated_attempt 0 "$first_fd" provider_old_auth identity_downstream
   rc=$?
   set +e
   assert_eq 4 "$rc" "old exact credential must record its authentication result" || return 1
@@ -1029,7 +1624,9 @@ test_linux_credential_identity_uses_exact_provider_fd_across_replacement() {
     "persisted identity must belong to the exact provider credential FD" || return 1
   assert_eq auth "$MANAGED_API_FAILURE_CLASS" "old credential must enter auth suppression" || return 1
 
-  managed_run_authenticated_attempt 1001 0 '' provider_new_success identity_downstream || return 1
+  MANAGED_TEST_ATTEMPT_EPOCH=1001
+  MANAGED_TEST_OUTCOME_EPOCH=1001
+  managed_run_authenticated_attempt 0 '' provider_new_success identity_downstream || return 1
   assert_eq $'old-auth\nnew-success\ndownstream' "$(<"$TEST_TMP/identity-events")" \
     "atomic path replacement must reset auth suppression on the next exact-FD run" || return 1
   assert_eq "$second_inode" "$MANAGED_API_CREDENTIAL_INODE" \
@@ -1237,12 +1834,19 @@ tests=(
   test_api_state_rolling_attempt_cap_and_window_reset
   test_api_state_rejects_post_write_clock_regression
   test_api_state_backoff_is_exponential_jitter_bounded_and_retry_after_capped
+  test_output_variable_helpers_replace_collision_sentinels_and_reject_reserved_names
+  test_failed_credential_output_assignment_closes_new_descriptor
+  test_managed_selector_replaces_every_collision_name_with_and_without_credential
   test_api_state_auth_device_reset_only_on_identity_change
   test_api_state_exclusions_are_unique_bounded_and_expire
   test_api_state_rejects_noncanonical_failure_classes_and_metadata
   test_api_state_memory_rejects_future_mtime_and_zero_failure_backoff
   test_api_state_admin_bypass_outcomes_and_timer_suppression
   test_api_state_failed_server_persists_then_expires_into_selector_argv
+  test_failed_candidate_always_attempts_exactly_one_ordered_rollback
+  test_suppressed_attempts_persist_pruned_high_water_and_surface_write_failure
+  test_authenticated_suppression_persists_before_releasing_global_lock
+  test_authenticated_attempt_samples_private_fresh_time_after_lock_and_provider
   test_linux_managed_selector_persists_failure_rotates_and_reenables
   test_api_state_corruption_blocks_authenticated_and_downstream_callbacks
   test_api_global_lock_requires_interface_lock_and_releases_before_downstream

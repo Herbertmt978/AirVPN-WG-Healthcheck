@@ -13,18 +13,25 @@ managed_credential_record_valid() {
   LC_ALL=C command grep -aEq '^[0-9a-f]{64}$' -- "$path" 2>/dev/null
 }
 
-open_installed_api_key() {
-  local output_variable="${1:?}" parent file_meta parent_meta size opened_fd
-  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  parent="${AIRVPN_API_KEY_FILE%/*}"
-  [[ "$parent" != "$AIRVPN_API_KEY_FILE" ]] || return 1
+managed_output_variable_is_valid() {
+  local wgmanaged_name="${1-}"
+  [[ "$wgmanaged_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] &&
+    [[ "$wgmanaged_name" != wgmanaged_* ]]
+}
 
-  if ! path_is_directory "$parent" || path_is_symlink "$parent"; then
+open_installed_api_key() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_parent wgmanaged_file_meta
+  local wgmanaged_parent_meta wgmanaged_size wgmanaged_opened_fd
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  wgmanaged_parent="${AIRVPN_API_KEY_FILE%/*}"
+  [[ "$wgmanaged_parent" != "$AIRVPN_API_KEY_FILE" ]] || return 1
+
+  if ! path_is_directory "$wgmanaged_parent" || path_is_symlink "$wgmanaged_parent"; then
     log "API credential directory failed trust validation"
     return 1
   fi
-  parent_meta="$(owner_mode "$parent")" || return 1
-  if [[ "$parent_meta" != 0:700 ]]; then
+  wgmanaged_parent_meta="$(owner_mode "$wgmanaged_parent")" || return 1
+  if [[ "$wgmanaged_parent_meta" != 0:700 ]]; then
     log "API credential directory failed trust validation"
     return 1
   fi
@@ -32,19 +39,22 @@ open_installed_api_key() {
     log "Installed API credential failed trust validation"
     return 1
   fi
-  file_meta="$(owner_mode "$AIRVPN_API_KEY_FILE")" || return 1
-  if [[ "$file_meta" != 0:600 ]]; then
+  wgmanaged_file_meta="$(owner_mode "$AIRVPN_API_KEY_FILE")" || return 1
+  if [[ "$wgmanaged_file_meta" != 0:600 ]]; then
     log "Installed API credential failed trust validation"
     return 1
   fi
-  size="$(managed_file_size "$AIRVPN_API_KEY_FILE")" || return 1
-  if [[ "$size" != 65 ]] || ! managed_credential_record_valid "$AIRVPN_API_KEY_FILE"; then
+  wgmanaged_size="$(managed_file_size "$AIRVPN_API_KEY_FILE")" || return 1
+  if [[ "$wgmanaged_size" != 65 ]] || ! managed_credential_record_valid "$AIRVPN_API_KEY_FILE"; then
     log "Installed API credential has an invalid record shape"
     return 1
   fi
 
-  exec {opened_fd}<"$AIRVPN_API_KEY_FILE" || return 1
-  printf -v "$output_variable" '%s' "$opened_fd"
+  exec {wgmanaged_opened_fd}<"$AIRVPN_API_KEY_FILE" || return 1
+  if ! printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_opened_fd"; then
+    exec {wgmanaged_opened_fd}<&-
+    return 1
+  fi
 }
 
 managed_uint_is_canonical() {
@@ -418,15 +428,29 @@ managed_api_state_add_exclusion() {
   MANAGED_API_EXCLUDE_EXPIRIES+=("$expiry")
 }
 
-managed_api_exclusion_args() {
-  local output_variable="${1:?}" now="${2:?}" index
-  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  managed_api_state_prune "$now" || return 1
-  local -n output_reference="$output_variable"
-  output_reference=()
-  for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
-    output_reference+=(--exclude-server "${MANAGED_API_EXCLUDE_NAMES[$index]}")
+managed_api_exclusion_args_core() {
+  local wgmanaged_now="${1:?}" wgmanaged_index
+  managed_api_state_prune "$wgmanaged_now" || return 1
+  wgmanaged_exclusion_args_carrier=()
+  for ((wgmanaged_index = 0;
+        wgmanaged_index < ${#MANAGED_API_EXCLUDE_NAMES[@]};
+        wgmanaged_index++)); do
+    wgmanaged_exclusion_args_carrier+=(
+      --exclude-server "${MANAGED_API_EXCLUDE_NAMES[$wgmanaged_index]}"
+    )
   done
+}
+
+managed_api_exclusion_args() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_now="${2:?}"
+  local -a wgmanaged_exclusion_args_carrier=()
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  # Assignment through this validated caller-selected nameref is the public API.
+  # shellcheck disable=SC2034
+  local -n wgmanaged_output_reference="$wgmanaged_output_variable"
+  managed_api_exclusion_args_core "$wgmanaged_now" || return 1
+  # shellcheck disable=SC2034
+  wgmanaged_output_reference=("${wgmanaged_exclusion_args_carrier[@]}")
 }
 
 managed_api_attempt_allowed() {
@@ -445,8 +469,17 @@ managed_api_attempt_allowed() {
 }
 
 managed_api_record_attempt() {
-  local now="${1:?}" administrative_bypass="${2:-0}"
-  managed_api_attempt_allowed "$now" "$administrative_bypass" || return $?
+  local now="${1:?}" administrative_bypass="${2:-0}" allowed_rc
+  if managed_api_attempt_allowed "$now" "$administrative_bypass"; then
+    allowed_rc=0
+  else
+    allowed_rc=$?
+  fi
+  if (( allowed_rc == 75 )); then
+    managed_api_state_write || return 1
+    return 75
+  fi
+  (( allowed_rc == 0 )) || return "$allowed_rc"
   MANAGED_API_ATTEMPT_EPOCHS+=("$now")
   MANAGED_API_ATTEMPT_COUNT="${#MANAGED_API_ATTEMPT_EPOCHS[@]}"
   MANAGED_API_WINDOW_START="${MANAGED_API_ATTEMPT_EPOCHS[0]}"
@@ -456,27 +489,32 @@ managed_api_record_attempt() {
 }
 
 managed_compute_backoff() {
-  local output_variable="${1:?}" attempt="${2:?}" jitter="${3-}" retry_after="${4-}"
-  local base=300 maximum_jitter index computed
-  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  managed_uint_is_canonical "$attempt" 100 || return 1
-  (( 10#$attempt >= 1 )) || return 1
-  for ((index = 1; index < 10#$attempt && base < 21600; index++)); do
-    base=$((base * 2))
-    (( base <= 21600 )) || base=21600
+  local wgmanaged_output_variable="${1:?}" wgmanaged_attempt="${2:?}"
+  local wgmanaged_jitter="${3-}" wgmanaged_retry_after="${4-}"
+  local wgmanaged_base=300 wgmanaged_maximum_jitter wgmanaged_index wgmanaged_computed
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  managed_uint_is_canonical "$wgmanaged_attempt" 100 || return 1
+  (( 10#$wgmanaged_attempt >= 1 )) || return 1
+  for ((wgmanaged_index = 1;
+        wgmanaged_index < 10#$wgmanaged_attempt && wgmanaged_base < 21600;
+        wgmanaged_index++)); do
+    wgmanaged_base=$((wgmanaged_base * 2))
+    (( wgmanaged_base <= 21600 )) || wgmanaged_base=21600
   done
-  maximum_jitter=$((base / 10))
-  if [[ -z "$jitter" ]]; then
-    jitter=$((RANDOM % (maximum_jitter + 1)))
+  wgmanaged_maximum_jitter=$((wgmanaged_base / 10))
+  if [[ -z "$wgmanaged_jitter" ]]; then
+    wgmanaged_jitter=$((RANDOM % (wgmanaged_maximum_jitter + 1)))
   fi
-  managed_uint_is_canonical "$jitter" "$maximum_jitter" || return 1
-  computed=$((base + 10#$jitter))
-  (( computed <= 21600 )) || computed=21600
-  if [[ -n "$retry_after" ]]; then
-    managed_uint_is_canonical "$retry_after" 86400 || return 1
-    if (( 10#$retry_after > computed )); then computed=$((10#$retry_after)); fi
+  managed_uint_is_canonical "$wgmanaged_jitter" "$wgmanaged_maximum_jitter" || return 1
+  wgmanaged_computed=$((wgmanaged_base + 10#$wgmanaged_jitter))
+  (( wgmanaged_computed <= 21600 )) || wgmanaged_computed=21600
+  if [[ -n "$wgmanaged_retry_after" ]]; then
+    managed_uint_is_canonical "$wgmanaged_retry_after" 86400 || return 1
+    if (( 10#$wgmanaged_retry_after > wgmanaged_computed )); then
+      wgmanaged_computed=$((10#$wgmanaged_retry_after))
+    fi
   fi
-  printf -v "$output_variable" '%s' "$computed"
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_computed"
 }
 
 managed_api_record_outcome() {
@@ -510,13 +548,17 @@ managed_api_record_outcome() {
 }
 
 managed_api_credential_fd_metadata() {
-  local output_variable="${1:?}" credential_fd="${2:?}" owner_pid captured_metadata
-  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  validate_credential_fd_number "$credential_fd" || return 1
-  owner_pid=$BASHPID
-  [[ -f "/proc/$owner_pid/fd/$credential_fd" ]] || return 1
-  captured_metadata="$(stat -Lc '%d %i %Y %s %u %a' -- "/proc/$owner_pid/fd/$credential_fd" {credential_fd}<&- 2>/dev/null)" || return 1
-  printf -v "$output_variable" '%s' "$captured_metadata"
+  local wgmanaged_output_variable="${1:?}" wgmanaged_credential_fd="${2:?}"
+  local wgmanaged_owner_pid wgmanaged_captured_metadata
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  validate_credential_fd_number "$wgmanaged_credential_fd" || return 1
+  wgmanaged_owner_pid=$BASHPID
+  [[ -f "/proc/$wgmanaged_owner_pid/fd/$wgmanaged_credential_fd" ]] || return 1
+  wgmanaged_captured_metadata="$(
+    stat -Lc '%d %i %Y %s %u %a' -- "/proc/$wgmanaged_owner_pid/fd/$wgmanaged_credential_fd" \
+      {wgmanaged_credential_fd}<&- 2>/dev/null
+  )" || return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_captured_metadata"
 }
 
 managed_api_state_refresh_identity() {
@@ -577,9 +619,11 @@ managed_admin_dry_run_bypass() {
 }
 
 managed_capture_owner_mode() {
-  local output_variable="${1:?}" path="${2:?}" captured_metadata
-  captured_metadata="$(owner_mode "$path")" || return 1
-  printf -v "$output_variable" '%s' "$captured_metadata"
+  local wgmanaged_output_variable="${1:?}" wgmanaged_path="${2:?}"
+  local wgmanaged_captured_metadata
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  wgmanaged_captured_metadata="$(owner_mode "$wgmanaged_path")" || return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_captured_metadata"
 }
 
 managed_chmod_api_lock() { chmod 600 -- "$1"; }
@@ -642,118 +686,180 @@ managed_call_without_private_fd() {
   fi
 }
 
+managed_wall_clock_epoch() {
+  local wgmanaged_phase="${1-}"
+  [[ $# == 1 && ( "$wgmanaged_phase" == attempt || "$wgmanaged_phase" == outcome ) ]] ||
+    return 1
+  current_epoch
+}
+
+managed_capture_wall_clock_epoch_closed() {
+  local wgmanaged_phase="${1:?}" wgmanaged_epoch
+  [[ -v wgmanaged_clock_epoch_carrier ]] || return 1
+  wgmanaged_epoch="$(managed_wall_clock_epoch "$wgmanaged_phase")" || return 1
+  managed_epoch_is_valid "$wgmanaged_epoch" || return 1
+  wgmanaged_clock_epoch_carrier="$wgmanaged_epoch"
+}
+
 managed_select_airvpn_candidate_closed() {
-  local output_variable="${1:?}" now="${2:?}" current_endpoint="${3-}"
-  local candidate_output
-  local -a exclusion_arguments=()
-  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  managed_api_exclusion_args exclusion_arguments "$now" || return 1
+  local wgmanaged_now="${1:?}" wgmanaged_current_endpoint="${2-}"
+  local wgmanaged_candidate_output
+  local -a wgmanaged_exclusion_args_carrier=()
+  [[ -v wgmanaged_selection_result_carrier ]] || return 1
+  managed_api_exclusion_args_core "$wgmanaged_now" || return 1
   validate_secure_executable "$AIRVPN_API_HELPER" || return 1
-  candidate_output="$(
+  wgmanaged_candidate_output="$(
     "$AIRVPN_API_HELPER" select \
       --url "$AIRVPN_STATUS_URL" \
       --countries "$AIRVPN_COUNTRIES" \
       --port "$AIRVPN_WG_PORT" \
-      --current-endpoint "$current_endpoint" \
+      --current-endpoint "$wgmanaged_current_endpoint" \
       --timeout "$AIRVPN_API_TIMEOUT" \
-      "${exclusion_arguments[@]}"
+      "${wgmanaged_exclusion_args_carrier[@]}"
   )" || return 1
-  [[ -n "$candidate_output" && "$candidate_output" != *$'\r'* && "$candidate_output" != *$'\n'* ]] || return 1
-  # Assignment through the validated caller-selected name is this nameref's purpose.
-  # shellcheck disable=SC2034
-  local -n selection_result_reference="$output_variable"
-  # shellcheck disable=SC2034
-  selection_result_reference="$candidate_output"
+  [[ -n "$wgmanaged_candidate_output" &&
+     "$wgmanaged_candidate_output" != *$'\r'* &&
+     "$wgmanaged_candidate_output" != *$'\n'* ]] || return 1
+  wgmanaged_selection_result_carrier="$wgmanaged_candidate_output"
 }
 
 managed_select_airvpn_candidate() {
-  local output_variable="${1:?}" now="${2:?}" credential_fd="${3-}" current_endpoint="${4-}"
-  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  if [[ -n "$credential_fd" ]]; then validate_credential_fd_number "$credential_fd" || return 1; fi
-  managed_call_without_private_fd "$credential_fd" \
-    managed_select_airvpn_candidate_closed "$output_variable" "$now" "$current_endpoint"
+  local wgmanaged_output_variable="${1:?}" wgmanaged_now="${2:?}"
+  local wgmanaged_credential_fd="${3-}" wgmanaged_current_endpoint="${4-}"
+  local wgmanaged_selection_result_carrier=''
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  if [[ -n "$wgmanaged_credential_fd" ]]; then
+    validate_credential_fd_number "$wgmanaged_credential_fd" || return 1
+  fi
+  managed_call_without_private_fd "$wgmanaged_credential_fd" \
+    managed_select_airvpn_candidate_closed "$wgmanaged_now" "$wgmanaged_current_endpoint" ||
+    return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_selection_result_carrier"
 }
 
 managed_fail_candidate_before_rollback() {
   local now="${1:?}" server="${2:?}" rollback_callback="${3:?}"
+  local persistence_rc=0 rollback_rc=0
   shift 3 || return 1
   [[ "$rollback_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
   declare -F "$rollback_callback" >/dev/null || return 1
-  managed_api_state_add_exclusion "$server" "$now" || return 1
-  managed_api_state_write || return 1
-  "$rollback_callback" "$@"
+  if managed_api_state_add_exclusion "$server" "$now"; then
+    managed_api_state_write || persistence_rc=1
+  else
+    persistence_rc=1
+  fi
+  "$rollback_callback" "$@" || rollback_rc=1
+  (( persistence_rc == 0 && rollback_rc == 0 ))
 }
 
 # Provider callbacks receive only the private credential descriptor number and may set
 # the four MANAGED_API_PROVIDER_* result fields. Downstream is invoked only after the
 # authenticated outcome is durable and this process has released the global API lock.
 managed_run_authenticated_attempt() {
-  local now="${1:?}" administrative_bypass="${2:-0}" credential_fd="${3-}"
-  local provider_callback="${4:?}" downstream_callback="${5:?}"
-  local active_credential_fd="$credential_fd" provider_rc outcome outcome_rc release_rc
-  [[ "$provider_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  [[ "$downstream_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  declare -F "$provider_callback" >/dev/null || return 1
-  declare -F "$downstream_callback" >/dev/null || return 1
-  if [[ -n "$credential_fd" ]]; then validate_credential_fd_number "$credential_fd" || return 1; fi
+  local wgmanaged_administrative_bypass="${1:-0}" wgmanaged_credential_fd="${2-}"
+  local wgmanaged_provider_callback="${3:?}" wgmanaged_downstream_callback="${4:?}"
+  local active_credential_fd="$wgmanaged_credential_fd"
+  local wgmanaged_attempt_now wgmanaged_outcome_now wgmanaged_provider_rc wgmanaged_outcome
+  local wgmanaged_outcome_rc wgmanaged_release_rc wgmanaged_clock_epoch_carrier=''
+  [[ "$wgmanaged_provider_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  [[ "$wgmanaged_downstream_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  declare -F "$wgmanaged_provider_callback" >/dev/null || return 1
+  declare -F "$wgmanaged_downstream_callback" >/dev/null || return 1
+  if [[ -n "$wgmanaged_credential_fd" ]]; then
+    validate_credential_fd_number "$wgmanaged_credential_fd" || return 1
+  fi
 
-  if ! managed_global_api_lock_acquire "$credential_fd"; then
-    [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd" || return 1
+  if ! managed_global_api_lock_acquire "$wgmanaged_credential_fd"; then
+    [[ -z "$wgmanaged_credential_fd" ]] || close_private_fd "$wgmanaged_credential_fd" ||
+      return 1
     return 1
   fi
-  managed_call_without_private_fd "$credential_fd" managed_api_state_load "$now"
-  outcome_rc=$?
-  if (( outcome_rc == 0 )); then
+
+  managed_call_without_private_fd "$wgmanaged_credential_fd" \
+    managed_capture_wall_clock_epoch_closed attempt
+  wgmanaged_outcome_rc=$?
+  if (( wgmanaged_outcome_rc == 0 )); then
+    wgmanaged_attempt_now="$wgmanaged_clock_epoch_carrier"
+    managed_call_without_private_fd "$wgmanaged_credential_fd" \
+      managed_api_state_load "$wgmanaged_attempt_now"
+    wgmanaged_outcome_rc=$?
+  fi
+  if (( wgmanaged_outcome_rc == 0 )); then
     if [[ -z "$active_credential_fd" ]]; then
       open_installed_api_key active_credential_fd
-      outcome_rc=$?
+      wgmanaged_outcome_rc=$?
     fi
   fi
-  if (( outcome_rc == 0 )); then
-    managed_api_state_refresh_identity "$now" "$active_credential_fd"
-    outcome_rc=$?
+  if (( wgmanaged_outcome_rc == 0 )); then
+    managed_api_state_refresh_identity \
+      "$wgmanaged_attempt_now" "$active_credential_fd"
+    wgmanaged_outcome_rc=$?
   fi
-  if (( outcome_rc == 0 )); then
-    managed_call_without_private_fd "$active_credential_fd" managed_api_record_attempt "$now" "$administrative_bypass"
-    outcome_rc=$?
+  if (( wgmanaged_outcome_rc == 0 )); then
+    managed_call_without_private_fd "$active_credential_fd" \
+      managed_api_record_attempt "$wgmanaged_attempt_now" "$wgmanaged_administrative_bypass"
+    wgmanaged_outcome_rc=$?
   fi
-  if (( outcome_rc != 0 )); then
-    managed_call_without_private_fd "$active_credential_fd" managed_global_api_lock_release || outcome_rc=1
-    [[ -z "$active_credential_fd" ]] || close_private_fd "$active_credential_fd" || outcome_rc=1
-    return "$outcome_rc"
+  if (( wgmanaged_outcome_rc != 0 )); then
+    managed_call_without_private_fd "$active_credential_fd" \
+      managed_global_api_lock_release || wgmanaged_outcome_rc=1
+    [[ -z "$active_credential_fd" ]] ||
+      close_private_fd "$active_credential_fd" || wgmanaged_outcome_rc=1
+    return "$wgmanaged_outcome_rc"
   fi
 
   MANAGED_API_PROVIDER_FAILURE_CLASS=''
   MANAGED_API_PROVIDER_RETRY_AFTER=''
   MANAGED_API_PROVIDER_FAILED_SERVER=''
   MANAGED_API_PROVIDER_JITTER=''
-  if "$provider_callback" "$active_credential_fd"; then provider_rc=0; else provider_rc=$?; fi
-  [[ -z "$active_credential_fd" ]] || close_private_fd "$active_credential_fd" || provider_rc=1
-  case "$provider_rc" in
-    0) outcome=none ;;
+  if "$wgmanaged_provider_callback" "$active_credential_fd"; then
+    wgmanaged_provider_rc=0
+  else
+    wgmanaged_provider_rc=$?
+  fi
+  [[ -z "$active_credential_fd" ]] ||
+    close_private_fd "$active_credential_fd" || wgmanaged_provider_rc=1
+
+  wgmanaged_clock_epoch_carrier=''
+  if managed_call_without_private_fd "$active_credential_fd" \
+      managed_capture_wall_clock_epoch_closed outcome; then
+    wgmanaged_outcome_now="$wgmanaged_clock_epoch_carrier"
+    wgmanaged_outcome_rc=0
+  else
+    wgmanaged_outcome_rc=1
+  fi
+
+  case "$wgmanaged_provider_rc" in
+    0) wgmanaged_outcome=none ;;
     4)
       case "$MANAGED_API_PROVIDER_FAILURE_CLASS" in
-        ''|auth) outcome=auth ;;
-        device) outcome=device ;;
-        *) outcome=transient ;;
+        ''|auth) wgmanaged_outcome=auth ;;
+        device) wgmanaged_outcome=device ;;
+        *) wgmanaged_outcome=transient ;;
       esac
       ;;
-    5) outcome=rate ;;
-    7) outcome=device ;;
-    *) outcome=transient ;;
+    5) wgmanaged_outcome=rate ;;
+    7) wgmanaged_outcome=device ;;
+    *) wgmanaged_outcome=transient ;;
   esac
-  if [[ "$outcome" == none ]]; then
-    managed_api_record_outcome "$now" none '' '' 0
-  else
-    managed_api_record_outcome "$now" "$outcome" \
-      "$MANAGED_API_PROVIDER_RETRY_AFTER" "$MANAGED_API_PROVIDER_FAILED_SERVER" \
-      "$MANAGED_API_PROVIDER_JITTER"
+  if (( wgmanaged_outcome_rc == 0 )); then
+    if [[ "$wgmanaged_outcome" == none ]]; then
+      managed_api_record_outcome "$wgmanaged_outcome_now" none '' '' 0
+    else
+      managed_api_record_outcome "$wgmanaged_outcome_now" "$wgmanaged_outcome" \
+        "$MANAGED_API_PROVIDER_RETRY_AFTER" "$MANAGED_API_PROVIDER_FAILED_SERVER" \
+        "$MANAGED_API_PROVIDER_JITTER"
+    fi
+    wgmanaged_outcome_rc=$?
   fi
-  outcome_rc=$?
-  if managed_global_api_lock_release; then release_rc=0; else release_rc=$?; fi
-  (( outcome_rc == 0 && release_rc == 0 )) || return 1
-  (( provider_rc == 0 )) || return "$provider_rc"
-  "$downstream_callback"
+  if managed_global_api_lock_release; then
+    wgmanaged_release_rc=0
+  else
+    wgmanaged_release_rc=$?
+  fi
+  (( wgmanaged_outcome_rc == 0 && wgmanaged_release_rc == 0 )) || return 1
+  (( wgmanaged_provider_rc == 0 )) || return "$wgmanaged_provider_rc"
+  "$wgmanaged_downstream_callback"
 }
 
 managed_reconcile_pending() {
