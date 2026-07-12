@@ -242,7 +242,7 @@ validation, and exit codes remain unchanged.
 
 **Verification:** `python3 -m unittest tests.test_airvpn_api.ProfileParsingTests -v`.
 
-- [ ] **Write RED tests.** Add `ProfileParsingTests` with
+- [x] **Write RED tests.** Add `ProfileParsingTests` with
   `test_redacted_real_success_shape_parses`,
   `test_duplicate_sections_fields_and_extra_peer_are_rejected`,
   `test_hooks_saveconfig_unknown_directives_and_shell_syntax_are_rejected`,
@@ -257,9 +257,9 @@ validation, and exit codes remain unchanged.
   `test_list_countries_requires_a_healthy_valid_ipv4_server`, and
   `test_list_countries_rejects_duplicate_conflicting_or_malformed_codes`. Expected output
   is exact `CODE<TAB>name<TAB>count` with no key/header access.
-- [ ] **Verify RED.** Run the class command and require failures for missing
+- [x] **Verify RED.** Run the class command and require failures for missing
   `parse_wireguard_profile` rather than import or fixture errors.
-- [ ] **Implement minimal parser.** Add the `WireGuardProfile` dataclass and a bounded
+- [x] **Implement minimal parser.** Add the `WireGuardProfile` dataclass and a bounded
   64-KiB, 64-line, 1-KiB-line UTF-8 parser. Require one `[Interface]` followed by one
   `[Peer]`; allow `Address`, `PrivateKey`, `MTU`, optional numeric `DNS`, optional validated
   `Table`, then `PublicKey`, `PresharedKey`, `Endpoint`, `AllowedIPs`, and
@@ -267,9 +267,9 @@ validation, and exit codes remain unchanged.
   IPv4 `/32`, numeric endpoint, and `0.0.0.0/0`. Add `list_eligible_countries` over the
   already validated public server list and the `list-countries` subcommand without any
   credential path.
-- [ ] **Verify GREEN.** Run the class command and the complete existing Python test file;
+- [x] **Verify GREEN.** Run the class command and the complete existing Python test file;
   require all prior tests unchanged.
-- [ ] **Commit.** `git commit -m "Validate generated WireGuard profiles"`.
+- [x] **Commit.** `git commit -m "Validate generated WireGuard profiles"`.
 
 ## Task 2: Canonical rendering and identity pinning
 

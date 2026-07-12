@@ -9,7 +9,27 @@
 
 ## Implementation evidence
 
-No production implementation has been accepted yet.
+### Task 1: strict generated-profile boundary
+
+- Accepted implementation commit: `43f04f9f43a3c3416b63d4b94bcf0f2dffff26f3`.
+- RED evidence:
+  - eight parser tests failed only because `parse_wireguard_profile` was absent;
+  - three country-listing tests failed only because `list_eligible_countries` was absent.
+- GREEN evidence:
+  - parser tests: 8/8 passed;
+  - country-listing tests: 3/3 passed;
+  - complete helper suite: 40/40 passed;
+  - `python -m py_compile libexec/airvpn-api`: passed;
+  - Python 3.10 grammar check: passed;
+  - independent mutation probe: 3,810 single-byte adversarial mutations produced only
+    validated profiles or expected `AirVPNAPIError` failures.
+- Independent specification review: approved with no findings.
+- Independent code-quality/security review: approved with no blocking findings.
+- Scope and secret review: only `libexec/airvpn-api` and `tests/test_airvpn_api.py`
+  changed; dummy keys are generated in memory; key-like literal scan and worktree check
+  were clean.
+- Deferred release gate: the helper and its test file exceed 800 lines. Task 14 must make
+  and verify an explicit split decision before release.
 
 ### Isolated baseline
 
