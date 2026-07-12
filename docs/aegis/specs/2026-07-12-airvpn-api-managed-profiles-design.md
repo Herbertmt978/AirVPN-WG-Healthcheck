@@ -1,6 +1,6 @@
 # Design: Dual-Mode AirVPN WireGuard Profile Management
 
-Status: proposed for implementation after user review
+Status: approved for implementation by the repository owner
 Target release: `v1.1.0`
 Date: 2026-07-12
 
@@ -507,11 +507,9 @@ in effect even though the source is public. GitHub documents that an explicit op
 license is required to grant general permission to use, modify, and distribute a project:
 <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository>.
 
-For a public, reusable product, the recommended choice is the MIT License: it is short,
-permissive, and preserves the copyright and warranty disclaimer. Adding any license is a
-separate owner authorization and is not inferred from approval of the technical feature.
-Until a license is selected, release copy must not describe the project as open source or
-invite modification or redistribution.
+The repository owner approved the MIT License on 2026-07-12. The implementation adds the
+standard license text at the repository root, includes it in release packages, and updates
+public documentation and release metadata consistently.
 
 ## Release and deployment acceptance
 
@@ -562,9 +560,9 @@ contract, and a versioned transaction type. After implementation proves the desi
 should record canonical ownership between the Python provider boundary, Bash transaction,
 and guided setup helper, plus the deliberate exclusion of automatic device lifecycle.
 
-## Decision requested
+## Decision recorded
 
-Approve this specification to proceed to a detailed implementation plan and TDD. Approval
-authorizes both public modes, the guided setup helper, API-managed migration of the download
-VM, and a `v1.1.0` release. It does not authorize automatic AirVPN device or port lifecycle.
-The owner must separately approve or decline the recommended MIT License.
+The repository owner approved this specification and the MIT License on 2026-07-12.
+Approval authorizes both public modes, the guided setup helper, API-managed migration of
+the download VM, and a `v1.1.0` release. It does not authorize automatic AirVPN device or
+port lifecycle.
