@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Securely sourced by bin/wg-healthcheck after fixed-path ownership and mode checks.
-# Transaction, persistent-state, and lifecycle command implementations land in later
-# approved slices; this module owns their fail-closed dispatch boundary now.
+# Managed API state, journal, and full-profile transaction owners live here. Public
+# lifecycle command wiring lands in its later approved slice.
 
 managed_file_size() {
   stat -c '%s' -- "$1" 2>/dev/null
@@ -804,6 +804,32 @@ managed_api_state_add_exclusion() {
   MANAGED_API_EXCLUDE_EXPIRIES+=("$expiry")
 }
 
+managed_api_state_remove_exclusion_core() {
+  local name="${1-}" now="${2-}" index found=-1
+  managed_server_name_is_valid "$name" || return 1
+  managed_epoch_is_valid "$now" || return 1
+  managed_api_state_prune "$now" || return 1
+  for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+    if [[ "${MANAGED_API_EXCLUDE_NAMES[$index]}" == "$name" ]]; then
+      found=$index
+      break
+    fi
+  done
+  (( found >= 0 )) || return 1
+  unset "MANAGED_API_EXCLUDE_NAMES[$found]"
+  unset "MANAGED_API_EXCLUDE_EXPIRIES[$found]"
+  MANAGED_API_EXCLUDE_NAMES=("${MANAGED_API_EXCLUDE_NAMES[@]}")
+  MANAGED_API_EXCLUDE_EXPIRIES=("${MANAGED_API_EXCLUDE_EXPIRIES[@]}")
+  MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_OBSERVED_AT="$now"
+  managed_api_state_write
+}
+
+managed_api_state_remove_exclusion() {
+  [[ $# == 2 ]] || return 1
+  managed_api_state_remove_exclusion_core "$1" "$2"
+}
+
 managed_api_exclusion_args_core() {
   local wgmanaged_now="${1:?}" wgmanaged_index
   managed_api_state_prune "$wgmanaged_now" || return 1
@@ -1238,20 +1264,584 @@ managed_run_authenticated_attempt() {
   "$wgmanaged_downstream_callback"
 }
 
+managed_transaction_context_is_safe() {
+  (( ${CONTEXT_LOCKED:-0} == 1 )) && [[ -z "${MANAGED_API_LOCK_FD-}" ]]
+}
+
+managed_docker_available() {
+  command -v docker >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1
+}
+
+managed_docker_command() {
+  local wgmanaged_action="${1-}"
+  [[ $# == 1 ]] || return 1
+  validate_container_name "${QBITTORRENT_CONTAINER-}" || return 1
+  managed_uint_is_canonical "${QBITTORRENT_RESTART_TIMEOUT-}" 300 || return 1
+  (( 10#$QBITTORRENT_RESTART_TIMEOUT >= 1 )) || return 1
+  managed_docker_available || return 1
+  case "$wgmanaged_action" in
+    inspect)
+      timeout "$QBITTORRENT_RESTART_TIMEOUT" docker container inspect \
+        --format '{{.State.Running}}' "$QBITTORRENT_CONTAINER" 2>/dev/null
+      ;;
+    stop)
+      timeout "$QBITTORRENT_RESTART_TIMEOUT" docker container stop \
+        "$QBITTORRENT_CONTAINER" >/dev/null 2>&1
+      ;;
+    start)
+      timeout "$QBITTORRENT_RESTART_TIMEOUT" docker container start \
+        "$QBITTORRENT_CONTAINER" >/dev/null 2>&1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_qbittorrent_state_core() {
+  local wgmanaged_inspected
+  [[ -v wgmanaged_qb_state_carrier ]] || return 1
+  if [[ -z "${QBITTORRENT_CONTAINER-}" ]]; then
+    wgmanaged_qb_state_carrier=unconfigured
+    return 0
+  fi
+  validate_container_name "$QBITTORRENT_CONTAINER" || return 1
+  wgmanaged_inspected="$(managed_docker_command inspect)" || return 1
+  [[ -n "$wgmanaged_inspected" &&
+     "$wgmanaged_inspected" != *$'\r'* &&
+     "$wgmanaged_inspected" != *$'\n'* ]] || return 1
+  case "$wgmanaged_inspected" in
+    true) wgmanaged_qb_state_carrier=running ;;
+    false) wgmanaged_qb_state_carrier=stopped ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_qbittorrent_state() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_qb_state_carrier=''
+  [[ $# == 1 ]] || return 1
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  managed_qbittorrent_state_core || return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_qb_state_carrier"
+}
+
+managed_qbittorrent_ensure_stopped() {
+  local transaction_qb_state=''
+  if ! managed_qbittorrent_state transaction_qb_state; then
+    if [[ -n "${QBITTORRENT_CONTAINER-}" ]] &&
+        validate_container_name "$QBITTORRENT_CONTAINER"; then
+      managed_docker_command stop >/dev/null 2>&1 || return 1
+      managed_qbittorrent_state transaction_qb_state || return 1
+      [[ "$transaction_qb_state" == stopped ]]
+      return
+    fi
+    return 1
+  fi
+  case "$transaction_qb_state" in
+    unconfigured|stopped) return 0 ;;
+    running)
+      managed_docker_command stop || return 1
+      managed_qbittorrent_state transaction_qb_state || return 1
+      [[ "$transaction_qb_state" == stopped ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_wait_for_qbittorrent() {
+  managed_uint_is_canonical "${QBITTORRENT_RESTART_DELAY-}" 300 || return 1
+  sleep "$QBITTORRENT_RESTART_DELAY"
+}
+
+managed_qbittorrent_restore_state() {
+  local wgmanaged_was_running="${1-}" transaction_qb_state=''
+  [[ $# == 1 && ( "$wgmanaged_was_running" == 0 || "$wgmanaged_was_running" == 1 ) ]] ||
+    return 1
+  if [[ "$wgmanaged_was_running" == 0 ]]; then
+    managed_qbittorrent_ensure_stopped
+    return
+  fi
+  if ! managed_qbittorrent_state transaction_qb_state; then
+    managed_qbittorrent_ensure_stopped >/dev/null 2>&1 || true
+    return 1
+  fi
+  case "$transaction_qb_state" in
+    stopped)
+      if ! managed_docker_command start; then
+        managed_qbittorrent_ensure_stopped >/dev/null 2>&1 || true
+        return 1
+      fi
+      ;;
+    running) ;;
+    *)
+      managed_qbittorrent_ensure_stopped >/dev/null 2>&1 || true
+      return 1
+      ;;
+  esac
+  if ! managed_qbittorrent_state transaction_qb_state ||
+      [[ "$transaction_qb_state" != running ]] ||
+      ! managed_wait_for_qbittorrent ||
+      ! qbittorrent_binding_present; then
+    managed_qbittorrent_ensure_stopped >/dev/null 2>&1 || true
+    return 1
+  fi
+}
+
+managed_live_interface_address() {
+  local wgmanaged_raw wgmanaged_addresses
+  wgmanaged_raw="$(ip -o -4 address show dev "$IFACE" scope global 2>/dev/null)" || return 1
+  wgmanaged_addresses="$(awk '$3 == "inet" {print $4}' <<< "$wgmanaged_raw")" || return 1
+  [[ -n "$wgmanaged_addresses" &&
+     "$wgmanaged_addresses" != *$'\r'* &&
+     "$wgmanaged_addresses" != *$'\n'* ]] || return 1
+  printf '%s\n' "$wgmanaged_addresses"
+}
+
+managed_live_peer_public_key() {
+  local wgmanaged_peer
+  wgmanaged_peer="$(wg show "$IFACE" peers 2>/dev/null)" || return 1
+  [[ "$wgmanaged_peer" =~ ^[A-Za-z0-9+/]{43}=$ ]] || return 1
+  printf '%s\n' "$wgmanaged_peer"
+}
+
+managed_verify_live_profile_identity() {
+  local wgmanaged_path="${1:?}" wgmanaged_expected wgmanaged_address
+  local wgmanaged_peer wgmanaged_live_address wgmanaged_live_peer
+  [[ $# == 1 ]] || return 1
+  managed_profile_file_is_secure "$wgmanaged_path" || return 1
+  wgmanaged_expected="$(awk '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      interface_section=($0 ~ /^[[:space:]]*\[Interface\][[:space:]]*$/)
+      peer_section=($0 ~ /^[[:space:]]*\[Peer\][[:space:]]*$/)
+      next
+    }
+    interface_section && /^[[:space:]]*Address[[:space:]]*=/ {
+      address=$0; sub(/^[^=]*=/, "", address)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", address); address_count++
+    }
+    peer_section && /^[[:space:]]*PublicKey[[:space:]]*=/ {
+      peer=$0; sub(/^[^=]*=/, "", peer)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", peer); peer_count++
+    }
+    END {
+      if (address_count != 1 || peer_count != 1) exit 1
+      printf "%s\t%s\n", address, peer
+    }
+  ' "$wgmanaged_path")" || return 1
+  [[ -n "$wgmanaged_expected" &&
+     "$wgmanaged_expected" != *$'\r'* &&
+     "$wgmanaged_expected" != *$'\n'* ]] || return 1
+  IFS=$'\t' read -r wgmanaged_address wgmanaged_peer <<< "$wgmanaged_expected" || return 1
+  [[ "$wgmanaged_address" == */32 &&
+     "$wgmanaged_peer" =~ ^[A-Za-z0-9+/]{43}=$ ]] || return 1
+  validate_ip_address "${wgmanaged_address%/32}" || return 1
+  wgmanaged_live_address="$(managed_live_interface_address)" || return 1
+  wgmanaged_live_peer="$(managed_live_peer_public_key)" || return 1
+  [[ "$wgmanaged_live_address" == "$wgmanaged_address" &&
+     "$wgmanaged_live_peer" == "$wgmanaged_peer" ]]
+}
+
+managed_profile_move() {
+  command mv -fT -- "${1:?}" "${2:?}"
+}
+
+managed_copy_profile_bytes() {
+  command cp -- "${1:?}" "${2:?}"
+}
+
+managed_profile_copy_paths_are_fixed() {
+  local wgmanaged_source="${1:?}" wgmanaged_destination="${2:?}"
+  local wgmanaged_backup="${WG_CONF}.bak-healthcheck"
+  if [[ "$wgmanaged_source" == "$WG_CONF" &&
+        "$wgmanaged_destination" == "$wgmanaged_backup" ]]; then
+    return 0
+  fi
+  if [[ "$wgmanaged_source" == "$wgmanaged_backup" &&
+        "$wgmanaged_destination" == "$WG_CONF" ]]; then
+    return 0
+  fi
+  [[ "$wgmanaged_source" == "$MANAGED_CANDIDATE" &&
+     "$wgmanaged_destination" == "$WG_CONF" ]]
+}
+
+managed_install_profile_atomically() {
+  local wgmanaged_source="${1:?}" wgmanaged_destination="${2:?}"
+  local wgmanaged_expected_digest="${3:?}" wgmanaged_expected_endpoint="${4:?}"
+  local wgmanaged_parent wgmanaged_base wgmanaged_temporary wgmanaged_metadata
+  [[ $# == 4 ]] || return 1
+  managed_transaction_context_is_safe || return 1
+  managed_profile_copy_paths_are_fixed "$wgmanaged_source" "$wgmanaged_destination" ||
+    return 1
+  managed_journal_parent_is_secure || return 1
+  wgmanaged_parent="${WG_CONF%/*}"
+  [[ "${wgmanaged_source%/*}" == "$wgmanaged_parent" &&
+     "${wgmanaged_destination%/*}" == "$wgmanaged_parent" ]] || return 1
+  managed_verify_profile_binding "$wgmanaged_source" "$wgmanaged_expected_digest" \
+    "$wgmanaged_expected_endpoint" || return 1
+  if [[ -e "$wgmanaged_destination" || -L "$wgmanaged_destination" ]]; then
+    managed_profile_file_is_secure "$wgmanaged_destination" || return 1
+  fi
+  wgmanaged_base="${wgmanaged_destination##*/}"
+  wgmanaged_temporary="$(mktemp "$wgmanaged_parent/.${wgmanaged_base}.profile.XXXXXX")" ||
+    return 1
+  if ! chmod 600 -- "$wgmanaged_temporary" ||
+      ! { (( EUID != 0 )) || chown 0:0 -- "$wgmanaged_temporary"; } ||
+      ! managed_copy_profile_bytes "$wgmanaged_source" "$wgmanaged_temporary" ||
+      ! chmod 600 -- "$wgmanaged_temporary" ||
+      ! { (( EUID != 0 )) || chown 0:0 -- "$wgmanaged_temporary"; }; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  wgmanaged_metadata="$(owner_mode "$wgmanaged_temporary")" || {
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  }
+  if [[ "$wgmanaged_metadata" != 0:600 ]] ||
+      ! managed_verify_profile_binding "$wgmanaged_temporary" \
+        "$wgmanaged_expected_digest" "$wgmanaged_expected_endpoint" ||
+      ! managed_sync_file "$wgmanaged_temporary" ||
+      ! managed_profile_move "$wgmanaged_temporary" "$wgmanaged_destination"; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  wgmanaged_temporary=''
+  managed_verify_profile_binding "$wgmanaged_destination" \
+    "$wgmanaged_expected_digest" "$wgmanaged_expected_endpoint" || return 1
+  managed_sync_file "$wgmanaged_destination" || return 1
+  managed_sync_artifact_parent "$wgmanaged_parent"
+}
+
+managed_profiles_are_identical() {
+  local wgmanaged_first="${1:?}" wgmanaged_second="${2:?}"
+  managed_profile_file_is_secure "$wgmanaged_first" || return 1
+  managed_profile_file_is_secure "$wgmanaged_second" || return 1
+  command cmp -s -- "$wgmanaged_first" "$wgmanaged_second"
+}
+
+managed_prepare_profile_backup() {
+  local transaction_active_digest transaction_active_digest_again transaction_old_endpoint
+  local wgmanaged_backup="${WG_CONF}.bak-healthcheck"
+  managed_sha256_file transaction_active_digest "$WG_CONF" || return 1
+  transaction_old_endpoint="$(configured_endpoint "$WG_CONF")" || return 1
+  managed_sha256_file transaction_active_digest_again "$WG_CONF" || return 1
+  [[ "$transaction_active_digest" == "$transaction_active_digest_again" ]] || return 1
+  managed_install_profile_atomically "$WG_CONF" "$wgmanaged_backup" \
+    "$transaction_active_digest" "$transaction_old_endpoint" || return 1
+  managed_profiles_are_identical "$WG_CONF" "$wgmanaged_backup"
+}
+
+managed_ensure_interface_down() {
+  if interface_exists; then
+    run_wg_quick_down || return 1
+    ! interface_exists
+  fi
+}
+
+managed_ensure_interface_up() {
+  ! interface_exists || return 1
+  run_wg_quick_up || return 1
+  interface_exists
+}
+
+managed_verify_profile_network() {
+  local wgmanaged_path="${1:?}" wgmanaged_endpoint="${2:?}"
+  local wgmanaged_verify_speed="${3:-0}"
+  [[ $# == 3 && ( "$wgmanaged_verify_speed" == 0 || "$wgmanaged_verify_speed" == 1 ) ]] ||
+    return 1
+  managed_verify_live_profile_identity "$wgmanaged_path" || return 1
+  verify_tunnel "$wgmanaged_endpoint" || return 1
+  [[ "$wgmanaged_verify_speed" == 0 ]] || verify_post_rotation_speed
+}
+
+managed_unlink_path() {
+  command rm -f -- "${1:?}"
+}
+
+managed_remove_candidate_durable() {
+  local transaction_candidate_class wgmanaged_parent="${WG_CONF%/*}"
+  managed_classify_candidate_profile transaction_candidate_class \
+    "$MANAGED_JOURNAL_CANDIDATE_SHA256" || return 1
+  case "$transaction_candidate_class" in
+    missing) return 0 ;;
+    present)
+      managed_verify_profile_binding "$MANAGED_CANDIDATE" \
+        "$MANAGED_JOURNAL_CANDIDATE_SHA256" "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" ||
+        return 1
+      managed_unlink_path "$MANAGED_CANDIDATE" || return 1
+      managed_sync_artifact_parent "$wgmanaged_parent"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_remove_pending_journal_durable() {
+  local wgmanaged_parent
+  managed_journal_load || return 1
+  wgmanaged_parent="${ROTATION_PENDING%/*}"
+  managed_unlink_path "$ROTATION_PENDING" || return 1
+  if managed_sync_journal_parent "$wgmanaged_parent"; then
+    return 0
+  fi
+  _managed_journal_commit >/dev/null 2>&1 || true
+  return 1
+}
+
+managed_rollback_failure() {
+  local wgmanaged_reason="${1:-managed_profile_rollback_failed}"
+  managed_qbittorrent_ensure_stopped >/dev/null 2>&1 || true
+  write_status failed "$wgmanaged_reason" || true
+  log "Managed-profile rollback is incomplete; recovery state was retained"
+  return 1
+}
+
+managed_rollback_profile_transaction() {
+  local wgmanaged_cleanup_allowed="${1:-1}"
+  local transaction_backup_digest transaction_backup_endpoint
+  [[ $# -le 1 && ( "$wgmanaged_cleanup_allowed" == 0 || "$wgmanaged_cleanup_allowed" == 1 ) ]] ||
+    return 1
+  managed_transaction_context_is_safe || return 1
+  managed_qbittorrent_ensure_stopped || {
+    managed_rollback_failure managed_rotation_qb_stop_failed
+    return 1
+  }
+  managed_journal_load || {
+    managed_rollback_failure invalid_managed_rotation_journal_or_permissions
+    return 1
+  }
+  _managed_journal_recovery_state_is_consistent || {
+    managed_rollback_failure managed_rotation_digest_or_artifact_mismatch
+    return 1
+  }
+  transaction_backup_digest="$MANAGED_JOURNAL_BACKUP_SHA256"
+  transaction_backup_endpoint="$MANAGED_JOURNAL_OLD_ENDPOINT"
+  managed_verify_profile_binding "${WG_CONF}.bak-healthcheck" \
+    "$transaction_backup_digest" "$transaction_backup_endpoint" || {
+    managed_rollback_failure managed_rotation_backup_revalidation_failed
+    return 1
+  }
+  managed_ensure_interface_down || {
+    managed_rollback_failure managed_rotation_candidate_down_failed
+    return 1
+  }
+  managed_verify_profile_binding "${WG_CONF}.bak-healthcheck" \
+    "$transaction_backup_digest" "$transaction_backup_endpoint" || {
+    managed_rollback_failure managed_rotation_backup_revalidation_failed
+    return 1
+  }
+  managed_install_profile_atomically "${WG_CONF}.bak-healthcheck" "$WG_CONF" \
+    "$transaction_backup_digest" "$transaction_backup_endpoint" || {
+    managed_rollback_failure managed_rotation_backup_restore_failed
+    return 1
+  }
+  managed_profiles_are_identical "${WG_CONF}.bak-healthcheck" "$WG_CONF" || {
+    managed_rollback_failure managed_rotation_backup_byte_comparison_failed
+    return 1
+  }
+  managed_ensure_interface_up || {
+    managed_rollback_failure managed_rotation_old_tunnel_start_failed
+    return 1
+  }
+  managed_verify_profile_network "$WG_CONF" "$transaction_backup_endpoint" 0 || {
+    managed_rollback_failure managed_rotation_old_network_verification_failed
+    return 1
+  }
+  if [[ "$wgmanaged_cleanup_allowed" == 0 ]]; then
+    managed_rollback_failure managed_rotation_exclusion_not_durable
+    return 1
+  fi
+  managed_qbittorrent_restore_state "$MANAGED_JOURNAL_QB_WAS_RUNNING" || {
+    managed_rollback_failure managed_rotation_qb_restore_or_binding_failed
+    return 1
+  }
+  managed_verify_profile_binding "$WG_CONF" \
+    "$transaction_backup_digest" "$transaction_backup_endpoint" || {
+    managed_rollback_failure managed_rotation_restored_profile_changed
+    return 1
+  }
+  managed_profiles_are_identical "${WG_CONF}.bak-healthcheck" "$WG_CONF" || {
+    managed_rollback_failure managed_rotation_restored_bytes_changed
+    return 1
+  }
+  managed_remove_candidate_durable || {
+    managed_rollback_failure managed_rotation_candidate_cleanup_failed
+    return 1
+  }
+  write_status recovered managed_profile_rollback_verified || {
+    managed_rollback_failure managed_rotation_status_write_failed
+    return 1
+  }
+  managed_remove_pending_journal_durable || {
+    managed_rollback_failure managed_rotation_marker_cleanup_failed
+    return 1
+  }
+  RECONCILED_PENDING=1
+  log "Managed-profile rollback verified at $transaction_backup_endpoint"
+}
+
+managed_preexclude_candidate() {
+  local wgmanaged_server="${1:?}" wgmanaged_now
+  wgmanaged_now="$(current_epoch)" || return 1
+  managed_epoch_is_valid "$wgmanaged_now" || return 1
+  managed_api_state_add_exclusion "$wgmanaged_server" "$wgmanaged_now" || return 1
+  managed_api_state_write
+}
+
+managed_refresh_exclusion_and_rollback() {
+  local wgmanaged_server="${1:?}" wgmanaged_now wgmanaged_durable=1
+  wgmanaged_now="$(current_epoch)" || wgmanaged_durable=0
+  if (( wgmanaged_durable == 1 )); then
+    managed_epoch_is_valid "$wgmanaged_now" || wgmanaged_durable=0
+  fi
+  if (( wgmanaged_durable == 1 )); then
+    managed_api_state_add_exclusion "$wgmanaged_server" "$wgmanaged_now" ||
+      wgmanaged_durable=0
+  fi
+  if (( wgmanaged_durable == 1 )); then
+    managed_api_state_write || wgmanaged_durable=0
+  fi
+  managed_rollback_profile_transaction "$wgmanaged_durable" || true
+  return 1
+}
+
+managed_abort_profile_transaction() {
+  local wgmanaged_candidate_failure="${1:?}" wgmanaged_server="${2:?}"
+  if [[ "$wgmanaged_candidate_failure" == 1 ]]; then
+    managed_refresh_exclusion_and_rollback "$wgmanaged_server"
+  else
+    managed_rollback_profile_transaction 1 || true
+    return 1
+  fi
+}
+
+managed_profile_transaction() {
+  local wgmanaged_server="${1-}" wgmanaged_verify_speed="${2-}"
+  local transaction_qb_state transaction_qb_was_running transaction_candidate_digest
+  local transaction_candidate_endpoint transaction_cleanup_now
+  [[ $# == 2 ]] || return 1
+  managed_server_name_is_valid "$wgmanaged_server" || return 1
+  [[ "$wgmanaged_verify_speed" == 0 || "$wgmanaged_verify_speed" == 1 ]] || return 1
+  managed_transaction_context_is_safe || return 1
+  managed_sha256_file transaction_candidate_digest "$MANAGED_CANDIDATE" || return 1
+  transaction_candidate_endpoint="$(configured_endpoint "$MANAGED_CANDIDATE")" || return 1
+  managed_verify_profile_binding "$MANAGED_CANDIDATE" "$transaction_candidate_digest" \
+    "$transaction_candidate_endpoint" || return 1
+  managed_preexclude_candidate "$wgmanaged_server" || return 1
+  managed_qbittorrent_state transaction_qb_state || return 1
+  case "$transaction_qb_state" in
+    running) transaction_qb_was_running=1 ;;
+    stopped|unconfigured) transaction_qb_was_running=0 ;;
+    *) return 1 ;;
+  esac
+  managed_prepare_profile_backup || return 1
+  if ! managed_journal_prepare "$transaction_qb_was_running"; then
+    if [[ -e "$ROTATION_PENDING" || -L "$ROTATION_PENDING" ]]; then
+      managed_rollback_profile_transaction 1 || true
+    fi
+    return 1
+  fi
+  managed_qbittorrent_ensure_stopped || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_journal_transition client-stopped || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_verify_profile_binding "$WG_CONF" "$MANAGED_JOURNAL_BACKUP_SHA256" \
+    "$MANAGED_JOURNAL_OLD_ENDPOINT" || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_ensure_interface_down || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_journal_transition tunnel-down || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_verify_profile_binding "$MANAGED_CANDIDATE" \
+    "$MANAGED_JOURNAL_CANDIDATE_SHA256" "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_install_profile_atomically "$MANAGED_CANDIDATE" "$WG_CONF" \
+    "$MANAGED_JOURNAL_CANDIDATE_SHA256" "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_journal_transition candidate-installed || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_ensure_interface_up || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_journal_transition candidate-up || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_verify_profile_network "$WG_CONF" "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" \
+    "$wgmanaged_verify_speed" || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_qbittorrent_restore_state "$MANAGED_JOURNAL_QB_WAS_RUNNING" || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_journal_transition verified || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  write_status recovered managed_profile_rotation_verified || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  write_stamp "$ROTATE_STAMP" || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_verify_profile_binding "$WG_CONF" "$MANAGED_JOURNAL_CANDIDATE_SHA256" \
+    "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_remove_candidate_durable || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_remove_pending_journal_durable || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  transaction_cleanup_now="$(current_epoch)" || transaction_cleanup_now=''
+  if [[ -n "$transaction_cleanup_now" ]] &&
+      managed_epoch_is_valid "$transaction_cleanup_now"; then
+    managed_api_state_remove_exclusion "$wgmanaged_server" "$transaction_cleanup_now" ||
+      log "Committed candidate remains conservatively excluded until expiry"
+  else
+    log "Committed candidate remains conservatively excluded until expiry"
+  fi
+}
+
 managed_reconcile_pending() {
+  # Sourced runtime consumes this reconciliation signal after managed dispatch returns.
+  # shellcheck disable=SC2034
+  RECONCILED_PENDING=0
+  managed_transaction_context_is_safe || return 1
+  managed_qbittorrent_ensure_stopped || {
+    managed_rollback_failure managed_rotation_qb_stop_failed
+    return 1
+  }
   if ! managed_journal_load; then
-    write_status failed invalid_managed_rotation_journal_or_permissions || true
-    log "Managed-profile journal validation failed; recovery state was retained"
+    managed_rollback_failure invalid_managed_rotation_journal_or_permissions
     return 1
   fi
   if ! _managed_journal_recovery_state_is_consistent; then
-    write_status failed managed_rotation_digest_or_artifact_mismatch || true
-    log "Managed-profile digest classification failed; recovery state was retained"
+    managed_rollback_failure managed_rotation_digest_or_artifact_mismatch
     return 1
   fi
-  write_status failed managed_rotation_requires_verified_rollback || true
-  log "Managed-profile recovery state is valid and retained for verified rollback"
-  return 1
+  managed_rollback_profile_transaction 1
 }
 
 managed_dispatch_command() {

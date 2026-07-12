@@ -1833,6 +1833,18 @@ require_task6_contract() {
   done
 }
 
+require_task7_contract() {
+  local function_name
+  for function_name in \
+      managed_qbittorrent_state managed_qbittorrent_ensure_stopped \
+      managed_qbittorrent_restore_state managed_verify_live_profile_identity \
+      managed_install_profile_atomically managed_profile_transaction \
+      managed_rollback_profile_transaction managed_api_state_remove_exclusion; do
+    declare -F "$function_name" >/dev/null ||
+      fail "managed module must export Task 7 function $function_name" || return 1
+  done
+}
+
 write_managed_candidate_fixture() {
   local endpoint="${1:-198.51.100.20:1637}"
   printf '%s\n' \
@@ -1840,7 +1852,7 @@ write_managed_candidate_fixture() {
     'Address = 192.0.2.2/32' \
     'PrivateKey = fixture-old-interface-value' \
     '[Peer]' \
-    'PublicKey = fixture-new-peer-value' \
+    'PublicKey = BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=' \
     'PresharedKey = fixture-new-preshared-value' \
     "Endpoint = $endpoint" \
     'AllowedIPs = 0.0.0.0/0' > "$MANAGED_CANDIDATE"
@@ -1864,7 +1876,7 @@ setup_managed_journal_fixture() {
     'Address = 192.0.2.2/32' \
     'PrivateKey = fixture-old-interface-value' \
     '[Peer]' \
-    'PublicKey = fixture-old-peer-value' \
+    'PublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' \
     'PresharedKey = fixture-old-preshared-value' \
     'Endpoint = 192.0.2.10:1637' \
     'AllowedIPs = 0.0.0.0/0' > "$WG_CONF"
@@ -2314,68 +2326,705 @@ test_managed_journal_rejects_digest_bound_false_endpoints_before_transition_or_r
   done
 }
 
-test_managed_reconciliation_retains_every_unresolved_v2_shape_for_task7() {
-  local rc active_before candidate_before
+transaction_phase() {
+  local phase
+  if [[ ! -f "${ROTATION_PENDING:-}" ]]; then
+    printf 'none\n'
+    return 0
+  fi
+  phase="$(sed -n 's/^phase=//p' "$ROTATION_PENDING")" || return 1
+  [[ -n "$phase" && "$phase" != *$'\n'* ]] || return 1
+  printf '%s\n' "$phase"
+}
+
+transaction_event() {
+  printf '%s\n' "$1" >> "$TRANSACTION_EVENTS"
+}
+
+transaction_should_fail() {
+  local action="${1:?}"
+  [[ "${TRANSACTION_FAIL_ACTION:-}" == "$action" ]] || return 1
+  if [[ "${TRANSACTION_FAIL_REMAINING:-1}" == -1 ]]; then
+    return 0
+  fi
+  (( TRANSACTION_FAIL_REMAINING > 0 )) || return 1
+  TRANSACTION_FAIL_REMAINING=$((TRANSACTION_FAIL_REMAINING - 1))
+}
+
+event_line_number() {
+  local needle="${1:?}" line
+  line="$(grep -n -m1 -F -- "$needle" "$TRANSACTION_EVENTS" 2>/dev/null)" || return 1
+  printf '%s\n' "${line%%:*}"
+}
+
+assert_event_before() {
+  local first="${1:?}" second="${2:?}" message="${3:-events are out of order}"
+  local first_line second_line
+  first_line="$(event_line_number "$first")" || fail "$message (missing '$first')" || return 1
+  second_line="$(event_line_number "$second")" || fail "$message (missing '$second')" || return 1
+  (( 10#$first_line < 10#$second_line )) ||
+    fail "$message ('$first' at $first_line, '$second' at $second_line)"
+}
+
+setup_managed_transaction_fixture() {
   setup_managed_journal_fixture || return 1
-  managed_journal_fixture_digests || return 1
-  managed_journal_prepare 1 || return 1
-  active_before="$(<"$WG_CONF")"
-  candidate_before="$(<"$MANAGED_CANDIDATE")"
-  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
-  assert_eq 1 "$rc" "Task 6 must fail closed until Task 7 owns verified rollback" || return 1
+  require_task7_contract || return 1
+  TRANSACTION_EVENTS="$TEST_TMP/transaction-events"
+  : > "$TRANSACTION_EVENTS"
+  QBITTORRENT_CONTAINER=qbittorrent
+  QBITTORRENT_LISTEN_IP=192.0.2.2
+  QBITTORRENT_LISTEN_PORT=6881
+  QBITTORRENT_PROCESS_NAME=qbittorrent-nox
+  QBITTORRENT_RESTART_DELAY=0
+  QBITTORRENT_RESTART_TIMEOUT=10
+  ROTATE_STAMP="$TEST_TMP/run/wg-healthcheck/wg0.last_rotate"
+  MANAGED_API_LOCK_FD=''
+  TRANSACTION_QB_STATE=running
+  TRANSACTION_RUNTIME_ENDPOINT=192.0.2.10:1637
+  TRANSACTION_FAIL_ACTION=''
+  TRANSACTION_FAIL_REMAINING=1
+  TRANSACTION_EXCLUSION_DURABLE=1
+
+  managed_docker_available() { return 0; }
+  managed_docker_command() {
+    local action="${1:?}"
+    case "$action" in
+      inspect)
+        transaction_event "qb-inspect:$(transaction_phase):$TRANSACTION_QB_STATE"
+        transaction_should_fail inspect && return 1
+        case "$TRANSACTION_QB_STATE" in
+          running) printf 'true\n' ;;
+          stopped) printf 'false\n' ;;
+          *) return 1 ;;
+        esac
+        ;;
+      stop)
+        transaction_event "qb-stop:$(transaction_phase)"
+        transaction_should_fail stop && return 1
+        TRANSACTION_QB_STATE=stopped
+        ;;
+      start)
+        transaction_event "qb-start:$(transaction_phase)"
+        transaction_should_fail start && return 1
+        TRANSACTION_QB_STATE=running
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  managed_wait_for_qbittorrent() { return 0; }
+  interface_exists() { [[ -n "$TRANSACTION_RUNTIME_ENDPOINT" ]]; }
+  run_wg_quick_down() {
+    transaction_event "wg-down:$(transaction_phase):$(configured_endpoint "$WG_CONF")"
+    transaction_should_fail down && return 1
+    TRANSACTION_RUNTIME_ENDPOINT=''
+  }
+  run_wg_quick_up() {
+    local configured
+    configured="$(configured_endpoint "$WG_CONF")" || return 1
+    transaction_event "wg-up:$(transaction_phase):$configured"
+    if [[ "$configured" == 192.0.2.10:1637 ]]; then
+      transaction_should_fail rollback-up && return 1
+    else
+      transaction_should_fail up && return 1
+    fi
+    TRANSACTION_RUNTIME_ENDPOINT="$configured"
+  }
+  managed_verify_live_profile_identity() {
+    local endpoint
+    endpoint="$(configured_endpoint "${1:?}")" || return 1
+    transaction_event "identity:$(transaction_phase):$endpoint"
+    if [[ "$endpoint" == 192.0.2.10:1637 ]]; then
+      transaction_should_fail rollback-identity && return 1
+    else
+      transaction_should_fail identity && return 1
+    fi
+    [[ "$TRANSACTION_RUNTIME_ENDPOINT" == "$endpoint" ]]
+  }
+  verify_tunnel() {
+    local expected="${1:?}"
+    transaction_event "network:$(transaction_phase):$expected"
+    if [[ "$expected" == 192.0.2.10:1637 ]]; then
+      transaction_should_fail rollback-network && return 1
+    else
+      transaction_should_fail network && return 1
+    fi
+    [[ "$TRANSACTION_RUNTIME_ENDPOINT" == "$expected" ]]
+  }
+  verify_post_rotation_speed() {
+    transaction_event "speed:$(transaction_phase)"
+    ! transaction_should_fail speed
+  }
+  qbittorrent_binding_present() {
+    transaction_event "binding:$(transaction_phase):$TRANSACTION_QB_STATE:$TRANSACTION_RUNTIME_ENDPOINT"
+    transaction_should_fail binding && return 1
+    [[ "$TRANSACTION_QB_STATE" == running && -n "$TRANSACTION_RUNTIME_ENDPOINT" ]]
+  }
+  managed_profile_move() {
+    local source="${1:?}" destination="${2:?}"
+    if [[ "$destination" == "$WG_CONF" ]]; then
+      transaction_event "profile-move:$(transaction_phase):$(configured_endpoint "$source")"
+      transaction_should_fail install && return 1
+    fi
+    command mv -fT -- "$source" "$destination"
+  }
+  managed_journal_move() {
+    local source="${1:?}" destination="${2:?}" phase
+    phase="$(sed -n 's/^phase=//p' "$source")" || return 1
+    transaction_event "journal:$phase"
+    transaction_should_fail "journal-$phase" && return 1
+    command mv -fT -- "$source" "$destination"
+  }
+  managed_unlink_path() {
+    local path="${1:?}"
+    if [[ "$path" == "$MANAGED_CANDIDATE" ]]; then
+      transaction_event "candidate-delete:$(transaction_phase)"
+      transaction_should_fail candidate-delete && return 1
+    elif [[ "$path" == "$ROTATION_PENDING" ]]; then
+      transaction_event "marker-delete:$(transaction_phase)"
+      transaction_should_fail marker-delete && return 1
+    fi
+    command rm -f -- "$path"
+  }
+  write_stamp() {
+    transaction_event "stamp:$(transaction_phase)"
+    transaction_should_fail stamp && return 1
+    printf '1000\n' > "${1:?}"
+  }
+  write_status() {
+    transaction_event "status:$(transaction_phase):${1:?}:${2-}"
+    transaction_should_fail status && return 1
+    return 0
+  }
+  current_epoch() { printf '1000\n'; }
+  managed_api_state_add_exclusion() {
+    transaction_event "exclude-add:${1:?}:${2:?}"
+    (( TRANSACTION_EXCLUSION_DURABLE == 1 ))
+  }
+  managed_api_state_write() {
+    transaction_event 'exclude-write'
+    (( TRANSACTION_EXCLUSION_DURABLE == 1 ))
+  }
+  managed_api_state_remove_exclusion_core() {
+    transaction_event "exclude-remove:${1:?}:${2:?}"
+    return 0
+  }
+}
+
+test_managed_qbittorrent_state_is_exact_and_fail_closed() {
+  local state rc
+  source_managed_contract || return 1
+  require_task7_contract || return 1
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  QBITTORRENT_RESTART_TIMEOUT=10
+  QBITTORRENT_CONTAINER=''
+  managed_docker_available() { printf 'unexpected\n' >> "$TEST_TMP/docker-events"; return 0; }
+  managed_docker_command() { printf 'unexpected\n' >> "$TEST_TMP/docker-events"; return 1; }
+  : > "$TEST_TMP/docker-events"
+  managed_qbittorrent_state state || return 1
+  assert_eq unconfigured "$state" "empty qB configuration must be explicit" || return 1
+  assert_eq '' "$(<"$TEST_TMP/docker-events")" "unconfigured qB must not invoke Docker" || return 1
+
+  QBITTORRENT_CONTAINER=qbittorrent
+  validate_container_name "$QBITTORRENT_CONTAINER" || return 1
+  managed_docker_available() { return 0; }
+  managed_docker_command() {
+    case "${QB_INSPECT_RESULT:?}" in
+      true|false) printf '%s\n' "$QB_INSPECT_RESULT" ;;
+      multiline) printf 'true\nfalse\n' ;;
+      whitespace) printf ' true\n' ;;
+      missing) return 1 ;;
+    esac
+  }
+  QB_INSPECT_RESULT=true
+  managed_qbittorrent_state state || return 1
+  assert_eq running "$state" "Docker true must map to running" || return 1
+  QB_INSPECT_RESULT=false
+  managed_qbittorrent_state state || return 1
+  assert_eq stopped "$state" "Docker false must map to stopped" || return 1
+  for QB_INSPECT_RESULT in multiline whitespace missing; do
+    state=sentinel
+    set +e; managed_qbittorrent_state state >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$QB_INSPECT_RESULT inspect shape must fail closed" || return 1
+    assert_eq sentinel "$state" "failed inspect must not overwrite the caller output" || return 1
+  done
+}
+
+test_managed_live_identity_requires_exact_address_and_peer_key() {
+  local rc
+  setup_managed_journal_fixture || return 1
+  require_task7_contract || return 1
+  LIVE_ADDRESS=192.0.2.2/32
+  LIVE_PEER=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=
+  managed_live_interface_address() { printf '%s\n' "$LIVE_ADDRESS"; }
+  managed_live_peer_public_key() { printf '%s\n' "$LIVE_PEER"; }
+  managed_verify_live_profile_identity "$MANAGED_CANDIDATE" ||
+    fail "matching live identity must pass" || return 1
+
+  LIVE_ADDRESS=192.0.2.3/32
+  set +e; managed_verify_live_profile_identity "$MANAGED_CANDIDATE" >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "changed live interface address must fail" || return 1
+  LIVE_ADDRESS=192.0.2.2/32
+  LIVE_PEER=CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=
+  set +e; managed_verify_live_profile_identity "$MANAGED_CANDIDATE" >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "changed live peer key must fail"
+}
+
+test_managed_atomic_profile_install_is_digest_bound_and_durable() {
+  local digest endpoint rc actual_mode actual_owner
+  local -a events=()
+  setup_managed_journal_fixture || return 1
+  require_task7_contract || return 1
+  managed_sha256_file digest "$MANAGED_CANDIDATE" || return 1
+  endpoint="$(configured_endpoint "$MANAGED_CANDIDATE")" || return 1
+  : > "$TEST_TMP/install-events"
+  managed_copy_profile_bytes() {
+    printf 'copy:%s:%s\n' "$1" "$2" >> "$TEST_TMP/install-events"
+    command cp -- "$1" "$2"
+  }
+  managed_sync_file() { printf 'sync:%s:%s\n' "$1" "$(stat -c '%a' "$1")" >> "$TEST_TMP/install-events"; }
+  managed_profile_move() { printf 'move:%s:%s\n' "$1" "$2" >> "$TEST_TMP/install-events"; command mv -fT -- "$1" "$2"; }
+  managed_sync_artifact_parent() { printf 'directory:%s\n' "$1" >> "$TEST_TMP/install-events"; }
+
+  managed_install_profile_atomically "$MANAGED_CANDIDATE" "$WG_CONF" "$digest" "$endpoint" || return 1
+  mapfile -t events < "$TEST_TMP/install-events"
+  assert_eq 5 "${#events[@]}" "install must expose five ordered copy/durability effects" || return 1
+  assert_contains 'copy:' "${events[0]}" "install must copy into a private temporary first" || return 1
+  assert_contains 'sync:' "${events[1]}" "temporary must be synced before rename" || return 1
+  assert_contains ':600' "${events[1]}" "temporary must be mode 0600 before sync" || return 1
+  assert_contains 'move:' "${events[2]}" "atomic rename must follow temporary verification" || return 1
+  assert_eq "sync:$WG_CONF:600" "${events[3]}" "installed active profile must be synced" || return 1
+  assert_eq "directory:${WG_CONF%/*}" "${events[4]}" "profile parent must be synced last" || return 1
+  managed_verify_profile_binding "$WG_CONF" "$digest" "$endpoint" || return 1
+  cmp -s -- "$MANAGED_CANDIDATE" "$WG_CONF" || fail "candidate install must preserve exact bytes" || return 1
+  actual_mode="$(stat -c '%a' "$WG_CONF")" || return 1
+  assert_eq 600 "$actual_mode" "installed profile must be mode 0600" || return 1
+  if [[ "$(uname -s)" == Linux && "$(id -u)" == 0 ]]; then
+    actual_owner="$(stat -c '%u' "$WG_CONF")" || return 1
+    assert_eq 0 "$actual_owner" "installed profile must be root-owned" || return 1
+  fi
+
+  write_managed_candidate_fixture 203.0.113.20:1637
+  chmod 600 -- "$MANAGED_CANDIDATE"
+  set +e
+  managed_install_profile_atomically "$MANAGED_CANDIDATE" "$WG_CONF" "$digest" "$endpoint" >/dev/null 2>&1
+  rc=$?
+  set +e
+  assert_eq 1 "$rc" "changed staged candidate must fail immediately before install" || return 1
+  managed_verify_profile_binding "$WG_CONF" "$digest" "$endpoint"
+}
+
+test_managed_profile_transaction_orders_every_qb_and_tunnel_effect() {
+  local candidate_digest events
+  setup_managed_transaction_fixture || return 1
+  managed_sha256_file candidate_digest "$MANAGED_CANDIDATE" || return 1
+  managed_profile_transaction Alpha-1 1 || return 1
+  events="$(<"$TRANSACTION_EVENTS")"
+  assert_event_before 'exclude-write' 'journal:prepared' "candidate exclusion must be durable before prepared" || return 1
+  assert_event_before 'journal:prepared' 'qb-stop:prepared' "prepared must precede qB stop" || return 1
+  assert_event_before 'qb-stop:prepared' 'journal:client-stopped' "qB stop must precede client-stopped" || return 1
+  assert_event_before 'journal:client-stopped' 'wg-down:client-stopped:192.0.2.10:1637' "old profile must remain installed for down" || return 1
+  assert_event_before 'wg-down:client-stopped:192.0.2.10:1637' 'journal:tunnel-down' "down must precede tunnel-down" || return 1
+  assert_event_before 'journal:tunnel-down' 'profile-move:tunnel-down:198.51.100.20:1637' "candidate install must follow tunnel-down" || return 1
+  assert_event_before 'profile-move:tunnel-down:198.51.100.20:1637' 'journal:candidate-installed' "durable install must precede candidate-installed" || return 1
+  assert_event_before 'journal:candidate-installed' 'wg-up:candidate-installed:198.51.100.20:1637' "candidate-installed must precede up" || return 1
+  assert_event_before 'wg-up:candidate-installed:198.51.100.20:1637' 'journal:candidate-up' "up must precede candidate-up" || return 1
+  assert_event_before 'journal:candidate-up' 'identity:candidate-up:198.51.100.20:1637' "live identity must follow candidate-up" || return 1
+  assert_event_before 'identity:candidate-up:198.51.100.20:1637' 'network:candidate-up:198.51.100.20:1637' "identity must precede tunnel/egress verification" || return 1
+  assert_event_before 'network:candidate-up:198.51.100.20:1637' 'speed:candidate-up' "network must precede optional speed" || return 1
+  assert_event_before 'speed:candidate-up' 'qb-start:candidate-up' "qB must start only after all network checks" || return 1
+  assert_event_before 'qb-start:candidate-up' 'binding:candidate-up:running:198.51.100.20:1637' "running state must precede TCP/UDP ownership proof" || return 1
+  assert_event_before 'binding:candidate-up:running:198.51.100.20:1637' 'journal:verified' "binding proof must precede verified" || return 1
+  assert_event_before 'journal:verified' 'status:verified:recovered:managed_profile_rotation_verified' "status follows verified" || return 1
+  assert_event_before 'status:verified:recovered:managed_profile_rotation_verified' 'stamp:verified' "cooldown follows status" || return 1
+  assert_event_before 'stamp:verified' 'candidate-delete:verified' "candidate cleanup follows success recording" || return 1
+  assert_event_before 'candidate-delete:verified' 'marker-delete:verified' "marker removal must be last transaction effect" || return 1
+  assert_event_before 'marker-delete:verified' 'exclude-remove:Alpha-1:1000' "pre-exclusion clears only after marker commit" || return 1
+  [[ ! -e "$ROTATION_PENDING" && ! -e "$MANAGED_CANDIDATE" ]] ||
+    fail "successful transaction must clean candidate and marker" || return 1
+  managed_verify_profile_binding "$WG_CONF" "$candidate_digest" 198.51.100.20:1637 || return 1
+  assert_eq running "$TRANSACTION_QB_STATE" "previously running qB must be restored" || return 1
+
+  setup_managed_transaction_fixture || return 1
+  TRANSACTION_QB_STATE=stopped
+  managed_profile_transaction Alpha-1 0 || return 1
+  events="$(<"$TRANSACTION_EVENTS")"
+  assert_not_contains 'qb-stop:' "$events" "previously stopped qB must not be stopped redundantly" || return 1
+  assert_not_contains 'qb-start:' "$events" "previously stopped qB must remain stopped" || return 1
+  assert_not_contains 'binding:' "$events" "previously stopped qB needs no listener ownership proof" || return 1
+  assert_eq stopped "$TRANSACTION_QB_STATE" "stopped intent must be preserved" || return 1
+
+  setup_managed_transaction_fixture || return 1
+  QBITTORRENT_CONTAINER=''
+  TRANSACTION_QB_STATE=stopped
+  managed_profile_transaction Alpha-1 0 || return 1
+  events="$(<"$TRANSACTION_EVENTS")"
+  assert_not_contains 'qb-' "$events" "unconfigured qB must have no Docker effects"
+}
+
+test_managed_candidate_exclusion_removal_is_exact_and_durable() {
+  local key_fd
+  source_managed_contract || return 1
+  require_task7_contract || return 1
+  setup_api_state_fixture || return 1
+  managed_api_state_defaults 1000 || return 1
+  exec {key_fd}<"$AIRVPN_API_KEY_FILE" || return 1
+  managed_api_state_refresh_identity 1000 "$key_fd" || { exec {key_fd}<&-; return 1; }
+  exec {key_fd}<&-
+  managed_api_state_add_exclusion Alpha-1 1000 || return 1
+  managed_api_state_add_exclusion Beta-2 1000 || return 1
+  managed_api_state_write || return 1
+  managed_api_state_remove_exclusion Alpha-1 1001 || return 1
+  managed_api_state_load 1001 || return 1
+  assert_eq 1 "${#MANAGED_API_EXCLUDE_NAMES[@]}" "remove must retain unrelated exclusions" || return 1
+  assert_eq Beta-2 "${MANAGED_API_EXCLUDE_NAMES[0]}" "remove must delete only the exact server" || return 1
+  if grep -F 'Alpha-1' "$AIRVPN_API_STATE_FILE" >/dev/null; then
+    fail "removed exclusion must not remain in durable state" || return 1
+  fi
+  grep -Fx 'exclude_01=Beta-2,22600' "$AIRVPN_API_STATE_FILE" >/dev/null ||
+    fail "unrelated exclusion must remain durable"
+}
+
+test_managed_transaction_context_and_preexclusion_fail_before_mutation() {
+  local rc events backup_before
+  setup_managed_transaction_fixture || return 1
+  backup_before="$(sha256sum "${WG_CONF}.bak-healthcheck")" || return 1
+  CONTEXT_LOCKED=0
+  set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "transaction must require the interface lock" || return 1
+  assert_eq '' "$(<"$TRANSACTION_EVENTS")" "missing interface lock must precede every effect" || return 1
+
+  CONTEXT_LOCKED=1
+  MANAGED_API_LOCK_FD=11
+  set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "transaction must require the global API lock to be released" || return 1
+  assert_eq '' "$(<"$TRANSACTION_EVENTS")" "held global API lock must precede every effect" || return 1
+
+  MANAGED_API_LOCK_FD=''
+  managed_api_state_write() {
+    transaction_event 'exclude-write'
+    return 1
+  }
+  set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "pre-exclusion persistence failure must abort" || return 1
+  events="$(<"$TRANSACTION_EVENTS")"
+  assert_eq $'exclude-add:Alpha-1:1000\nexclude-write' "$events" \
+    "pre-exclusion failure must be the only attempted effect" || return 1
+  [[ ! -e "$ROTATION_PENDING" ]] || fail "pre-exclusion failure must not create a journal" || return 1
+  assert_eq "$backup_before" "$(sha256sum "${WG_CONF}.bak-healthcheck")" \
+    "pre-exclusion failure must not rewrite the backup" || return 1
+  assert_eq 192.0.2.10:1637 "$(configured_endpoint "$WG_CONF")" \
+    "pre-exclusion failure must not mutate the active profile"
+}
+
+test_managed_stop_failure_aborts_before_tunnel_downtime() {
+  local rc events
+  setup_managed_transaction_fixture || return 1
+  TRANSACTION_FAIL_ACTION=stop
+  TRANSACTION_FAIL_REMAINING=-1
+  set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "qB stop failure must fail the candidate transaction" || return 1
+  events="$(<"$TRANSACTION_EVENTS")"
+  assert_contains 'qb-stop:prepared' "$events" "running qB must be stopped after prepared" || return 1
+  assert_not_contains 'wg-down:' "$events" "qB stop failure must precede all tunnel downtime" || return 1
+  assert_not_contains 'profile-move:' "$events" "qB stop failure must precede candidate install" || return 1
+  assert_eq 192.0.2.10:1637 "$(configured_endpoint "$WG_CONF")" \
+    "qB stop failure must retain the old active profile"
+}
+
+test_managed_every_phase_failure_rolls_back_exact_old_profile() {
+  local case_name rc events
+  local -a cases=(
+    journal-client-stopped down journal-tunnel-down install journal-candidate-installed
+    up journal-candidate-up identity network speed start binding journal-verified
+    status stamp candidate-delete marker-delete
+  )
+  for case_name in "${cases[@]}"; do
+    (
+      setup_managed_transaction_fixture || exit 1
+      TRANSACTION_FAIL_ACTION="$case_name"
+      TRANSACTION_FAIL_REMAINING=1
+      set +e; managed_profile_transaction Alpha-1 1 >/dev/null 2>&1; rc=$?; set +e
+      assert_eq 1 "$rc" "$case_name failure must fail the candidate transaction" || exit 1
+      managed_verify_profile_binding "$WG_CONF" \
+        "$(sha256sum "${WG_CONF}.bak-healthcheck" | awk '{print $1}')" \
+        192.0.2.10:1637 || fail "$case_name must restore the exact old profile" || exit 1
+      cmp -s -- "${WG_CONF}.bak-healthcheck" "$WG_CONF" ||
+        fail "$case_name rollback must be byte-for-byte" || exit 1
+      [[ ! -e "$ROTATION_PENDING" && ! -e "$MANAGED_CANDIDATE" ]] ||
+        fail "$case_name successful rollback must clean its marker and candidate" || exit 1
+      assert_eq running "$TRANSACTION_QB_STATE" \
+        "$case_name successful rollback must restore prior qB running intent" || exit 1
+      events="$(<"$TRANSACTION_EVENTS")"
+      assert_not_contains 'exclude-remove:' "$events" \
+        "$case_name rollback must retain the failed candidate exclusion" || exit 1
+    ) || return 1
+  done
+}
+
+test_managed_staged_digest_mismatch_is_never_installed_or_guessed() {
+  local rc events
+  setup_managed_transaction_fixture || return 1
+  run_wg_quick_down() {
+    transaction_event "wg-down:$(transaction_phase):$(configured_endpoint "$WG_CONF")"
+    TRANSACTION_RUNTIME_ENDPOINT=''
+    printf '# changed after tunnel-down\n' >> "$MANAGED_CANDIDATE"
+  }
+  set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "post-journal candidate mutation must fail" || return 1
+  events="$(<"$TRANSACTION_EVENTS")"
+  assert_not_contains 'profile-move:' "$events" "mismatched candidate must never be installed" || return 1
+  assert_event_before 'exclude-write' 'wg-down:client-stopped:192.0.2.10:1637' \
+    "pre-exclusion must be durable before downtime" || return 1
   [[ -f "$ROTATION_PENDING" && -f "$MANAGED_CANDIDATE" ]] ||
-    fail "unresolved reconciliation must retain marker and candidate" || return 1
-  assert_eq "$active_before" "$(<"$WG_CONF")" "reconciliation seam must not guess or restore active bytes" || return 1
-  assert_eq "$candidate_before" "$(<"$MANAGED_CANDIDATE")" "reconciliation seam must not delete candidate bytes" || return 1
-  assert_contains 'failed:' "$(<"$TEST_TMP/journal-events")" "fail-closed reconciliation must publish redacted status" || return 1
+    fail "candidate mismatch must retain journal and artifact" || return 1
+  assert_eq stopped "$TRANSACTION_QB_STATE" "candidate mismatch must leave qB stopped" || return 1
+  assert_eq 192.0.2.10:1637 "$(configured_endpoint "$WG_CONF")" \
+    "candidate mismatch must not guess at an active-profile mutation"
+}
 
-  cp -- "$MANAGED_CANDIDATE" "$WG_CONF"
+test_managed_rollback_failure_retains_marker_candidate_and_stopped_qb() {
+  local rc events
+  setup_managed_transaction_fixture || return 1
+  verify_tunnel() {
+    local expected="${1:?}"
+    transaction_event "network:$(transaction_phase):$expected"
+    if [[ "$expected" == 198.51.100.20:1637 ]]; then
+      TRANSACTION_FAIL_ACTION=rollback-up
+      TRANSACTION_FAIL_REMAINING=-1
+      return 1
+    fi
+    [[ "$TRANSACTION_RUNTIME_ENDPOINT" == "$expected" ]]
+  }
+  set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "candidate and rollback failure must fail closed" || return 1
+  events="$(<"$TRANSACTION_EVENTS")"
+  assert_event_before 'exclude-write' 'wg-down:candidate-up:198.51.100.20:1637' \
+    "failure exclusion refresh must precede the first rollback network effect" || return 1
+  [[ -f "$ROTATION_PENDING" && -f "$MANAGED_CANDIDATE" ]] ||
+    fail "rollback failure must retain marker and candidate" || return 1
+  assert_eq stopped "$TRANSACTION_QB_STATE" "rollback failure must leave qB stopped" || return 1
+  assert_not_contains 'marker-delete:' "$events" "failed rollback must not expose a commit"
+}
+
+test_managed_exclusion_refresh_failure_rolls_back_but_preserves_pending_state() {
+  local rc write_count=0 events
+  setup_managed_transaction_fixture || return 1
+  managed_api_state_write() {
+    write_count=$((write_count + 1))
+    transaction_event "exclude-write:$write_count"
+    (( write_count == 1 ))
+  }
+  TRANSACTION_FAIL_ACTION=network
+  TRANSACTION_FAIL_REMAINING=1
+  set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "exclusion refresh failure must remain failed" || return 1
+  events="$(<"$TRANSACTION_EVENTS")"
+  assert_contains 'exclude-write:2' "$events" "candidate failure must refresh its exclusion" || return 1
+  assert_eq 192.0.2.10:1637 "$(configured_endpoint "$WG_CONF")" \
+    "safety rollback must still restore the old profile" || return 1
+  [[ -f "$ROTATION_PENDING" && -f "$MANAGED_CANDIDATE" ]] ||
+    fail "failed exclusion refresh must preserve pending cleanup" || return 1
+  assert_eq stopped "$TRANSACTION_QB_STATE" \
+    "failed exclusion refresh must not restart qB while pending remains" || return 1
+  assert_not_contains 'marker-delete:' "$events" "failed exclusion refresh must forbid cleanup"
+}
+
+setup_managed_crash_shape() {
+  local phase="${1:?}" active_class="${2:?}" candidate_class="${3:?}"
+  local runtime_class="${4:?}" qb_was_running="${5:-1}"
+  managed_journal_fixture_digests || return 1
+  write_raw_managed_journal "$phase" "$JOURNAL_TEST_BACKUP_SHA" \
+    "$JOURNAL_TEST_CANDIDATE_SHA" 192.0.2.10:1637 198.51.100.20:1637 "$qb_was_running"
+  case "$active_class" in
+    backup) command cp -- "${WG_CONF}.bak-healthcheck" "$WG_CONF" ;;
+    candidate) command cp -- "$MANAGED_CANDIDATE" "$WG_CONF" ;;
+    unknown) printf '# unknown active\n' >> "$WG_CONF" ;;
+    *) return 1 ;;
+  esac
   chmod 600 -- "$WG_CONF"
-  managed_journal_load || return 1
-  MANAGED_JOURNAL_PHASE=tunnel-down
-  write_raw_managed_journal tunnel-down "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA"
-  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
-  assert_eq 1 "$rc" "phase lag with candidate active must remain factual and unresolved" || return 1
-  assert_eq candidate "$MANAGED_JOURNAL_ACTIVE_CLASS" \
-    "recovery classifier must report candidate-active despite a lagging phase" || return 1
-  [[ -f "$ROTATION_PENDING" ]] || fail "phase-lag marker must remain" || return 1
+  case "$candidate_class" in
+    present) ;;
+    missing) command rm -f -- "$MANAGED_CANDIDATE" ;;
+    mismatch) printf '# mismatch\n' >> "$MANAGED_CANDIDATE" ;;
+    *) return 1 ;;
+  esac
+  case "$runtime_class" in
+    old) TRANSACTION_RUNTIME_ENDPOINT=192.0.2.10:1637 ;;
+    candidate) TRANSACTION_RUNTIME_ENDPOINT=198.51.100.20:1637 ;;
+    down) TRANSACTION_RUNTIME_ENDPOINT='' ;;
+    *) return 1 ;;
+  esac
+  if [[ "$qb_was_running" == 1 ]]; then
+    case "$phase:$runtime_class" in
+      prepared:old|verified:candidate) TRANSACTION_QB_STATE=running ;;
+      *) TRANSACTION_QB_STATE=stopped ;;
+    esac
+  else
+    TRANSACTION_QB_STATE=stopped
+  fi
+}
 
-  cp -- "${WG_CONF}.bak-healthcheck" "$WG_CONF"
-  chmod 600 -- "$WG_CONF"
-  write_raw_managed_journal candidate-up "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA"
-  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
-  assert_eq 1 "$rc" "later phase with rollback-started backup active must stay unresolved" || return 1
-  assert_eq backup "$MANAGED_JOURNAL_ACTIVE_CLASS" \
-    "recovery classifier must report backup-active despite an advanced phase" || return 1
+test_managed_reconciliation_rolls_back_every_factual_crash_shape() {
+  local shape phase active candidate runtime qb rc events
+  local -a shapes=(
+    'prepared backup present old 1'
+    'client-stopped backup present old 1'
+    'tunnel-down backup present down 1'
+    'candidate-installed candidate present down 1'
+    'candidate-up candidate present candidate 1'
+    'verified candidate present candidate 1'
+    'verified candidate missing candidate 1'
+    'candidate-up backup missing old 1'
+    'candidate-up backup present old 0'
+  )
+  for shape in "${shapes[@]}"; do
+    read -r phase active candidate runtime qb <<< "$shape"
+    (
+      setup_managed_transaction_fixture || exit 1
+      setup_managed_crash_shape "$phase" "$active" "$candidate" "$runtime" "$qb" || exit 1
+      set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+      assert_eq 0 "$rc" "$shape must reconcile by verified rollback" || exit 1
+      [[ ! -e "$ROTATION_PENDING" && ! -e "$MANAGED_CANDIDATE" ]] ||
+        fail "$shape successful recovery must remove candidate and marker" || exit 1
+      cmp -s -- "${WG_CONF}.bak-healthcheck" "$WG_CONF" ||
+        fail "$shape must restore byte-for-byte backup content" || exit 1
+      assert_eq 600 "$(stat -c '%a' "$WG_CONF")" "$shape restore must be mode 0600" || exit 1
+      if [[ "$(uname -s)" == Linux && "$(id -u)" == 0 ]]; then
+        assert_eq 0 "$(stat -c '%u' "$WG_CONF")" "$shape restore must be root-owned" || exit 1
+      fi
+      assert_eq 192.0.2.10:1637 "$TRANSACTION_RUNTIME_ENDPOINT" \
+        "$shape must restore and verify the old tunnel" || exit 1
+      if [[ "$qb" == 1 ]]; then
+        assert_eq running "$TRANSACTION_QB_STATE" "$shape must restore prior qB running intent" || exit 1
+        events="$(<"$TRANSACTION_EVENTS")"
+        assert_event_before 'identity:' 'qb-start:' \
+          "$shape must prove old live identity before qB restore" || exit 1
+        assert_event_before 'network:' 'qb-start:' \
+          "$shape must prove old network before qB restore" || exit 1
+        assert_event_before 'qb-start:' 'binding:' \
+          "$shape must prove TCP/UDP ownership after qB starts" || exit 1
+      else
+        assert_eq stopped "$TRANSACTION_QB_STATE" "$shape must preserve prior stopped intent" || exit 1
+      fi
+    ) || return 1
+  done
+}
 
-  write_raw_managed_journal tunnel-down "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA"
-  rm -f -- "$MANAGED_CANDIDATE"
-  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
-  assert_eq 1 "$rc" "candidate may not be missing before verified" || return 1
-  [[ -f "$ROTATION_PENDING" ]] || fail "early missing-candidate marker must remain" || return 1
+test_managed_unknown_or_mismatched_recovery_stops_qb_without_network_guessing() {
+  local case_name rc events
+  for case_name in active-unknown candidate-mismatch backup-mismatch invalid-journal; do
+    (
+      setup_managed_transaction_fixture || exit 1
+      setup_managed_crash_shape candidate-up candidate present candidate 1 || exit 1
+      TRANSACTION_QB_STATE=running
+      case "$case_name" in
+        active-unknown) printf '# active drift\n' >> "$WG_CONF" ;;
+        candidate-mismatch) printf '# staged drift\n' >> "$MANAGED_CANDIDATE" ;;
+        backup-mismatch) printf '# backup drift\n' >> "${WG_CONF}.bak-healthcheck" ;;
+        invalid-journal) printf 'unknown=field\n' >> "$ROTATION_PENDING" ;;
+      esac
+      set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+      assert_eq 1 "$rc" "$case_name recovery must fail closed" || exit 1
+      events="$(<"$TRANSACTION_EVENTS")"
+      assert_contains 'qb-stop:' "$events" "$case_name must stop configured qB" || exit 1
+      assert_eq stopped "$TRANSACTION_QB_STATE" "$case_name must prove qB stopped" || exit 1
+      assert_not_contains 'wg-down:' "$events" "$case_name must not guess at tunnel mutation" || exit 1
+      assert_not_contains 'profile-move:' "$events" "$case_name must not guess at profile restore" || exit 1
+      [[ -f "$ROTATION_PENDING" ]] || fail "$case_name must retain its marker" || exit 1
+      [[ -f "$MANAGED_CANDIDATE" ]] || fail "$case_name must retain its candidate" || exit 1
+    ) || return 1
+  done
+}
 
-  write_raw_managed_journal verified "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA"
-  write_managed_candidate_fixture
-  cp -- "$MANAGED_CANDIDATE" "$WG_CONF"
-  chmod 600 -- "$WG_CONF"
-  rm -f -- "$MANAGED_CANDIDATE"
-  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
-  assert_eq 1 "$rc" "verified candidate cleanup crash still requires Task 7 finalization" || return 1
-  [[ -f "$ROTATION_PENDING" ]] || fail "verified cleanup marker must remain" || return 1
+test_managed_recovery_contains_qb_before_journal_or_digest_reads() {
+  local case_name rc
+  for case_name in valid malformed digest-mismatch; do
+    (
+      setup_managed_transaction_fixture || exit 1
+      setup_managed_crash_shape candidate-up candidate present candidate 1 || exit 1
+      TRANSACTION_QB_STATE=running
+      eval "$(declare -f managed_journal_load | sed '1s/managed_journal_load/transaction_original_journal_load/')"
+      eval "$(declare -f _managed_journal_recovery_state_is_consistent | sed '1s/_managed_journal_recovery_state_is_consistent/transaction_original_recovery_classifier/')"
+      managed_journal_load() {
+        transaction_event 'journal-load'
+        transaction_original_journal_load
+      }
+      _managed_journal_recovery_state_is_consistent() {
+        transaction_event 'digest-classify'
+        transaction_original_recovery_classifier
+      }
+      case "$case_name" in
+        valid) ;;
+        malformed) printf 'unknown=field\n' >> "$ROTATION_PENDING" ;;
+        digest-mismatch) printf '# drift\n' >> "${WG_CONF}.bak-healthcheck" ;;
+      esac
+      set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+      if [[ "$case_name" == valid ]]; then
+        assert_eq 0 "$rc" "valid marker must still roll back" || exit 1
+      else
+        assert_eq 1 "$rc" "$case_name marker must fail closed" || exit 1
+        [[ -f "$ROTATION_PENDING" ]] || fail "$case_name marker must be retained" || exit 1
+      fi
+      assert_event_before 'qb-stop:' 'journal-load' \
+        "$case_name recovery must stop and reinspect qB before parsing" || exit 1
+      if [[ "$case_name" != malformed ]]; then
+        assert_event_before 'qb-stop:' 'digest-classify' \
+          "$case_name recovery must contain qB before artifact hashing" || exit 1
+      fi
+      if [[ "$case_name" == valid ]]; then
+        assert_eq running "$TRANSACTION_QB_STATE" \
+          "valid recovery may restore qB only after old network proof" || exit 1
+      else
+        assert_eq stopped "$TRANSACTION_QB_STATE" \
+          "$case_name recovery must leave qB stopped"
+      fi
+    ) || return 1
+  done
+}
 
-  cp -- "${WG_CONF}.bak-healthcheck" "$WG_CONF"
-  chmod 600 -- "$WG_CONF"
-  write_raw_managed_journal candidate-up "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA"
-  : > "$TEST_TMP/journal-events"
+test_managed_reconciliation_is_idempotent_across_cleanup_crash() {
+  local rc first_events
+  setup_managed_transaction_fixture || return 1
+  setup_managed_crash_shape candidate-up candidate present candidate 1 || return 1
+  TRANSACTION_FAIL_ACTION=marker-delete
+  TRANSACTION_FAIL_REMAINING=1
   set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
-  assert_eq 1 "$rc" "missing candidate with backup active must not be falsely finalized" || return 1
-  assert_eq backup "$MANAGED_JOURNAL_ACTIVE_CLASS" \
-    "rollback-cleanup crash must classify its active backup factually" || return 1
-  assert_eq missing "$MANAGED_JOURNAL_CANDIDATE_CLASS" \
-    "rollback-cleanup crash must classify its removed candidate factually" || return 1
-  assert_contains managed_rotation_requires_verified_rollback "$(<"$TEST_TMP/journal-events")" \
-    "backup-active cleanup crash must remain a safe Task 7 recovery seam" || return 1
-  [[ -f "$ROTATION_PENDING" ]] || fail "ambiguous rollback-cleanup marker must remain"
+  assert_eq 1 "$rc" "first cleanup interruption must remain pending" || return 1
+  [[ -f "$ROTATION_PENDING" ]] || fail "cleanup interruption must preserve the marker" || return 1
+  assert_eq stopped "$TRANSACTION_QB_STATE" "failure after qB restore must stop it again" || return 1
+  cmp -s -- "${WG_CONF}.bak-healthcheck" "$WG_CONF" ||
+    fail "first reconciliation must already restore exact old bytes" || return 1
+  first_events="$(<"$TRANSACTION_EVENTS")"
+  assert_contains 'candidate-delete:' "$first_events" "first reconciliation reaches candidate cleanup" || return 1
+
+  TRANSACTION_FAIL_ACTION=''
+  : > "$TRANSACTION_EVENTS"
+  managed_reconcile_pending || return 1
+  [[ ! -e "$ROTATION_PENDING" && ! -e "$MANAGED_CANDIDATE" ]] ||
+    fail "second reconciliation must finish cleanup idempotently" || return 1
+  assert_eq running "$TRANSACTION_QB_STATE" "second reconciliation must restore qB intent" || return 1
+  cmp -s -- "${WG_CONF}.bak-healthcheck" "$WG_CONF"
+}
+
+test_managed_qb_config_drift_binding_failure_stops_and_retains() {
+  local rc events
+  setup_managed_transaction_fixture || return 1
+  setup_managed_crash_shape candidate-up candidate present candidate 1 || return 1
+  QBITTORRENT_CONTAINER=changed-container
+  QBITTORRENT_LISTEN_PORT=6999
+  qbittorrent_binding_present() {
+    transaction_event "binding-drift:$(transaction_phase):$QBITTORRENT_CONTAINER:$QBITTORRENT_LISTEN_PORT"
+    return 1
+  }
+  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "changed qB tuple without matching ownership proof must fail" || return 1
+  events="$(<"$TRANSACTION_EVENTS")"
+  assert_contains 'binding-drift:' "$events" "current strict qB tuple must be verified" || return 1
+  assert_eq stopped "$TRANSACTION_QB_STATE" "binding failure must stop qB again" || return 1
+  [[ -f "$ROTATION_PENDING" && -f "$MANAGED_CANDIDATE" ]] ||
+    fail "binding drift must retain marker and candidate" || return 1
+  assert_not_contains 'marker-delete:' "$events" "binding drift must not commit cleanup"
 }
 
 test_linux_managed_journal_real_owner_mode_and_symlink_semantics() {
@@ -2480,7 +3129,22 @@ tests=(
   test_managed_journal_classifiers_are_collision_safe_and_failure_atomic
   test_managed_journal_phase_transitions_revalidate_all_digests_and_classify_factually
   test_managed_journal_rejects_digest_bound_false_endpoints_before_transition_or_recovery
-  test_managed_reconciliation_retains_every_unresolved_v2_shape_for_task7
+  test_managed_qbittorrent_state_is_exact_and_fail_closed
+  test_managed_live_identity_requires_exact_address_and_peer_key
+  test_managed_atomic_profile_install_is_digest_bound_and_durable
+  test_managed_profile_transaction_orders_every_qb_and_tunnel_effect
+  test_managed_candidate_exclusion_removal_is_exact_and_durable
+  test_managed_transaction_context_and_preexclusion_fail_before_mutation
+  test_managed_stop_failure_aborts_before_tunnel_downtime
+  test_managed_every_phase_failure_rolls_back_exact_old_profile
+  test_managed_staged_digest_mismatch_is_never_installed_or_guessed
+  test_managed_rollback_failure_retains_marker_candidate_and_stopped_qb
+  test_managed_exclusion_refresh_failure_rolls_back_but_preserves_pending_state
+  test_managed_reconciliation_rolls_back_every_factual_crash_shape
+  test_managed_unknown_or_mismatched_recovery_stops_qb_without_network_guessing
+  test_managed_recovery_contains_qb_before_journal_or_digest_reads
+  test_managed_reconciliation_is_idempotent_across_cleanup_crash
+  test_managed_qb_config_drift_binding_failure_stops_and_retains
   test_linux_managed_journal_real_owner_mode_and_symlink_semantics
 )
 
