@@ -3,6 +3,7 @@ from dataclasses import FrozenInstanceError, replace
 import importlib.machinery
 import importlib.util
 import http.client
+import inspect
 import io
 import ipaddress
 import json
@@ -1702,6 +1703,94 @@ class EndpointParsingTests(unittest.TestCase):
 
 
 class CandidateSelectionTests(unittest.TestCase):
+    def assert_exclusion_contract_exists(self):
+        self.assertIn(
+            "excluded_servers",
+            inspect.signature(airvpn_api.select_candidate).parameters,
+            "select_candidate must expose the Task 5 exclusion collection",
+        )
+
+    def test_empty_exclusions_preserve_legacy_selection(self):
+        self.assert_exclusion_contract_exists()
+        payload = _status(
+            _server("Alpha", "198.51.100.20"),
+            _server("Zulu", "198.51.100.21"),
+        )
+
+        legacy = airvpn_api.select_candidate(payload, ["GB"], 1637, "")
+        explicitly_empty = airvpn_api.select_candidate(
+            payload, ["GB"], 1637, "", []
+        )
+
+        self.assertEqual(explicitly_empty, legacy)
+
+    def test_exclusions_are_applied_before_current_and_score_validation(self):
+        self.assert_exclusion_contract_exists()
+        excluded = _server("Broken-First", "198.51.100.20")
+        excluded.update(
+            {
+                "country_code": object(),
+                "ip_v4_in1": "not-an-address",
+                "currentload": "not-a-number",
+            }
+        )
+        alternate = _server("Safe-Alternate", "198.51.100.21", load=90)
+
+        candidate = airvpn_api.select_candidate(
+            _status(excluded, alternate),
+            ["GB"],
+            1637,
+            "198.51.100.99:1637",
+            ["Broken-First"],
+        )
+
+        self.assertEqual(candidate[0], "Safe-Alternate")
+
+        excluded_fallback = _server("Broken-Fallback", "198.51.100.22")
+        excluded_fallback.update(
+            {
+                "public_name": "",
+                "name": "Broken-Fallback",
+                "country_code": object(),
+                "ip_v4_in1": "not-an-address",
+            }
+        )
+        candidate = airvpn_api.select_candidate(
+            _status(excluded_fallback, alternate),
+            ["GB"],
+            1637,
+            "",
+            ["Broken-Fallback"],
+        )
+        self.assertEqual(candidate[0], "Safe-Alternate")
+
+    def test_exclusions_reject_invalid_duplicate_and_over_limit_names(self):
+        self.assert_exclusion_contract_exists()
+        payload = _status(_server("Safe", "198.51.100.21"))
+        invalid_sets = (
+            [""],
+            ["_invalid"],
+            ["space invalid"],
+            ["a" * 65],
+            ["Mensa", "Mensa"],
+            [f"Server-{index}" for index in range(17)],
+        )
+
+        for exclusions in invalid_sets:
+            with self.subTest(exclusions=exclusions):
+                with self.assertRaisesRegex(
+                    ValueError, "exclude|exclusion|server name"
+                ):
+                    airvpn_api.select_candidate(
+                        payload, ["GB"], 1637, "", exclusions
+                    )
+
+        sixteen = [f"Server-{index}" for index in range(16)]
+        self.assertEqual(
+            airvpn_api.select_candidate(payload, ["GB"], 1637, "", sixteen)[0],
+            "Safe",
+        )
+
     def test_tied_numeric_ranks_use_deterministic_scalar_tiebreakers(self):
         alpha = _server("Alpha", "198.51.100.20")
         zulu = _server("Zulu", "198.51.100.10")
@@ -2022,6 +2111,62 @@ class InputBoundaryTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_select_accepts_repeated_exclusions_and_rejects_them_before_fetch(self):
+        parser = airvpn_api._build_parser()
+        select_parser = next(
+            action.choices["select"]
+            for action in parser._actions
+            if isinstance(action, airvpn_api.argparse._SubParsersAction)
+        )
+        self.assertIn(
+            "--exclude-server",
+            select_parser.format_help(),
+            "select CLI must publish the repeatable exclusion option",
+        )
+        payload = _status(
+            _server("First", "198.51.100.10", load=0),
+            _server("Second", "198.51.100.11", load=1),
+            _server("Third", "198.51.100.12", load=2),
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.object(
+            airvpn_api, "_fetch_json", return_value=payload
+        ) as fetch, mock.patch.object(sys, "stdout", stdout), mock.patch.object(
+            sys, "stderr", stderr
+        ):
+            return_code = airvpn_api.main(
+                [
+                    "select",
+                    "--exclude-server",
+                    "First",
+                    "--exclude-server",
+                    "Second",
+                ]
+            )
+
+        self.assertEqual(return_code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue().split("\t", 1)[0], "Third")
+        fetch.assert_called_once()
+
+        rejected = (
+            ["Duplicate", "Duplicate"],
+            [f"Server-{index}" for index in range(17)],
+            ["bad/name"],
+        )
+        for exclusions in rejected:
+            argv = ["select"]
+            for name in exclusions:
+                argv.extend(("--exclude-server", name))
+            stderr = io.StringIO()
+            with self.subTest(exclusions=exclusions), mock.patch.object(
+                airvpn_api, "_fetch_json"
+            ) as fetch, mock.patch.object(sys, "stderr", stderr):
+                return_code = airvpn_api.main(argv)
+            self.assertEqual(return_code, 2)
+            self.assertRegex(stderr.getvalue(), r"^ERROR:")
+            fetch.assert_not_called()
+
     def test_verify_egress_reads_stdin_and_prints_safe_two_field_tsv(self):
         payload = {
             "result": "ok",

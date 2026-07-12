@@ -47,6 +47,570 @@ open_installed_api_key() {
   printf -v "$output_variable" '%s' "$opened_fd"
 }
 
+managed_uint_is_canonical() {
+  local value="${1-}" maximum="${2:?}" value_length maximum_length
+  [[ "$value" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+  value_length=${#value}
+  maximum_length=${#maximum}
+  (( value_length < maximum_length )) && return 0
+  (( value_length > maximum_length )) && return 1
+  [[ "$value" == "$maximum" || "$value" < "$maximum" ]]
+}
+
+managed_epoch_is_valid() {
+  managed_uint_is_canonical "${1-}" 4294967295
+}
+
+managed_server_name_is_valid() {
+  [[ "${1-}" =~ ^[A-Za-z0-9-]{1,64}$ ]]
+}
+
+managed_device_name_is_valid() {
+  [[ "${1-}" =~ ^[A-Za-z0-9][A-Za-z0-9\ ._-]{0,63}$ ]]
+}
+
+managed_sync_file() {
+  python3 -c 'import os,sys
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+fd = os.open(sys.argv[1], flags)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)' "$1"
+}
+
+managed_sync_directory() {
+  python3 -c 'import os,sys
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+fd = os.open(sys.argv[1], flags)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)' "$1"
+}
+
+managed_api_state_defaults() {
+  local now="${1:?}"
+  managed_epoch_is_valid "$now" || return 1
+  MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_WINDOW_START="$now"
+  MANAGED_API_ATTEMPT_COUNT=0
+  MANAGED_API_BACKOFF_UNTIL=0
+  MANAGED_API_FAILURE_CLASS=none
+  MANAGED_API_CREDENTIAL_DEVICE=0
+  MANAGED_API_CREDENTIAL_INODE=0
+  MANAGED_API_CREDENTIAL_MTIME=0
+  MANAGED_API_CREDENTIAL_SIZE=0
+  MANAGED_API_CONFIGURED_DEVICE=''
+  MANAGED_API_EXCLUDE_NAMES=()
+  MANAGED_API_EXCLUDE_EXPIRIES=()
+}
+
+managed_api_state_parent_is_secure() {
+  local parent="${AIRVPN_API_STATE_FILE%/*}" metadata
+  [[ -n "${AIRVPN_API_STATE_FILE:-}" && "$parent" != "$AIRVPN_API_STATE_FILE" ]] || return 1
+  [[ -d "$parent" && ! -L "$parent" ]] || return 1
+  metadata="$(owner_mode "$parent")" || return 1
+  [[ "$metadata" == 0:700 ]]
+}
+
+managed_api_state_file_is_secure() {
+  local metadata
+  [[ -f "$AIRVPN_API_STATE_FILE" && ! -L "$AIRVPN_API_STATE_FILE" ]] || return 1
+  metadata="$(owner_mode "$AIRVPN_API_STATE_FILE")" || return 1
+  [[ "$metadata" == 0:600 ]]
+}
+
+managed_api_state_bytes_are_strict() {
+  local path="${1:?}" bytes byte last='' count=0
+  bytes="$(od -An -v -t u1 -- "$path" 2>/dev/null)" || return 1
+  for byte in $bytes; do
+    managed_uint_is_canonical "$byte" 255 || return 1
+    if (( 10#$byte != 10 && (10#$byte < 32 || 10#$byte > 126) )); then
+      return 1
+    fi
+    last="$byte"
+    count=$((count + 1))
+  done
+  (( count > 0 )) && [[ "$last" == 10 ]]
+}
+
+managed_api_metadata_is_valid() {
+  local device="${1-}" inode="${2-}" mtime="${3-}" size="${4-}"
+  managed_uint_is_canonical "$device" 18446744073709551615 || return 1
+  managed_uint_is_canonical "$inode" 18446744073709551615 || return 1
+  managed_uint_is_canonical "$mtime" 9223372036854775807 || return 1
+  case "$size" in
+    0) [[ "$device" == 0 && "$inode" == 0 && "$mtime" == 0 ]] ;;
+    65) [[ "$inode" != 0 ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# Defaults exist only in memory. Passing 1 requires the complete identity that every
+# durable v1 record must carry.
+managed_api_state_memory_is_valid() {
+  local persistent="${1:-0}" now="${MANAGED_API_STATE_NOW-}"
+  local maximum_backoff maximum_exclusion index name expiry
+  local -A seen=()
+  [[ "$persistent" == 0 || "$persistent" == 1 ]] || return 1
+  managed_epoch_is_valid "$now" || return 1
+  managed_epoch_is_valid "${MANAGED_API_WINDOW_START-}" || return 1
+  managed_epoch_is_valid "${MANAGED_API_BACKOFF_UNTIL-}" || return 1
+  (( 10#$MANAGED_API_WINDOW_START <= 10#$now )) || return 1
+  maximum_backoff=$((10#$now + 86400))
+  (( maximum_backoff <= 4294967295 )) || return 1
+  (( 10#$MANAGED_API_BACKOFF_UNTIL <= maximum_backoff )) || return 1
+  managed_uint_is_canonical "${MANAGED_API_ATTEMPT_COUNT-}" 6 || return 1
+  case "${MANAGED_API_FAILURE_CLASS-}" in
+    none|auth|device|rate|transient) ;;
+    *) return 1 ;;
+  esac
+  if [[ "$MANAGED_API_FAILURE_CLASS" == none && "$MANAGED_API_BACKOFF_UNTIL" != 0 ]]; then
+    return 1
+  fi
+  managed_api_metadata_is_valid \
+    "${MANAGED_API_CREDENTIAL_DEVICE-}" \
+    "${MANAGED_API_CREDENTIAL_INODE-}" \
+    "${MANAGED_API_CREDENTIAL_MTIME-}" \
+    "${MANAGED_API_CREDENTIAL_SIZE-}" || return 1
+  if [[ -n "${MANAGED_API_CONFIGURED_DEVICE-}" ]]; then
+    managed_device_name_is_valid "$MANAGED_API_CONFIGURED_DEVICE" || return 1
+  fi
+  if (( persistent )) && {
+       [[ "$MANAGED_API_CREDENTIAL_SIZE" != 65 ]] ||
+       [[ -z "$MANAGED_API_CONFIGURED_DEVICE" ]];
+     }; then
+    return 1
+  fi
+  (( ${#MANAGED_API_EXCLUDE_NAMES[@]} == ${#MANAGED_API_EXCLUDE_EXPIRIES[@]} )) || return 1
+  (( ${#MANAGED_API_EXCLUDE_NAMES[@]} <= 16 )) || return 1
+  maximum_exclusion=$((10#$now + 21600))
+  for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+    name="${MANAGED_API_EXCLUDE_NAMES[$index]}"
+    expiry="${MANAGED_API_EXCLUDE_EXPIRIES[$index]}"
+    managed_server_name_is_valid "$name" || return 1
+    [[ -z "${seen[$name]+present}" ]] || return 1
+    seen["$name"]=1
+    managed_epoch_is_valid "$expiry" || return 1
+    (( 10#$expiry <= maximum_exclusion )) || return 1
+  done
+}
+
+managed_api_state_load() {
+  local now="${1:?}" size count index expected_index window attempts backoff failure
+  local credential_device credential_inode credential_mtime credential_size configured_device
+  local line name expiry
+  local -a lines=() names=() expiries=()
+  local -A seen=()
+  managed_epoch_is_valid "$now" || return 1
+  managed_api_state_parent_is_secure || return 1
+  if [[ ! -e "$AIRVPN_API_STATE_FILE" && ! -L "$AIRVPN_API_STATE_FILE" ]]; then
+    managed_api_state_defaults "$now"
+    return $?
+  fi
+  managed_api_state_file_is_secure || return 1
+  size="$(managed_file_size "$AIRVPN_API_STATE_FILE")" || return 1
+  managed_uint_is_canonical "$size" 4096 || return 1
+  (( 10#$size > 0 )) || return 1
+  managed_api_state_bytes_are_strict "$AIRVPN_API_STATE_FILE" || return 1
+  mapfile -t lines < "$AIRVPN_API_STATE_FILE" || return 1
+  (( ${#lines[@]} >= 11 && ${#lines[@]} <= 27 )) || return 1
+  for line in "${lines[@]}"; do (( ${#line} <= 256 )) || return 1; done
+
+  [[ "${lines[0]}" == version=1 ]] || return 1
+  [[ "${lines[1]}" =~ ^window_start=(0|[1-9][0-9]*)$ ]] || return 1
+  window="${BASH_REMATCH[1]}"
+  [[ "${lines[2]}" =~ ^attempt_count=(0|[1-9][0-9]*)$ ]] || return 1
+  attempts="${BASH_REMATCH[1]}"
+  [[ "${lines[3]}" =~ ^backoff_until=(0|[1-9][0-9]*)$ ]] || return 1
+  backoff="${BASH_REMATCH[1]}"
+  [[ "${lines[4]}" =~ ^failure_class=(none|auth|device|rate|transient)$ ]] || return 1
+  failure="${BASH_REMATCH[1]}"
+  [[ "${lines[5]}" =~ ^credential_device=(0|[1-9][0-9]*)$ ]] || return 1
+  credential_device="${BASH_REMATCH[1]}"
+  [[ "${lines[6]}" =~ ^credential_inode=(0|[1-9][0-9]*)$ ]] || return 1
+  credential_inode="${BASH_REMATCH[1]}"
+  [[ "${lines[7]}" =~ ^credential_mtime=(0|[1-9][0-9]*)$ ]] || return 1
+  credential_mtime="${BASH_REMATCH[1]}"
+  [[ "${lines[8]}" =~ ^credential_size=(0|[1-9][0-9]*)$ ]] || return 1
+  credential_size="${BASH_REMATCH[1]}"
+  [[ "${lines[9]}" =~ ^configured_device=(.*)$ ]] || return 1
+  configured_device="${BASH_REMATCH[1]}"
+  [[ "${lines[10]}" =~ ^exclude_count=(0|[1-9][0-9]*)$ ]] || return 1
+  count="${BASH_REMATCH[1]}"
+  managed_uint_is_canonical "$count" 16 || return 1
+  (( ${#lines[@]} == 11 + 10#$count )) || return 1
+
+  for ((index = 1; index <= 10#$count; index++)); do
+    line="${lines[$((10 + index))]}"
+    [[ "$line" =~ ^exclude_([0-9]{2})=([A-Za-z0-9-]{1,64}),(0|[1-9][0-9]*)$ ]] || return 1
+    printf -v expected_index '%02d' "$index"
+    [[ "${BASH_REMATCH[1]}" == "$expected_index" ]] || return 1
+    name="${BASH_REMATCH[2]}"
+    expiry="${BASH_REMATCH[3]}"
+    [[ -z "${seen[$name]+present}" ]] || return 1
+    seen["$name"]=1
+    names+=("$name")
+    expiries+=("$expiry")
+  done
+
+  MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_WINDOW_START="$window"
+  MANAGED_API_ATTEMPT_COUNT="$attempts"
+  MANAGED_API_BACKOFF_UNTIL="$backoff"
+  MANAGED_API_FAILURE_CLASS="$failure"
+  MANAGED_API_CREDENTIAL_DEVICE="$credential_device"
+  MANAGED_API_CREDENTIAL_INODE="$credential_inode"
+  MANAGED_API_CREDENTIAL_MTIME="$credential_mtime"
+  MANAGED_API_CREDENTIAL_SIZE="$credential_size"
+  MANAGED_API_CONFIGURED_DEVICE="$configured_device"
+  MANAGED_API_EXCLUDE_NAMES=("${names[@]}")
+  MANAGED_API_EXCLUDE_EXPIRIES=("${expiries[@]}")
+  managed_api_state_memory_is_valid 1
+}
+
+managed_api_state_write() {
+  local parent base temporary index move_rc=0
+  managed_api_state_memory_is_valid 1 || return 1
+  (( ${CONTEXT_LOCKED:-0} == 1 )) || return 1
+  managed_api_state_parent_is_secure || return 1
+  if [[ -e "$AIRVPN_API_STATE_FILE" || -L "$AIRVPN_API_STATE_FILE" ]]; then
+    managed_api_state_file_is_secure || return 1
+  fi
+  parent="${AIRVPN_API_STATE_FILE%/*}"
+  base="${AIRVPN_API_STATE_FILE##*/}"
+  temporary="$(mktemp "$parent/.${base}.tmp.XXXXXX")" || return 1
+  chmod 600 -- "$temporary" || { rm -f -- "$temporary"; return 1; }
+  {
+    printf '%s\n' \
+      'version=1' \
+      "window_start=$MANAGED_API_WINDOW_START" \
+      "attempt_count=$MANAGED_API_ATTEMPT_COUNT" \
+      "backoff_until=$MANAGED_API_BACKOFF_UNTIL" \
+      "failure_class=$MANAGED_API_FAILURE_CLASS" \
+      "credential_device=$MANAGED_API_CREDENTIAL_DEVICE" \
+      "credential_inode=$MANAGED_API_CREDENTIAL_INODE" \
+      "credential_mtime=$MANAGED_API_CREDENTIAL_MTIME" \
+      "credential_size=$MANAGED_API_CREDENTIAL_SIZE" \
+      "configured_device=$MANAGED_API_CONFIGURED_DEVICE" \
+      "exclude_count=${#MANAGED_API_EXCLUDE_NAMES[@]}"
+    for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+      printf 'exclude_%02d=%s,%s\n' "$((index + 1))" \
+        "${MANAGED_API_EXCLUDE_NAMES[$index]}" \
+        "${MANAGED_API_EXCLUDE_EXPIRIES[$index]}"
+    done
+  } > "$temporary" || move_rc=1
+  if (( move_rc == 0 )); then managed_sync_file "$temporary" || move_rc=1; fi
+  if (( move_rc == 0 )); then mv -fT -- "$temporary" "$AIRVPN_API_STATE_FILE" || move_rc=1; fi
+  if (( move_rc == 0 )); then managed_sync_file "$AIRVPN_API_STATE_FILE" || move_rc=1; fi
+  if (( move_rc == 0 )); then managed_sync_directory "$parent" || move_rc=1; fi
+  if (( move_rc != 0 )); then
+    rm -f -- "$temporary"
+    return 1
+  fi
+}
+
+managed_api_state_prune() {
+  local now="${1:?}" index
+  local -a names=() expiries=()
+  managed_epoch_is_valid "$now" || return 1
+  managed_epoch_is_valid "${MANAGED_API_WINDOW_START-}" || return 1
+  (( 10#$now >= 10#$MANAGED_API_WINDOW_START )) || return 1
+  if (( 10#$now - 10#$MANAGED_API_WINDOW_START >= 86400 )); then
+    MANAGED_API_WINDOW_START="$now"
+    MANAGED_API_ATTEMPT_COUNT=0
+  fi
+  for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+    if (( 10#${MANAGED_API_EXCLUDE_EXPIRIES[$index]} > 10#$now )); then
+      names+=("${MANAGED_API_EXCLUDE_NAMES[$index]}")
+      expiries+=("${MANAGED_API_EXCLUDE_EXPIRIES[$index]}")
+    fi
+  done
+  MANAGED_API_EXCLUDE_NAMES=("${names[@]}")
+  MANAGED_API_EXCLUDE_EXPIRIES=("${expiries[@]}")
+  MANAGED_API_STATE_NOW="$now"
+  managed_api_state_memory_is_valid
+}
+
+managed_api_state_add_exclusion() {
+  local name="${1-}" now="${2-}" expiry index oldest_index=0 oldest_expiry
+  managed_server_name_is_valid "$name" || return 1
+  managed_epoch_is_valid "$now" || return 1
+  managed_api_state_prune "$now" || return 1
+  expiry=$((10#$now + 21600))
+  (( expiry <= 4294967295 )) || return 1
+  for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+    if [[ "${MANAGED_API_EXCLUDE_NAMES[$index]}" == "$name" ]]; then
+      MANAGED_API_EXCLUDE_EXPIRIES[index]="$expiry"
+      return 0
+    fi
+  done
+  if (( ${#MANAGED_API_EXCLUDE_NAMES[@]} >= 16 )); then
+    oldest_expiry="${MANAGED_API_EXCLUDE_EXPIRIES[0]}"
+    for ((index = 1; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+      if (( 10#${MANAGED_API_EXCLUDE_EXPIRIES[$index]} < 10#$oldest_expiry )); then
+        oldest_index=$index
+        oldest_expiry="${MANAGED_API_EXCLUDE_EXPIRIES[$index]}"
+      fi
+    done
+    unset "MANAGED_API_EXCLUDE_NAMES[$oldest_index]"
+    unset "MANAGED_API_EXCLUDE_EXPIRIES[$oldest_index]"
+    MANAGED_API_EXCLUDE_NAMES=("${MANAGED_API_EXCLUDE_NAMES[@]}")
+    MANAGED_API_EXCLUDE_EXPIRIES=("${MANAGED_API_EXCLUDE_EXPIRIES[@]}")
+  fi
+  MANAGED_API_EXCLUDE_NAMES+=("$name")
+  MANAGED_API_EXCLUDE_EXPIRIES+=("$expiry")
+}
+
+managed_api_exclusion_args() {
+  local output_variable="${1:?}" now="${2:?}" index
+  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  managed_api_state_prune "$now" || return 1
+  local -n output_reference="$output_variable"
+  output_reference=()
+  for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+    output_reference+=(--exclude-server "${MANAGED_API_EXCLUDE_NAMES[$index]}")
+  done
+}
+
+managed_api_attempt_allowed() {
+  local now="${1:?}" administrative_bypass="${2:-0}"
+  [[ "$administrative_bypass" == 0 || "$administrative_bypass" == 1 ]] || return 1
+  managed_api_state_prune "$now" || return 1
+  (( 10#$MANAGED_API_ATTEMPT_COUNT < 6 )) || return 75
+  if (( 10#$MANAGED_API_BACKOFF_UNTIL > 10#$now )); then
+    case "$MANAGED_API_FAILURE_CLASS" in
+      auth|device) (( administrative_bypass == 1 )) || return 75 ;;
+      rate|transient) return 75 ;;
+      none) return 1 ;;
+      *) return 1 ;;
+    esac
+  fi
+}
+
+managed_api_record_attempt() {
+  local now="${1:?}" administrative_bypass="${2:-0}"
+  managed_api_attempt_allowed "$now" "$administrative_bypass" || return $?
+  MANAGED_API_ATTEMPT_COUNT=$((10#$MANAGED_API_ATTEMPT_COUNT + 1))
+  MANAGED_API_STATE_NOW="$now"
+  managed_api_state_write
+}
+
+managed_compute_backoff() {
+  local output_variable="${1:?}" attempt="${2:?}" jitter="${3-}" retry_after="${4-}"
+  local base=300 maximum_jitter index computed
+  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  managed_uint_is_canonical "$attempt" 100 || return 1
+  (( 10#$attempt >= 1 )) || return 1
+  for ((index = 1; index < 10#$attempt && base < 21600; index++)); do
+    base=$((base * 2))
+    (( base <= 21600 )) || base=21600
+  done
+  maximum_jitter=$((base / 10))
+  if [[ -z "$jitter" ]]; then
+    jitter=$((RANDOM % (maximum_jitter + 1)))
+  fi
+  managed_uint_is_canonical "$jitter" "$maximum_jitter" || return 1
+  computed=$((base + 10#$jitter))
+  (( computed <= 21600 )) || computed=21600
+  if [[ -n "$retry_after" ]]; then
+    managed_uint_is_canonical "$retry_after" 86400 || return 1
+    if (( 10#$retry_after > computed )); then computed=$((10#$retry_after)); fi
+  fi
+  printf -v "$output_variable" '%s' "$computed"
+}
+
+managed_api_record_outcome() {
+  local now="${1:?}" outcome="${2:?}" retry_after="${3-}" failed_server="${4-}" jitter="${5-}"
+  local backoff
+  managed_epoch_is_valid "$now" || return 1
+  (( 10#$now >= 10#$MANAGED_API_WINDOW_START )) || return 1
+  MANAGED_API_STATE_NOW="$now"
+  case "$outcome" in
+    none)
+      [[ -z "$retry_after" && -z "$failed_server" ]] || return 1
+      MANAGED_API_FAILURE_CLASS=none
+      MANAGED_API_BACKOFF_UNTIL=0
+      ;;
+    auth|device)
+      [[ -z "$retry_after" ]] || return 1
+      MANAGED_API_FAILURE_CLASS="$outcome"
+      MANAGED_API_BACKOFF_UNTIL=$((10#$now + 86400))
+      ;;
+    rate|transient)
+      (( 10#$MANAGED_API_ATTEMPT_COUNT >= 1 )) || return 1
+      managed_compute_backoff backoff "$MANAGED_API_ATTEMPT_COUNT" "$jitter" "$retry_after" || return 1
+      MANAGED_API_FAILURE_CLASS="$outcome"
+      MANAGED_API_BACKOFF_UNTIL=$((10#$now + 10#$backoff))
+      ;;
+    *) return 1 ;;
+  esac
+  if [[ -n "$failed_server" ]]; then
+    managed_api_state_add_exclusion "$failed_server" "$now" || return 1
+  fi
+  managed_api_state_write
+}
+
+managed_api_state_refresh_identity() {
+  local now="${1:?}" key_fd metadata device inode mtime size changed=0
+  managed_epoch_is_valid "$now" || return 1
+  managed_device_name_is_valid "${AIRVPN_DEVICE-}" || return 1
+  open_installed_api_key key_fd || return 1
+  exec {key_fd}<&-
+  metadata="$(stat -c '%d %i %Y %s' -- "$AIRVPN_API_KEY_FILE" 2>/dev/null)" || return 1
+  read -r device inode mtime size <<< "$metadata"
+  [[ "$metadata" == "$device $inode $mtime $size" ]] || return 1
+  managed_api_metadata_is_valid "$device" "$inode" "$mtime" "$size" || return 1
+  [[ "$size" == 65 ]] || return 1
+  if [[ "$device" != "${MANAGED_API_CREDENTIAL_DEVICE-}" ||
+        "$inode" != "${MANAGED_API_CREDENTIAL_INODE-}" ||
+        "$mtime" != "${MANAGED_API_CREDENTIAL_MTIME-}" ||
+        "$size" != "${MANAGED_API_CREDENTIAL_SIZE-}" ||
+        "$AIRVPN_DEVICE" != "${MANAGED_API_CONFIGURED_DEVICE-}" ]]; then
+    changed=1
+  fi
+  MANAGED_API_CREDENTIAL_DEVICE="$device"
+  MANAGED_API_CREDENTIAL_INODE="$inode"
+  MANAGED_API_CREDENTIAL_MTIME="$mtime"
+  MANAGED_API_CREDENTIAL_SIZE="$size"
+  MANAGED_API_CONFIGURED_DEVICE="$AIRVPN_DEVICE"
+  MANAGED_API_STATE_NOW="$now"
+  if (( changed )) && [[ "$MANAGED_API_FAILURE_CLASS" == auth || "$MANAGED_API_FAILURE_CLASS" == device ]]; then
+    MANAGED_API_FAILURE_CLASS=none
+    MANAGED_API_BACKOFF_UNTIL=0
+  fi
+  managed_api_state_memory_is_valid
+}
+
+managed_admin_dry_run_bypass() {
+  local command="${1-}" action_mode="${2-}"
+  [[ "$action_mode" == dry-run ]] || return 1
+  case "$command" in provision|adopt|rotate) return 0 ;; *) return 1 ;; esac
+}
+
+managed_global_api_lock_acquire() {
+  local parent metadata
+  (( ${CONTEXT_LOCKED:-0} == 1 )) || return 1
+  [[ "${LOCK_FD-}" =~ ^[0-9]+$ ]] || return 1
+  [[ -z "${MANAGED_API_LOCK_FD-}" ]] || return 1
+  [[ -n "${AIRVPN_API_LOCK:-}" && "$AIRVPN_API_LOCK" == "${STATE_DIR%/}/airvpn-api.lock" ]] || return 1
+  parent="${AIRVPN_API_LOCK%/*}"
+  [[ -d "$parent" && ! -L "$parent" ]] || return 1
+  metadata="$(owner_mode "$parent")" || return 1
+  [[ "$metadata" == 0:700 ]] || return 1
+  if [[ -e "$AIRVPN_API_LOCK" || -L "$AIRVPN_API_LOCK" ]]; then
+    [[ -f "$AIRVPN_API_LOCK" && ! -L "$AIRVPN_API_LOCK" ]] || return 1
+  fi
+  MANAGED_API_LOCK_FD=''
+  exec {MANAGED_API_LOCK_FD}>"$AIRVPN_API_LOCK" || return 1
+  if ! chmod 600 -- "$AIRVPN_API_LOCK"; then
+    exec {MANAGED_API_LOCK_FD}>&-
+    MANAGED_API_LOCK_FD=''
+    return 1
+  fi
+  metadata="$(owner_mode "$AIRVPN_API_LOCK")" || {
+    exec {MANAGED_API_LOCK_FD}>&-
+    MANAGED_API_LOCK_FD=''
+    return 1
+  }
+  [[ "$metadata" == 0:600 ]] || {
+    exec {MANAGED_API_LOCK_FD}>&-
+    MANAGED_API_LOCK_FD=''
+    return 1
+  }
+  flock -x "$MANAGED_API_LOCK_FD" || {
+    exec {MANAGED_API_LOCK_FD}>&-
+    MANAGED_API_LOCK_FD=''
+    return 1
+  }
+}
+
+managed_global_api_lock_release() {
+  local lock_fd="${MANAGED_API_LOCK_FD-}" rc=0
+  [[ "$lock_fd" =~ ^[0-9]+$ ]] || return 1
+  flock -u "$lock_fd" || rc=1
+  exec {lock_fd}>&- || rc=1
+  MANAGED_API_LOCK_FD=''
+  return "$rc"
+}
+
+managed_call_without_private_fd() {
+  local private_fd="${1-}"
+  shift || return 1
+  if [[ -z "$private_fd" ]]; then
+    "$@"
+  else
+    run_with_private_fd_closed "$private_fd" "$@"
+  fi
+}
+
+# Provider callbacks receive only the private credential descriptor number and may set
+# the four MANAGED_API_PROVIDER_* result fields. Downstream is invoked only after the
+# authenticated outcome is durable and this process has released the global API lock.
+managed_run_authenticated_attempt() {
+  local now="${1:?}" administrative_bypass="${2:-0}" credential_fd="${3-}"
+  local provider_callback="${4:?}" downstream_callback="${5:?}"
+  local provider_rc outcome outcome_rc release_rc
+  [[ "$provider_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  [[ "$downstream_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  declare -F "$provider_callback" >/dev/null || return 1
+  declare -F "$downstream_callback" >/dev/null || return 1
+  if [[ -n "$credential_fd" ]]; then validate_credential_fd_number "$credential_fd" || return 1; fi
+
+  if ! managed_call_without_private_fd "$credential_fd" managed_global_api_lock_acquire; then
+    [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd" || return 1
+    return 1
+  fi
+  managed_call_without_private_fd "$credential_fd" managed_api_state_load "$now"
+  outcome_rc=$?
+  if (( outcome_rc == 0 )); then
+    managed_call_without_private_fd "$credential_fd" managed_api_state_refresh_identity "$now"
+    outcome_rc=$?
+  fi
+  if (( outcome_rc == 0 )); then
+    managed_call_without_private_fd "$credential_fd" managed_api_record_attempt "$now" "$administrative_bypass"
+    outcome_rc=$?
+  fi
+  if (( outcome_rc != 0 )); then
+    managed_call_without_private_fd "$credential_fd" managed_global_api_lock_release || outcome_rc=1
+    [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd" || outcome_rc=1
+    return "$outcome_rc"
+  fi
+
+  MANAGED_API_PROVIDER_FAILURE_CLASS=''
+  MANAGED_API_PROVIDER_RETRY_AFTER=''
+  MANAGED_API_PROVIDER_FAILED_SERVER=''
+  MANAGED_API_PROVIDER_JITTER=''
+  if "$provider_callback" "$credential_fd"; then provider_rc=0; else provider_rc=$?; fi
+  [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd" || provider_rc=1
+  case "$provider_rc" in
+    0) outcome=none ;;
+    4)
+      case "$MANAGED_API_PROVIDER_FAILURE_CLASS" in
+        ''|auth) outcome=auth ;;
+        device) outcome=device ;;
+        *) outcome=transient ;;
+      esac
+      ;;
+    5) outcome=rate ;;
+    7) outcome=device ;;
+    *) outcome=transient ;;
+  esac
+  if [[ "$outcome" == none ]]; then
+    managed_api_record_outcome "$now" none '' '' 0
+  else
+    managed_api_record_outcome "$now" "$outcome" \
+      "$MANAGED_API_PROVIDER_RETRY_AFTER" "$MANAGED_API_PROVIDER_FAILED_SERVER" \
+      "$MANAGED_API_PROVIDER_JITTER"
+  fi
+  outcome_rc=$?
+  if managed_global_api_lock_release; then release_rc=0; else release_rc=$?; fi
+  (( outcome_rc == 0 && release_rc == 0 )) || return 1
+  (( provider_rc == 0 )) || return "$provider_rc"
+  "$downstream_callback"
+}
+
 managed_reconcile_pending() {
   log "Managed-profile reconciliation is not available in this implementation slice"
   return 1

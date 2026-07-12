@@ -30,6 +30,7 @@ MAX_NUMERIC_EXPONENT = 9
 MAX_NUMERIC_SCALE = 12
 MAX_NUMERIC_OUTPUT_CHARS = 64
 MAX_DISPLAY_FIELD_CHARS = 256
+MAX_SERVER_EXCLUSIONS = 16
 MAX_PROFILE_BYTES = 64 * 1024
 MAX_PROFILE_LINES = 64
 MAX_PROFILE_LINE_BYTES = 1024
@@ -678,6 +679,33 @@ def _normalize_allowed_countries(allowed_countries):
     return normalized
 
 
+def _normalize_excluded_servers(excluded_servers):
+    if excluded_servers is None:
+        return frozenset()
+    if isinstance(excluded_servers, (str, bytes)):
+        raise AirVPNAPIError("server exclusions must be a collection")
+    try:
+        values = iter(excluded_servers)
+    except TypeError as exc:
+        raise AirVPNAPIError(
+            "server exclusions must be a collection"
+        ) from exc
+
+    normalized = set()
+    for index, value in enumerate(values):
+        if index >= MAX_SERVER_EXCLUSIONS:
+            raise AirVPNAPIError(
+                "server exclusions must contain at most "
+                f"{MAX_SERVER_EXCLUSIONS} names"
+            )
+        if not isinstance(value, str) or not _SERVER_NAME.fullmatch(value):
+            raise AirVPNAPIError("excluded server name is invalid")
+        if value in normalized:
+            raise AirVPNAPIError("duplicate server exclusion")
+        normalized.add(value)
+    return frozenset(normalized)
+
+
 def _current_ip(current_endpoint):
     if current_endpoint is None or current_endpoint == "":
         return None
@@ -790,9 +818,16 @@ def list_eligible_countries(data):
     ]
 
 
-def select_candidate(data, allowed_countries, port, current_endpoint):
+def select_candidate(
+    data,
+    allowed_countries,
+    port,
+    current_endpoint,
+    excluded_servers=(),
+):
     """Return the best server as seven TSV-ready fields, or ``None``."""
 
+    excluded = _normalize_excluded_servers(excluded_servers)
     servers = validate_status_payload(data)
     port = _validate_port(port)
     allowed = _normalize_allowed_countries(allowed_countries)
@@ -801,6 +836,12 @@ def select_candidate(data, allowed_countries, port, current_endpoint):
 
     candidates = []
     for index, server in enumerate(servers):
+        public_name = server.get("public_name")
+        if public_name is None or public_name == "":
+            public_name = server.get("name")
+        if isinstance(public_name, str) and public_name in excluded:
+            continue
+
         health = server.get("health")
         if not isinstance(health, str):
             raise AirVPNAPIError(
@@ -1456,6 +1497,12 @@ def _build_parser():
     select_parser.add_argument("--port", default=1637)
     select_parser.add_argument("--current-endpoint", default="")
     select_parser.add_argument("--timeout", default=DEFAULT_TIMEOUT)
+    select_parser.add_argument(
+        "--exclude-server",
+        action="append",
+        default=[],
+        help="exclude one validated server name (repeatable, maximum 16)",
+    )
 
     countries_parser = subparsers.add_parser(
         "list-countries", help="list countries with healthy IPv4 servers"
@@ -1491,12 +1538,14 @@ def main(argv=None):
     args = _build_parser().parse_args(argv)
     try:
         if args.command == "select":
+            excluded_servers = _normalize_excluded_servers(args.exclude_server)
             data = _fetch_json(args.url, args.timeout)
             candidate = select_candidate(
                 data,
                 args.countries,
                 args.port,
                 args.current_endpoint,
+                excluded_servers,
             )
             if candidate is None:
                 raise NoCandidateError("no eligible AirVPN server")
