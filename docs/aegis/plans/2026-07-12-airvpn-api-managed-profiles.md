@@ -416,18 +416,18 @@ the reconciliation dispatcher recognizes both versions.
 
 **Verification:** focused journal tests plus all current pending/rollback tests.
 
-- [ ] **Write RED tests.** Cover canonical v2 fields/phases/modes, duplicate/unknown/
+- [x] **Write RED tests.** Cover canonical v2 fields/phases/modes, duplicate/unknown/
   malformed rejection, file and directory sync order, digest verification before every
   transition, active-file classification, digest mismatch fail-closed behavior, v1 marker
   reconciliation, and v1 static rotation regression.
-- [ ] **Verify RED.** Require new v2 tests to fail while existing v1 tests remain green.
-- [ ] **Implement minimal journal.** Add SHA-256 validation, strict v2 parser/writer,
+- [x] **Verify RED.** Require new v2 tests to fail while existing v1 tests remain green.
+- [x] **Implement minimal journal.** Add SHA-256 validation, strict v2 parser/writer,
   same-directory atomic barriers, phase transitions, digest classifier, and
   `reconcile_pending_rotation` dispatch. A mismatch retains the marker and returns failure;
   it never restores or deletes by guess.
-- [ ] **Verify GREEN.** Run focused managed tests and every existing durability/
+- [x] **Verify GREEN.** Run focused managed tests and every existing durability/
   interruption/reconciliation test.
-- [ ] **Commit.** `git commit -m "Journal managed profile transactions"`.
+- [x] **Commit.** `git commit -m "Journal managed profile transactions"`.
 
 ## Task 7: qBittorrent sequencing and verified managed rollback
 

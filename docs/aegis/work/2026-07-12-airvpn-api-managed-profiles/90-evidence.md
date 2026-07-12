@@ -141,6 +141,35 @@
 - No live API key was used. Module/test size now requires the already-planned Task 14
   split and ownership decision before release.
 
+### Task 6: versioned managed journal and v1 compatibility
+
+- Accepted commits: `28af7d623ac609fbc88f848b0982b8d39cb206af` and
+  `b2854154920cf5200d229f17f3c12e352d3609fe`.
+- Initial RED: five focused journal groups failed at the first absent Task 6 owner while
+  the existing pending-dispatch and real static v1 reconciliation controls stayed 2/2 green.
+- Review RED evidence reproduced and fixed:
+  - correct artifact digests could be paired with false canonical endpoints;
+  - rollback-cleanup crash state with active=backup and candidate missing was rejected;
+  - backup and candidate were not fsynced before the first durable marker;
+  - active/candidate classifier output names could collide with Bash locals.
+- Final GREEN evidence:
+  - managed Linux/root suite: 45/45 passed;
+  - managed normal-user suite: 41/41 passed with four deliberate real ownership checks
+    skipped; production root enforcement remained intact;
+  - complete provider suite: 65/65 passed;
+  - complete static/runtime suite: 68/68 passed;
+  - the exact eight-line schema, strict bytes/trust bounds, equal-digest/endpoint rejection,
+    backup/candidate/parent pre-journal durability, temp/rename/final/parent journal barriers,
+    digest-plus-endpoint double reads, exact forward transitions, factual crash-state enums,
+    and fail-closed Task 7 seam were verified;
+  - canonical v1 reconciliation and static no-marker managed-module isolation remained green;
+  - Bash syntax, expanded ShellCheck, diff/whitespace checks, and gitleaks passed.
+- Independent specification, adversarial durability/security, and final code-quality reviews
+  approved the final tree with no residual Task 6 finding.
+- Task 7 must sequence each phase transition only after its corresponding durable qB/tunnel/
+  install effect and treat any transition-write failure as rollback-required. No live API key
+  was used; Task 14's mandatory split/ownership gate remains open.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.
