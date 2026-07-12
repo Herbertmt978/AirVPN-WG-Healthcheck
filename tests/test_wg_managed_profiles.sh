@@ -3644,6 +3644,7 @@ test_visible_pending_safety_requires_successful_rebarrier_before_recovery_effect
   for barrier in final-sync parent-sync; do
     (
       setup_managed_transaction_fixture || exit 1
+      setup_managed_crash_shape verified candidate present candidate 1 || exit 1
       eval "$(declare -f managed_sync_file | sed '1s/managed_sync_file/transaction_original_sync_file/')"
       eval "$(declare -f managed_sync_safety_parent | sed '1s/managed_sync_safety_parent/transaction_original_sync_safety_parent/')"
       PERSISTENT_BARRIER_CALLS=0
@@ -3667,22 +3668,25 @@ test_visible_pending_safety_requires_successful_rebarrier_before_recovery_effect
       }
       : > "$TRANSACTION_EVENTS"
 
-      set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+      set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
       assert_eq 1 "$rc" "$barrier persistent failure must fail closed" || exit 1
-      (( PERSISTENT_BARRIER_CALLS >= 2 )) ||
-        fail "$barrier must be retried before reconciliation is allowed" || exit 1
+      (( PERSISTENT_BARRIER_CALLS >= 1 )) ||
+        fail "$barrier pending owner must be re-barriered" || exit 1
       [[ -f "$MANAGED_SAFETY" ]] || fail "$barrier must retain visible safety evidence" || exit 1
       assert_eq pending "$(sed -n 's/^state=//p' "$MANAGED_SAFETY")" \
         "$barrier must retain the strict pending owner" || exit 1
-      [[ ! -e "$ROTATION_PENDING" ]] || fail "$barrier must fail before journal creation" || exit 1
-      assert_eq 192.0.2.10:1637 "$(configured_endpoint "$WG_CONF")" \
-        "$barrier must leave the old active profile untouched" || exit 1
-      assert_eq running "$TRANSACTION_QB_STATE" \
-        "$barrier must leave the pre-transaction qB state untouched" || exit 1
-      assert_not_contains 'qb-stop:' "$(<"$TRANSACTION_EVENTS")" \
-        "$barrier must fail before qB mutation" || exit 1
+      [[ -f "$ROTATION_PENDING" && -f "$MANAGED_CANDIDATE" ]] ||
+        fail "$barrier must retain journal and candidate recovery evidence" || exit 1
+      assert_eq 198.51.100.20:1637 "$(configured_endpoint "$WG_CONF")" \
+        "$barrier failure must not guess at profile restoration" || exit 1
+      assert_eq stopped "$TRANSACTION_QB_STATE" \
+        "$barrier failure must contain qB before returning" || exit 1
+      assert_contains 'qb-stop:' "$(<"$TRANSACTION_EVENTS")" \
+        "$barrier failure must stop the recorded and configured qB target" || exit 1
       assert_not_contains 'wg-down:' "$(<"$TRANSACTION_EVENTS")" \
         "$barrier must fail before network mutation" || exit 1
+      assert_not_contains 'profile-move:' "$(<"$TRANSACTION_EVENTS")" \
+        "$barrier must fail before profile mutation" || exit 1
     ) || return 1
   done
 }

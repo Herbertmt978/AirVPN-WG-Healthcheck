@@ -2861,13 +2861,13 @@ managed_reconcile_pending() {
     write_status failed invalid_managed_rotation_safety_or_permissions || true
     return 1
   fi
+  if ! managed_qb_contain_recorded_and_current; then
+    managed_rollback_failure managed_rotation_qb_stop_failed
+    return 1
+  fi
   if [[ "$MANAGED_SAFETY_STATE" == pending ]] &&
       ! managed_safety_rebarrier_pending; then
     write_status failed managed_rotation_pending_safety_not_durable || true
-    return 1
-  fi
-  if ! managed_qb_contain_recorded_and_current; then
-    managed_rollback_failure managed_rotation_qb_stop_failed
     return 1
   fi
   if ! managed_safety_artifacts_are_valid; then
