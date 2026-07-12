@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-checks:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up minimum supported Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.10'
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes shellcheck
+
+      - name: Validate Bash syntax
+        run: bash -n bin/wg-healthcheck install.sh scripts/*.sh tests/*.sh
+
+      - name: Run Python contract tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Run recovery tests
+        run: bash tests/test_wg_healthcheck.sh
+
+      - name: Run installer and repository contract tests
+        run: bash tests/test_install.sh
+
+      - name: Run release package tests
+        run: bash tests/test_release.sh
+
+      - name: Run ShellCheck
+        run: shellcheck -x -S style bin/wg-healthcheck install.sh scripts/*.sh tests/*.sh
+
+      - name: Verify systemd units
+        run: |
+          sudo install -D -m 0755 bin/wg-healthcheck /usr/local/sbin/wg-healthcheck
+          sudo install -D -m 0755 libexec/airvpn-api /usr/local/libexec/wg-healthcheck/airvpn-api
+          systemd-analyze verify systemd/wg-healthcheck@.service systemd/wg-healthcheck@.timer
+
+  airvpn-api-smoke:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    continue-on-error: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up minimum supported Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.10'
+
+      - name: Probe the public AirVPN status contract
+        run: |
+          timeout --signal=TERM 45s python3 libexec/airvpn-api select \
+            --url 'https://airvpn.org/api/status/?format=json' \
+            --port 1637 \
+            --timeout 20 >/dev/null

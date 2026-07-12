@@ -1,0 +1,15 @@
+*.env
+.env.*
+*.local
+*.bak*
+*.tmp
+*.log
+*.pem
+*.p12
+*.pfx
+.secrets*
+wg*.conf
+airvpn-healthcheck.env
+__pycache__/
+*.py[cod]
+dist/

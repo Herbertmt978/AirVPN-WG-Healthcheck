@@ -1,0 +1,24 @@
+[Unit]
+Description=WireGuard health check for %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+UnsetEnvironment=PATH BASH_ENV ENV SHELLOPTS BASHOPTS CDPATH GLOBIGNORE IFS PS4 PROMPT_COMMAND LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHONPATH PYTHONHOME
+ExecStart=/usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C /bin/bash --noprofile --norc /usr/local/sbin/wg-healthcheck %i
+UMask=0077
+RuntimeDirectory=wg-healthcheck
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+TimeoutStartSec=180s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

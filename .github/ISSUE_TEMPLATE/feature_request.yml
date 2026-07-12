@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a narrowly scoped improvement to the healthcheck.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep examples generic. Do not include credentials, private configuration, endpoint inventories, or unredacted logs.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operator problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior and its failure mode.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and rollback
+      description: How should the feature fail safely, and how can an operator disable or undo it?
+    validations:
+      required: true

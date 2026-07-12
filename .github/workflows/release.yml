@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out tagged source and tag object
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up minimum supported Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.10'
+
+      - name: Install release verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes shellcheck
+
+      - name: Verify annotated version tag
+        run: |
+          version="$(<VERSION)"
+          test "$GITHUB_REF_NAME" = "v${version}"
+          test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag
+          test -f "docs/releases/${GITHUB_REF_NAME}.md"
+
+      - name: Run deterministic release checks
+        run: |
+          bash -n bin/wg-healthcheck install.sh scripts/*.sh tests/*.sh
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          bash tests/test_wg_healthcheck.sh
+          bash tests/test_install.sh
+          bash tests/test_release.sh --ref "$GITHUB_REF_NAME"
+          shellcheck -x -S style bin/wg-healthcheck install.sh scripts/*.sh tests/*.sh
+          sudo install -D -m 0755 bin/wg-healthcheck /usr/local/sbin/wg-healthcheck
+          sudo install -D -m 0755 libexec/airvpn-api /usr/local/libexec/wg-healthcheck/airvpn-api
+          systemd-analyze verify systemd/wg-healthcheck@.service systemd/wg-healthcheck@.timer
+
+      - name: Scan tagged history for secrets
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/repo:ro" \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --redact=100 --no-banner --no-color
+
+      - name: Build reproducible release assets
+        run: scripts/package-release.sh --ref "$GITHUB_REF_NAME" --output dist
+
+      - name: Scan packaged release for secrets
+        run: |
+          version="$(<VERSION)"
+          mkdir -m 0700 release-audit
+          tar -xzf "dist/airvpn-wg-healthcheck-${version}.tar.gz" -C release-audit
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/release-audit:/scan:ro" \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            dir /scan --redact=100 --no-banner --no-color
+
+      - name: Preserve verified release inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-input-${{ github.sha }}
+          path: |
+            dist/airvpn-wg-healthcheck-*.tar.gz
+            dist/airvpn-wg-healthcheck-*.zip
+            dist/SHA256SUMS
+            docs/releases/${{ github.ref_name }}.md
+            VERSION
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download verified release inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-input-${{ github.sha }}
+          path: release-input
+
+      - name: Verify downloaded assets
+        run: |
+          version="$(<release-input/VERSION)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$GITHUB_REF_NAME" = "v${version}"
+          test -f "release-input/docs/releases/${GITHUB_REF_NAME}.md"
+          cd release-input/dist
+          sha256sum -c SHA256SUMS
+
+      - name: Create and verify draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(<release-input/VERSION)"
+          gh release create "$GITHUB_REF_NAME" \
+            "release-input/dist/airvpn-wg-healthcheck-${version}.tar.gz" \
+            "release-input/dist/airvpn-wg-healthcheck-${version}.zip" \
+            release-input/dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "AirVPN WireGuard Healthcheck ${GITHUB_REF_NAME}" \
+            --notes-file "release-input/docs/releases/${GITHUB_REF_NAME}.md"
+          assets="$(gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets \
+            --jq '.assets[].name' | sort)"
+          expected="$(printf '%s\n' \
+            SHA256SUMS \
+            "airvpn-wg-healthcheck-${version}.tar.gz" \
+            "airvpn-wg-healthcheck-${version}.zip" | sort)"
+          test "$assets" = "$expected"
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
