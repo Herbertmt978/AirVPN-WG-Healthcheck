@@ -152,10 +152,16 @@ new_main_fixture() {
     STATUS_FILE="$STATE_DIR/wg0.status"
     ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
     AIRVPN_API_HELPER="$ROOT/libexec/airvpn-api"
+    MANAGED_MODULE="$ROOT/libexec/wg-healthcheck-managed"
+    AIRVPN_API_KEY_FILE="$TEST_TMP/healthcheck.d/wg0.api-key"
+    AIRVPN_API_STATE_FILE="$TEST_TMP/persistent/wg0.api-state"
+    AIRVPN_API_LOCK="$STATE_DIR/airvpn-api.lock"
+    MANAGED_CANDIDATE="$TEST_TMP/.wg0.conf.managed-candidate"
+    PRE_MANAGED_CONF="$TEST_TMP/wg0.conf.pre-managed"
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   }
   is_root() { return 0; }
-  validate_settings() { return 0; }
+  validate_secure_executable() { return 0; }
   validate_secure_file() { return 0; }
   prepare_state_dir() { mkdir -p "$STATE_DIR"; }
   flock() { return 0; }
@@ -192,6 +198,84 @@ test_sourceable_without_executing_or_enabling_errexit() {
   [[ $- != *e* ]] || fail "sourcing must not enable errexit in the caller"
 }
 
+test_runtime_cli_preserves_legacy_version_and_rejects_unknown_forms() {
+  local rc payload usage_text
+  source "$SCRIPT"
+  declare -F parse_cli >/dev/null || fail "strict runtime CLI parser is missing" || return 1
+
+  parse_cli wg0 || return 1
+  assert_eq check "$COMMAND" "legacy invocation must select the timer health command" || return 1
+  assert_eq wg0 "$IFACE" "legacy invocation must retain the interface" || return 1
+  assert_eq '' "$ACTION_MODE" "legacy invocation must not imply a mutation mode" || return 1
+
+  parse_cli --version || return 1
+  assert_eq version "$COMMAND" "--version must remain a standalone command" || return 1
+  usage_text="$(usage 2>&1)"
+  assert_contains 'wg-healthcheck provision <iface> --dry-run|--apply [--credential-fd N]' "$usage_text" \
+    "usage must document the provision descriptor override" || return 1
+  assert_contains 'wg-healthcheck adopt <iface> --dry-run|--apply [--credential-fd N]' "$usage_text" \
+    "usage must document the adopt descriptor override" || return 1
+
+  for payload in '' '--version wg0' 'unknown wg0 --dry-run' 'wg0 extra' \
+      'status --bad' 'rotate bad/interface --dry-run'; do
+    read -r -a argv <<< "$payload"
+    set +e
+    parse_cli "${argv[@]}" >/dev/null 2>&1
+    rc=$?
+    set +e
+    assert_eq 64 "$rc" "strict CLI must reject '$payload'" || return 1
+  done
+}
+
+test_mutating_cli_requires_exactly_one_mode_and_scopes_options() {
+  local command rc payload
+  source "$SCRIPT"
+  declare -F parse_cli >/dev/null || fail "strict runtime CLI parser is missing" || return 1
+
+  for command in provision adopt rotate restore-static reset-api-state; do
+    parse_cli "$command" wg0 --dry-run || return 1
+    assert_eq "$command" "$COMMAND" "$command must dispatch by name" || return 1
+    assert_eq dry-run "$ACTION_MODE" "$command --dry-run must remain non-mutating" || return 1
+    parse_cli "$command" wg0 --apply || return 1
+    assert_eq apply "$ACTION_MODE" "$command --apply must be explicit" || return 1
+
+    for payload in "$command wg0" "$command wg0 --dry-run --apply" \
+        "$command wg0 --apply --apply" "$command wg0 --json"; do
+      read -r -a argv <<< "$payload"
+      set +e
+      parse_cli "${argv[@]}" >/dev/null 2>&1
+      rc=$?
+      set +e
+      assert_eq 64 "$rc" "mutating CLI must reject '$payload'" || return 1
+    done
+  done
+
+  parse_cli provision wg0 --credential-fd 9 --dry-run || return 1
+  assert_eq 9 "$CREDENTIAL_FD" "provision may accept a descriptor number" || return 1
+  parse_cli adopt wg0 --apply --credential-fd 10 || return 1
+  assert_eq 10 "$CREDENTIAL_FD" "adopt may accept a descriptor number" || return 1
+  for payload in 'rotate wg0 --dry-run --credential-fd 9' \
+      'restore-static wg0 --apply --credential-fd 9' \
+      'provision wg0 --dry-run --credential-fd 2' \
+      'provision wg0 --dry-run --credential-fd 09' \
+      'adopt wg0 --apply --credential-fd nope' \
+      'provision wg0 --dry-run --credential-fd 9 --credential-fd 10'; do
+    read -r -a argv <<< "$payload"
+    set +e
+    parse_cli "${argv[@]}" >/dev/null 2>&1
+    rc=$?
+    set +e
+    assert_eq 64 "$rc" "credential descriptor grammar must reject '$payload'" || return 1
+  done
+
+  parse_cli status wg0 || return 1
+  assert_eq 0 "$STATUS_JSON" "status defaults to text" || return 1
+  parse_cli status wg0 --json || return 1
+  assert_eq 1 "$STATUS_JSON" "status alone may request JSON" || return 1
+  set +e; parse_cli status wg0 --dry-run >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 64 "$rc" "status must reject mutation flags"
+}
+
 test_runtime_defaults_and_fixed_paths_ignore_environment() {
   local key actual
   local -A expected=(
@@ -200,7 +284,8 @@ test_runtime_defaults_and_fixed_paths_ignore_environment() {
     [WG_DOWN_TIMEOUT]=20 [WG_UP_TIMEOUT]=30 [SPEED_CHECK_ENABLED]=0
     [SPEED_CHECK_INTERVAL]=900 [SPEED_CHECK_URL]='https://speed.cloudflare.com/__down?bytes=10000000'
     [SPEED_MIN_BPS]=2500000 [SPEED_TIMEOUT]=25 [SPEED_RETRY_DELAY]=5
-    [AIRVPN_ROTATE_ENABLED]=0 [AIRVPN_COUNTRIES]='GB NL BE DE FR IE'
+    [AIRVPN_ROTATE_ENABLED]=0 [AIRVPN_PROFILE_SOURCE]=static [AIRVPN_DEVICE]=''
+    [AIRVPN_COUNTRIES]='GB NL BE DE FR IE'
     [AIRVPN_WG_PORT]=1637 [AIRVPN_ROTATE_COOLDOWN]=1800
     [AIRVPN_STATUS_URL]='https://airvpn.org/api/status/?format=json'
     [AIRVPN_WHATISMYIP_URL]='https://airvpn.org/api/whatismyip/?format=json'
@@ -220,7 +305,9 @@ test_runtime_defaults_and_fixed_paths_ignore_environment() {
   done
 
   IFACE=wg0
-  for key in CFG WG_CONF STATE_DIR LOCK RESTART_STAMP ROTATE_STAMP SPEED_STAMP STATUS_FILE ROTATION_PENDING AIRVPN_API_HELPER PATH; do
+  for key in CFG WG_CONF STATE_DIR LOCK RESTART_STAMP ROTATE_STAMP SPEED_STAMP STATUS_FILE \
+      ROTATION_PENDING AIRVPN_API_HELPER MANAGED_MODULE AIRVPN_API_KEY_FILE \
+      AIRVPN_API_STATE_FILE AIRVPN_API_LOCK MANAGED_CANDIDATE PRE_MANAGED_CONF PATH; do
     printf -v "$key" '%s' "/tmp/hostile-$key"
   done
   derive_fixed_runtime_paths
@@ -234,6 +321,12 @@ test_runtime_defaults_and_fixed_paths_ignore_environment() {
   assert_eq '/run/wg-healthcheck/wg0.status' "$STATUS_FILE" "status path must be fixed" || return 1
   assert_eq '/etc/wireguard/wg0.conf.pending-healthcheck' "$ROTATION_PENDING" "pending marker must be fixed" || return 1
   assert_eq '/usr/local/libexec/wg-healthcheck/airvpn-api' "$AIRVPN_API_HELPER" "helper path must be fixed" || return 1
+  assert_eq '/usr/local/libexec/wg-healthcheck/wg-healthcheck-managed' "$MANAGED_MODULE" "managed module path must be fixed" || return 1
+  assert_eq '/etc/wireguard/healthcheck.d/wg0.api-key' "$AIRVPN_API_KEY_FILE" "credential path must be fixed" || return 1
+  assert_eq '/var/lib/wg-healthcheck/wg0.api-state' "$AIRVPN_API_STATE_FILE" "persistent API state path must be fixed" || return 1
+  assert_eq '/run/wg-healthcheck/airvpn-api.lock' "$AIRVPN_API_LOCK" "global API lock path must be fixed" || return 1
+  assert_eq '/etc/wireguard/.wg0.conf.managed-candidate' "$MANAGED_CANDIDATE" "managed candidate path must be fixed" || return 1
+  assert_eq '/etc/wireguard/wg0.conf.pre-managed' "$PRE_MANAGED_CONF" "pre-managed snapshot path must be fixed" || return 1
   assert_eq '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' "$PATH" "PATH must be fixed"
 }
 
@@ -331,6 +424,8 @@ test_config_parser_accepts_template_and_whole_quoted_values() {
   reset_configurable_defaults
   parse_healthcheck_config "$ROOT/config/wg0.conf.example" || fail "valid installed template must parse" || return 1
   assert_eq 2 "$PING_COUNT" "template numeric setting must apply" || return 1
+  assert_eq static "$AIRVPN_PROFILE_SOURCE" "template must explicitly retain static mode" || return 1
+  assert_eq '' "$AIRVPN_DEVICE" "static template must not invent a device" || return 1
   assert_eq 'GB NL BE DE FR IE' "$AIRVPN_COUNTRIES" "template quoted country list must apply" || return 1
 
   TEST_TMP="$(mktemp -d)"
@@ -416,6 +511,86 @@ test_config_parser_rejects_oversized_file_and_line() {
   for ((i = 0; i < 7000; i++)); do printf '# bounded comment\n' >> "$file"; done
   set +e; parse_healthcheck_config "$file"; rc=$?; set +e
   assert_eq 1 "$rc" "oversized configuration file must be rejected"
+}
+
+test_api_settings_require_device_allowed_port_and_normalize_countries() {
+  local code count=0 first second rc too_many invalid_device invalid_countries invalid_port allowed_port
+  source "$SCRIPT"
+  declare -F normalize_api_countries >/dev/null || fail "API country normalizer is missing" || return 1
+  log() { :; }
+
+  reset_configurable_defaults
+  AIRVPN_PROFILE_SOURCE=api
+  AIRVPN_DEVICE='Device 1._-'
+  AIRVPN_WG_PORT=47107
+  AIRVPN_COUNTRIES='gb NL gb de nl'
+  validate_secure_executable() { fail "API setting validation must not touch provider code before the credential boundary"; }
+  validate_settings || return 1
+  assert_eq 'GB NL DE' "$AIRVPN_COUNTRIES" "API countries must normalize uniquely in selected order" || return 1
+
+  AIRVPN_COUNTRIES=
+  validate_settings || return 1
+  assert_eq '' "$AIRVPN_COUNTRIES" "an explicit empty API country list must retain ALL semantics" || return 1
+
+  for invalid_device in '' '-leading' 'slash/name' $'line\nbreak' \
+      "$(printf '%65s' '' | tr ' ' a)" $'d\303\251vice'; do
+    reset_configurable_defaults
+    AIRVPN_PROFILE_SOURCE=api
+    AIRVPN_DEVICE="$invalid_device"
+    set +e; validate_settings; rc=$?; set +e
+    assert_eq 1 "$rc" "API mode must reject invalid device '$invalid_device'" || return 1
+  done
+
+  for invalid_port in 1 53 443 65535; do
+    reset_configurable_defaults
+    AIRVPN_PROFILE_SOURCE=api
+    AIRVPN_DEVICE=default
+    AIRVPN_WG_PORT="$invalid_port"
+    set +e; validate_settings; rc=$?; set +e
+    assert_eq 1 "$rc" "API mode must reject undocumented WireGuard port $invalid_port" || return 1
+  done
+  for allowed_port in 1637 47107 51820; do
+    reset_configurable_defaults
+    AIRVPN_PROFILE_SOURCE=api
+    AIRVPN_DEVICE=default
+    AIRVPN_WG_PORT="$allowed_port"
+    validate_settings || fail "API mode must accept documented WireGuard port $allowed_port" || return 1
+  done
+
+  for invalid_countries in 'G' 'GBR' 'G1' 'GB,NL'; do
+    reset_configurable_defaults
+    AIRVPN_PROFILE_SOURCE=api
+    AIRVPN_DEVICE=default
+    AIRVPN_COUNTRIES="$invalid_countries"
+    set +e; validate_settings; rc=$?; set +e
+    assert_eq 1 "$rc" "API country grammar must reject '$invalid_countries'" || return 1
+  done
+
+  too_many=
+  for first in A B; do
+    for second in {A..Z}; do
+      code="${first}${second}"
+      too_many+="${too_many:+ }$code"
+      count=$((count + 1))
+      [[ "$count" -ge 33 ]] && break 2
+    done
+  done
+  reset_configurable_defaults
+  AIRVPN_PROFILE_SOURCE=api
+  AIRVPN_DEVICE=default
+  AIRVPN_COUNTRIES="$too_many"
+  set +e; validate_settings; rc=$?; set +e
+  assert_eq 1 "$rc" "API country allowlist must contain at most 32 unique codes" || return 1
+
+  reset_configurable_defaults
+  AIRVPN_PROFILE_SOURCE=static
+  AIRVPN_WG_PORT=53
+  AIRVPN_COUNTRIES='legacy selector text'
+  validate_settings || fail "static mode must retain its broader legacy port and country contract" || return 1
+
+  AIRVPN_PROFILE_SOURCE=managed
+  set +e; validate_settings; rc=$?; set +e
+  assert_eq 1 "$rc" "profile source must be exactly static or api"
 }
 
 test_restart_cooldown_prevents_every_rotation_side_effect() {
@@ -825,9 +1000,9 @@ test_restart_attempt_stamp_precedes_fixed_down_and_up() {
   assert_contains 'qbit' "$events" "restart must verify qBittorrent after tunnel recovery"
 }
 
-test_authenticated_telemetry_is_fully_retired() {
+test_legacy_authenticated_telemetry_remains_retired() {
   local token
-  for token in AIRVPN_API_KEY AIRVPN_API_ENV AIRVPN_USERINFO_URL airvpn_session_log Api-Key userinfo; do
+  for token in AIRVPN_API_ENV AIRVPN_USERINFO_URL airvpn_session_log Api-Key userinfo; do
     if grep -Fq -- "$token" "$SCRIPT"; then
       fail "retired authenticated telemetry token remains in production: $token"
       return 1
@@ -1026,6 +1201,153 @@ test_main_lock_contention_is_nonblocking_and_side_effect_free() {
   assert_contains 'flock:-n ' "$calls" "instance lock must be nonblocking" || return 1
   [[ "$calls" != *unexpected-* ]] || fail "lock contention must stop all health side effects" || return 1
   assert_file_absent "$STATUS_FILE" "lock loser must not overwrite owner status"
+}
+
+test_load_command_context_allows_only_provision_to_lack_profile() {
+  local command rc
+  source "$SCRIPT"
+  declare -F load_command_context >/dev/null || fail "command-context loader is missing" || return 1
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  IFACE=wg0
+  CFG="$TEST_TMP/wg0-health.conf"
+  WG_CONF="$TEST_TMP/wg0.conf"
+  STATE_DIR="$TEST_TMP/state"
+  LOCK="$STATE_DIR/wg0.lock"
+  printf 'AIRVPN_PROFILE_SOURCE=static\n' > "$CFG"
+  derive_fixed_runtime_paths() { :; }
+  sanitize_process_environment() { :; }
+  is_root() { return 0; }
+  validate_secure_file() { [[ -f "$1" && ! -L "$1" ]]; }
+  prepare_state_dir() { mkdir -p "$STATE_DIR"; }
+  flock() { return 0; }
+
+  COMMAND=provision
+  load_command_context || fail "provision alone must allow a genuinely missing profile" || return 1
+  [[ -z "${LOCK_FD:-}" ]] || exec {LOCK_FD}>&-
+
+  for command in check adopt rotate restore-static reset-api-state status; do
+    COMMAND="$command"
+    set +e; load_command_context >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$command must fail closed when the profile is missing" || return 1
+  done
+
+  printf '%s\n' '[Interface]' '[Peer]' 'Endpoint = 192.0.2.1:1637' > "$WG_CONF"
+  COMMAND=provision
+  load_command_context || fail "provision context must securely validate an existing path before Task 8 refuses overwrite" || return 1
+  [[ -z "${LOCK_FD:-}" ]] || exec {LOCK_FD}>&-
+}
+
+test_static_no_marker_never_touches_credential_provider_or_managed_code() {
+  local rc calls
+  new_main_fixture
+  : > "$TEST_TMP/boundary-calls"
+  validate_secure_file() { printf 'file:%s\n' "$1" >> "$TEST_TMP/boundary-calls"; return 0; }
+  validate_secure_executable() { printf 'provider:%s\n' "$1" >> "$TEST_TMP/boundary-calls"; return 1; }
+  load_managed_module() { printf 'module:%s\n' "$MANAGED_MODULE" >> "$TEST_TMP/boundary-calls"; return 1; }
+  open_installed_api_key() { printf 'credential:%s\n' "$AIRVPN_API_KEY_FILE" >> "$TEST_TMP/boundary-calls"; return 1; }
+  fast_tunnel_health() { return 0; }
+  ensure_qbittorrent_binding() { return 0; }
+  write_status() { return 0; }
+
+  set +e; main wg0; rc=$?; set +e
+  calls="$(<"$TEST_TMP/boundary-calls")"
+  assert_eq 0 "$rc" "healthy static mode must keep the legacy path" || return 1
+  assert_eq $'file:'"$CFG"$'\nfile:'"$WG_CONF" "$calls" \
+    "static/no-marker startup may validate only its configuration and profile"
+}
+
+test_static_selector_validates_provider_only_when_selection_is_needed() {
+  local rc calls
+  source "$SCRIPT"
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  : > "$TEST_TMP/calls"
+  IFACE=wg0
+  STATE_DIR="$TEST_TMP/state"
+  AIRVPN_API_HELPER="$TEST_TMP/airvpn-api"
+  AIRVPN_STATUS_URL='https://airvpn.org/api/status/?format=json'
+  AIRVPN_COUNTRIES=GB
+  AIRVPN_WG_PORT=1637
+  AIRVPN_API_TIMEOUT=20
+  runtime_endpoint() { printf '192.0.2.1:1637\n'; }
+  validate_secure_executable() { printf 'validate:%s\n' "$1" >> "$TEST_TMP/calls"; return 1; }
+  log() { :; }
+
+  set +e; select_airvpn_candidate >/dev/null 2>&1; rc=$?; set +e
+  calls="$(<"$TEST_TMP/calls")"
+  assert_eq 1 "$rc" "an untrusted selector helper must fail before execution" || return 1
+  assert_eq "validate:$AIRVPN_API_HELPER" "$calls" "provider trust must be checked at the static selection boundary" || return 1
+
+  : > "$TEST_TMP/calls"
+  mkdir -p -- "$STATE_DIR"
+  curl_egress() { printf 'curl\n' >> "$TEST_TMP/calls"; return 0; }
+  set +e; verify_airvpn_egress >/dev/null 2>&1; rc=$?; set +e
+  calls="$(<"$TEST_TMP/calls")"
+  assert_eq 1 "$rc" "an untrusted egress helper must fail before execution" || return 1
+  assert_eq "validate:$AIRVPN_API_HELPER" "$calls" \
+    "egress verification must validate provider code before network or execution"
+}
+
+test_pending_marker_classification_loads_only_the_required_owner() {
+  local events rc
+  source "$SCRIPT"
+  declare -F dispatch_command >/dev/null || fail "command dispatcher is missing" || return 1
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  IFACE=wg0
+  WG_CONF="$TEST_TMP/wg0.conf"
+  ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
+  COMMAND=check
+  validate_secure_file() { return 0; }
+  run_healthcheck() { printf 'legacy\n' >> "$TEST_TMP/events"; }
+  reconcile_pending_rotation() { printf 'builtin-v1\n' >> "$TEST_TMP/events"; RECONCILED_PENDING=1; }
+  load_managed_module() {
+    printf 'load-managed\n' >> "$TEST_TMP/events"
+    managed_reconcile_pending() { printf 'managed-v2\n' >> "$TEST_TMP/events"; }
+    managed_dispatch_command() { printf 'managed-dispatch:%s\n' "$1" >> "$TEST_TMP/events"; }
+  }
+
+  : > "$TEST_TMP/events"
+  AIRVPN_PROFILE_SOURCE=static
+  rm -f -- "$ROTATION_PENDING"
+  dispatch_command || return 1
+  assert_file_equals legacy "$TEST_TMP/events" "static/no-marker must remain pure legacy code" || return 1
+
+  : > "$TEST_TMP/events"
+  printf '%s\n' 'version=2' 'transaction=managed-profile' > "$ROTATION_PENDING"
+  dispatch_command || return 1
+  events="$(<"$TEST_TMP/events")"
+  assert_eq $'load-managed\nmanaged-v2' "$events" \
+    "static/v2 must load managed code solely for reconciliation" || return 1
+
+  : > "$TEST_TMP/events"
+  AIRVPN_PROFILE_SOURCE=static
+  printf '192.0.2.1:1637\n' > "$ROTATION_PENDING"
+  dispatch_command || return 1
+  assert_file_equals builtin-v1 "$TEST_TMP/events" \
+    "static/v1 must retain its recovery-only legacy behavior" || return 1
+
+  : > "$TEST_TMP/events"
+  AIRVPN_PROFILE_SOURCE=api
+  printf '192.0.2.1:1637\n' > "$ROTATION_PENDING"
+  dispatch_command || return 1
+  events="$(<"$TEST_TMP/events")"
+  assert_eq $'builtin-v1\nload-managed\nmanaged-dispatch:check' "$events" \
+    "API/v1 must reconcile with the built-in owner before managed dispatch" || return 1
+
+  : > "$TEST_TMP/events"
+  printf '192.0.2.1:1637\n\n' > "$ROTATION_PENDING"
+  set +e; dispatch_command >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "v1 classification must reject more than one newline-terminated record" || return 1
+  assert_file_equals '' "$TEST_TMP/events" "invalid pending data must not reach either reconciliation owner" || return 1
+
+  : > "$TEST_TMP/events"
+  rm -f -- "$ROTATION_PENDING"
+  dispatch_command || return 1
+  events="$(<"$TEST_TMP/events")"
+  assert_eq $'load-managed\nmanaged-dispatch:check' "$events" \
+    "API/no-marker must dispatch through the securely loaded managed owner"
 }
 
 test_main_propagates_route_rule_and_qbittorrent_failures() {
@@ -1248,6 +1570,7 @@ test_main_reconciles_pending_state_before_normal_health() {
   local rc calls
   new_main_fixture
   : > "$TEST_TMP/calls"
+  printf '192.0.2.10:1637\n' > "$ROTATION_PENDING"
   reconcile_pending_rotation() { printf 'reconcile\n' >> "$TEST_TMP/calls"; return 1; }
   fast_tunnel_health() { printf 'unexpected-health\n' >> "$TEST_TMP/calls"; return 0; }
 
@@ -1429,10 +1752,11 @@ test_secure_helper_and_parent_validation() {
   done
 }
 
-test_validate_settings_uses_secure_helper_owner() {
-  local rc
+test_static_settings_do_not_touch_provider_helper() {
+  local rc calls
   new_recovery_fixture
   : > "$TEST_TMP/calls"
+  AIRVPN_PROFILE_SOURCE=static
   validate_secure_executable() { printf '%s\n' "$1" >> "$TEST_TMP/calls"; return 1; }
   AIRVPN_API_HELPER="$TEST_TMP/airvpn-api"
 
@@ -1440,9 +1764,10 @@ test_validate_settings_uses_secure_helper_owner() {
   validate_settings
   rc=$?
   set +e
+  calls="$(file_text "$TEST_TMP/calls")"
 
-  assert_eq 1 "$rc" "insecure helper must fail settings validation" || return 1
-  assert_eq "$AIRVPN_API_HELPER" "$(<"$TEST_TMP/calls")" "settings must delegate helper trust validation"
+  assert_eq 0 "$rc" "static settings must remain independent of provider installation" || return 1
+  assert_eq '' "$calls" "static settings must not stat provider code"
 }
 
 test_route_and_rule_checks_consume_large_producer_output() {
@@ -1543,6 +1868,7 @@ test_https_curl_policy_and_egress_cleanup() {
   IFACE=wg0
   STATE_DIR="$TEST_TMP/state"
   log() { :; }
+  validate_secure_executable() { return 0; }
   set +e; validate_url TEST_URL 'http://example.test/file'; rc=$?; set +e
   assert_eq 1 "$rc" "HTTP URL must be rejected" || return 1
 
@@ -1617,6 +1943,8 @@ test_selector_failures_use_one_protective_restart_owner() {
 tests=(
   test_version_output_is_fixed_and_public
   test_sourceable_without_executing_or_enabling_errexit
+  test_runtime_cli_preserves_legacy_version_and_rejects_unknown_forms
+  test_mutating_cli_requires_exactly_one_mode_and_scopes_options
   test_runtime_defaults_and_fixed_paths_ignore_environment
   test_process_environment_is_sanitized_for_child_commands
   test_hostile_internal_paths_cannot_redirect_main_or_truncate_lock_target
@@ -1625,6 +1953,7 @@ tests=(
   test_config_parser_rejects_internal_unknown_duplicate_and_malformed_keys
   test_config_parser_rejects_ambiguous_syntax_without_execution_or_partial_apply
   test_config_parser_rejects_oversized_file_and_line
+  test_api_settings_require_device_allowed_port_and_normalize_countries
   test_restart_cooldown_prevents_every_rotation_side_effect
   test_exact_endpoint_mismatch_rolls_back_and_verifies_qbittorrent
   test_rotation_stamp_is_written_only_after_every_postcondition
@@ -1641,7 +1970,7 @@ tests=(
   test_failed_post_rotation_speed_probe_rolls_back_once
   test_status_file_is_atomic_private_and_machine_readable
   test_restart_attempt_stamp_precedes_fixed_down_and_up
-  test_authenticated_telemetry_is_fully_retired
+  test_legacy_authenticated_telemetry_remains_retired
   test_strict_ip_and_peer_section_validation
   test_handshake_age_parses_wireguard_columns
   test_three_state_cooldown_and_invalid_restart_state
@@ -1650,6 +1979,10 @@ tests=(
   test_fixed_command_wrappers_pass_exact_argv
   test_main_uses_root_seam_and_validates_both_files
   test_main_lock_contention_is_nonblocking_and_side_effect_free
+  test_load_command_context_allows_only_provision_to_lack_profile
+  test_static_no_marker_never_touches_credential_provider_or_managed_code
+  test_static_selector_validates_provider_only_when_selection_is_needed
+  test_pending_marker_classification_loads_only_the_required_owner
   test_main_propagates_route_rule_and_qbittorrent_failures
   test_main_rejects_invalid_speed_stamp
   test_restart_rejects_invalid_speed_mode_before_commands
@@ -1667,7 +2000,7 @@ tests=(
   test_config_barrier_failure_performs_verified_rollback
   test_marker_cleanup_barrier_failure_recreates_recovery_marker
   test_secure_helper_and_parent_validation
-  test_validate_settings_uses_secure_helper_owner
+  test_static_settings_do_not_touch_provider_helper
   test_route_and_rule_checks_consume_large_producer_output
   test_canonical_endpoint_equivalence_is_used_everywhere
   test_qbittorrent_binding_requires_tcp_udp_process_and_container_pid

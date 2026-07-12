@@ -12,6 +12,20 @@ SPEED_STAMP=''
 STATUS_FILE=''
 ROTATION_PENDING=''
 AIRVPN_API_HELPER=''
+MANAGED_MODULE=''
+AIRVPN_API_KEY_FILE=''
+AIRVPN_API_STATE_FILE=''
+AIRVPN_API_LOCK=''
+MANAGED_CANDIDATE=''
+PRE_MANAGED_CONF=''
+COMMAND=''
+ACTION_MODE=''
+STATUS_JSON=0
+CREDENTIAL_FD=''
+CONTEXT_LOCKED=0
+LOCK_FD=''
+PENDING_KIND=none
+MANAGED_MODULE_LOADED=0
 
 reset_configurable_defaults() {
   MAX_AGE=180
@@ -31,6 +45,8 @@ reset_configurable_defaults() {
   SPEED_TIMEOUT=25
   SPEED_RETRY_DELAY=5
   AIRVPN_ROTATE_ENABLED=0
+  AIRVPN_PROFILE_SOURCE=static
+  AIRVPN_DEVICE=''
   AIRVPN_COUNTRIES='GB NL BE DE FR IE'
   AIRVPN_WG_PORT=1637
   AIRVPN_ROTATE_COOLDOWN=1800
@@ -64,6 +80,94 @@ truthy() {
 validate_bool() { case "${1:-}" in 0|1|true|TRUE|false|FALSE|yes|YES|no|NO|on|ON) return 0;; *) return 1;; esac; }
 current_epoch() { date +%s; }
 validate_interface_name() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_=+.-]{0,14}$ ]]; }
+
+usage() {
+  printf '%s\n' \
+    'usage: wg-healthcheck <iface>' \
+    '       wg-healthcheck provision <iface> --dry-run|--apply [--credential-fd N]' \
+    '       wg-healthcheck adopt <iface> --dry-run|--apply [--credential-fd N]' \
+    '       wg-healthcheck rotate|restore-static|reset-api-state <iface> --dry-run|--apply' \
+    '       wg-healthcheck status <iface> [--json]' \
+    '       wg-healthcheck --version' >&2
+}
+
+validate_credential_fd_number() {
+  local value="${1:-}"
+  [[ "$value" =~ ^[1-9][0-9]*$ && ${#value} -le 4 ]] || return 1
+  (( 10#$value >= 3 && 10#$value <= 1023 ))
+}
+
+parse_cli() {
+  local action_count=0 credential_seen=0
+  COMMAND=
+  ACTION_MODE=
+  STATUS_JSON=0
+  CREDENTIAL_FD=
+  IFACE=
+
+  if (( $# == 1 )); then
+    if [[ "$1" == --version ]]; then
+      COMMAND=version
+      return 0
+    fi
+    if validate_interface_name "$1"; then
+      COMMAND=check
+      IFACE="$1"
+      return 0
+    fi
+  fi
+  if [[ $# -lt 2 ]]; then
+    usage
+    return 64
+  fi
+
+  case "$1" in
+    provision|adopt|rotate|restore-static|reset-api-state|status) COMMAND="$1" ;;
+    *) usage; return 64 ;;
+  esac
+  IFACE="$2"
+  validate_interface_name "$IFACE" || { usage; return 64; }
+  shift 2
+
+  if [[ "$COMMAND" == status ]]; then
+    if [[ $# -eq 0 ]]; then return 0; fi
+    if [[ $# -eq 1 && "$1" == --json ]]; then
+      STATUS_JSON=1
+      return 0
+    fi
+    usage
+    return 64
+  fi
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --dry-run|--apply)
+        action_count=$((action_count + 1))
+        ACTION_MODE="${1#--}"
+        shift
+        ;;
+      --credential-fd)
+        if [[ "$COMMAND" != provision && "$COMMAND" != adopt ]] ||
+           (( credential_seen )) || (( $# < 2 )) ||
+           ! validate_credential_fd_number "$2"; then
+          usage
+          return 64
+        fi
+        credential_seen=1
+        CREDENTIAL_FD="$2"
+        shift 2
+        ;;
+      *)
+        usage
+        return 64
+        ;;
+    esac
+  done
+  if (( action_count != 1 )); then
+    usage
+    return 64
+  fi
+}
 
 validate_uint() {
   local name="${1:?}" value="${2-}" minimum="${3:?}" maximum="${4:?}" number
@@ -172,7 +276,7 @@ parse_healthcheck_config() {
       MAX_AGE|PING_TARGET|PING_COUNT|PING_TIMEOUT|REQUIRED_ROUTE|REQUIRED_RULE|\
       COOLDOWN|RESTART_DELAY|WG_DOWN_TIMEOUT|WG_UP_TIMEOUT|\
       SPEED_CHECK_ENABLED|SPEED_CHECK_INTERVAL|SPEED_CHECK_URL|SPEED_MIN_BPS|SPEED_TIMEOUT|SPEED_RETRY_DELAY|\
-      AIRVPN_ROTATE_ENABLED|AIRVPN_COUNTRIES|AIRVPN_WG_PORT|AIRVPN_ROTATE_COOLDOWN|\
+      AIRVPN_ROTATE_ENABLED|AIRVPN_PROFILE_SOURCE|AIRVPN_DEVICE|AIRVPN_COUNTRIES|AIRVPN_WG_PORT|AIRVPN_ROTATE_COOLDOWN|\
       AIRVPN_STATUS_URL|AIRVPN_WHATISMYIP_URL|AIRVPN_API_TIMEOUT|\
       QBITTORRENT_CONTAINER|QBITTORRENT_LISTEN_IP|QBITTORRENT_LISTEN_PORT|\
       QBITTORRENT_PROCESS_NAME|QBITTORRENT_RESTART_DELAY|QBITTORRENT_RESTART_TIMEOUT) ;;
@@ -229,7 +333,36 @@ parse_healthcheck_config() {
   done
 }
 
+normalize_api_countries() {
+  local country normalized='' country_pattern='^[A-Za-z]{2}$'
+  local LC_ALL=C
+  local -a countries=()
+  local -A seen=()
+
+  [[ -z "$AIRVPN_COUNTRIES" ]] && return 0
+  read -r -a countries <<< "$AIRVPN_COUNTRIES"
+  (( ${#countries[@]} > 0 )) || return 1
+  for country in "${countries[@]}"; do
+    [[ "$country" =~ $country_pattern ]] || {
+      log "AIRVPN_COUNTRIES must contain only two-letter country codes"
+      return 1
+    }
+    country="${country^^}"
+    if [[ -z "${seen[$country]+present}" ]]; then
+      if (( ${#seen[@]} >= 32 )); then
+        log "AIRVPN_COUNTRIES must contain at most 32 unique country codes"
+        return 1
+      fi
+      seen["$country"]=1
+      normalized+="${normalized:+ }$country"
+    fi
+  done
+  AIRVPN_COUNTRIES="$normalized"
+}
+
 validate_settings() {
+  local device_pattern='^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$'
+  local LC_ALL=C
   if ! validate_bool "$SPEED_CHECK_ENABLED" || ! validate_bool "$AIRVPN_ROTATE_ENABLED"; then
     log "SPEED_CHECK_ENABLED and AIRVPN_ROTATE_ENABLED must be booleans"
     return 1
@@ -258,6 +391,29 @@ validate_settings() {
   validate_single_line REQUIRED_RULE "$REQUIRED_RULE" || return 1
   validate_single_line AIRVPN_COUNTRIES "$AIRVPN_COUNTRIES" || return 1
 
+  case "$AIRVPN_PROFILE_SOURCE" in
+    static) ;;
+    api)
+      if ! validate_single_line AIRVPN_DEVICE "$AIRVPN_DEVICE" ||
+         [[ ! "$AIRVPN_DEVICE" =~ $device_pattern ]]; then
+        log "AIRVPN_DEVICE is invalid for API-managed mode"
+        return 1
+      fi
+      case "$AIRVPN_WG_PORT" in
+        1637|47107|51820) ;;
+        *)
+          log "AIRVPN_WG_PORT is not supported for API-managed mode"
+          return 1
+          ;;
+      esac
+      normalize_api_countries || return 1
+      ;;
+    *)
+      log "AIRVPN_PROFILE_SOURCE must be static or api"
+      return 1
+      ;;
+  esac
+
   if [[ -n "$PING_TARGET" && ! "$PING_TARGET" =~ ^[A-Za-z0-9:.%_-]+$ ]]; then
     log "PING_TARGET contains unsupported characters"
     return 1
@@ -282,10 +438,6 @@ validate_settings() {
     log "QBITTORRENT_PROCESS_NAME is invalid"
     return 1
   fi
-  if ! validate_secure_executable "$AIRVPN_API_HELPER"; then
-    log "AirVPN helper is not executable"
-    return 1
-  fi
 }
 
 path_is_symlink() { [[ -L "$1" ]]; }
@@ -303,6 +455,31 @@ validate_secure_executable() {
   [[ "$parent_meta" =~ ^0:([0-7]{3,4})$ ]] || return 1
   parent_mode="${BASH_REMATCH[1]}"
   (( (8#$parent_mode & 8#022) == 0 ))
+}
+validate_secure_module() {
+  local path="${1:?}" parent file_meta parent_meta parent_mode
+  parent="${path%/*}"; [[ "$parent" != "$path" ]] || parent=.
+  path_is_regular "$path" && ! path_is_symlink "$path" || return 1
+  file_meta="$(owner_mode "$path")" || return 1
+  [[ "$file_meta" == 0:644 ]] || return 1
+  path_is_directory "$parent" && ! path_is_symlink "$parent" || return 1
+  parent_meta="$(owner_mode "$parent")" || return 1
+  [[ "$parent_meta" =~ ^0:([0-7]{3,4})$ ]] || return 1
+  parent_mode="${BASH_REMATCH[1]}"
+  (( (8#$parent_mode & 8#022) == 0 ))
+}
+load_managed_module() {
+  if (( MANAGED_MODULE_LOADED )); then return 0; fi
+  if ! validate_secure_module "$MANAGED_MODULE"; then
+    log "Managed runtime module failed trust validation"
+    return 1
+  fi
+  # shellcheck disable=SC1090
+  if ! source "$MANAGED_MODULE"; then
+    log "Managed runtime module could not be loaded"
+    return 1
+  fi
+  MANAGED_MODULE_LOADED=1
 }
 validate_secure_file() {
   local path="${1:?}" label="${2:?}" mode uid actual_mode
@@ -329,6 +506,14 @@ derive_fixed_runtime_paths() {
   STATUS_FILE="$STATE_DIR/${IFACE}.status"
   ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
   AIRVPN_API_HELPER=/usr/local/libexec/wg-healthcheck/airvpn-api
+  MANAGED_MODULE=/usr/local/libexec/wg-healthcheck/wg-healthcheck-managed
+  # These fixed paths are consumed by the securely sourced managed module.
+  # shellcheck disable=SC2034
+  AIRVPN_API_KEY_FILE="/etc/wireguard/healthcheck.d/${IFACE}.api-key" \
+    AIRVPN_API_STATE_FILE="/var/lib/wg-healthcheck/${IFACE}.api-state" \
+    AIRVPN_API_LOCK="$STATE_DIR/airvpn-api.lock" \
+    MANAGED_CANDIDATE="/etc/wireguard/.${IFACE}.conf.managed-candidate" \
+    PRE_MANAGED_CONF="${WG_CONF}.pre-managed"
   PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 }
 
@@ -588,6 +773,10 @@ verify_airvpn_egress() (
   local directory tmp display server country extra
   directory="${STATE_DIR:?}"
   [[ -d "$directory" ]] || exit 1
+  if ! validate_secure_executable "$AIRVPN_API_HELPER"; then
+    log "AirVPN helper is not executable"
+    exit 1
+  fi
   tmp="$(mktemp "$directory/.egress.XXXXXX")" || exit 1
   trap 'rm -f -- "$tmp"' EXIT
   trap 'exit 143' HUP INT TERM
@@ -769,6 +958,10 @@ restart_iface() {
 
 select_airvpn_candidate() {
   local current
+  if ! validate_secure_executable "$AIRVPN_API_HELPER"; then
+    log "AirVPN helper is not executable"
+    return 1
+  fi
   current="$(runtime_endpoint)" || current="$(configured_endpoint)" || return 1
   "$AIRVPN_API_HELPER" select \
     --url "$AIRVPN_STATUS_URL" \
@@ -1032,17 +1225,9 @@ fast_tunnel_health() {
   fi
 }
 is_root() { (( EUID == 0 )); }
-main() {
-  local lock_fd recovery_rc speed_rc cooldown_rc
-  if [[ $# -eq 1 && "$1" == --version ]]; then
-    printf 'wg-healthcheck %s\n' "$WG_HEALTHCHECK_VERSION"
-    return 0
-  fi
-  if [[ $# -ne 1 ]] || ! validate_interface_name "$1"; then
-    printf 'usage: wg-healthcheck <iface>\n' >&2
-    return 64
-  fi
-  IFACE="$1"
+
+load_command_context() {
+  CONTEXT_LOCKED=0
   reset_configurable_defaults
   derive_fixed_runtime_paths
   sanitize_process_environment
@@ -1052,17 +1237,57 @@ main() {
     return 1
   fi
   validate_secure_file "$CFG" "health-check configuration" 600 || return 1
-  validate_secure_file "$WG_CONF" "WireGuard configuration" 600 || return 1
+  if [[ "$COMMAND" == provision && ! -e "$WG_CONF" && ! -L "$WG_CONF" ]]; then
+    :
+  else
+    validate_secure_file "$WG_CONF" "WireGuard configuration" 600 || return 1
+  fi
   parse_healthcheck_config "$CFG" || return 1
   validate_settings || return 1
   prepare_state_dir || return 1
 
-  exec {lock_fd}>"$LOCK" || return 1
-  if ! flock -n "$lock_fd"; then
+  LOCK_FD=
+  exec {LOCK_FD}>"$LOCK" || return 1
+  if ! flock -n "$LOCK_FD"; then
     return 0
   fi
-  reconcile_pending_rotation || return 1
-  (( RECONCILED_PENDING )) && return 0
+  CONTEXT_LOCKED=1
+}
+
+classify_pending_marker() {
+  local marker size marker_fd
+  local LC_ALL=C
+  PENDING_KIND=none
+  if [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]]; then return 0; fi
+  validate_secure_file "$ROTATION_PENDING" "pending rotation marker" 600 || return 1
+  size="$(stat -c '%s' -- "$ROTATION_PENDING" 2>/dev/null)" || return 1
+  if [[ ! "$size" =~ ^[0-9]+$ ]] || (( 10#$size < 2 || 10#$size > 4096 )); then
+    log "Pending rotation marker has an invalid size"
+    return 1
+  fi
+  exec {marker_fd}<"$ROTATION_PENDING" || return 1
+  marker=
+  IFS= read -r -u "$marker_fd" marker || {
+    exec {marker_fd}<&-
+    return 1
+  }
+  exec {marker_fd}<&-
+  if [[ "$marker" == version=2 ]]; then
+    PENDING_KIND=v2
+    return 0
+  fi
+  marker="$(<"$ROTATION_PENDING")"
+  if (( 10#$size != ${#marker} + 1 )) ||
+     [[ "$marker" == *$'\r'* || "$marker" == *$'\n'* ]] ||
+     [[ "$(canonicalize_endpoint "$marker" 2>/dev/null)" != "$marker" ]]; then
+    log "Pending rotation marker has an unknown format"
+    return 1
+  fi
+  PENDING_KIND=v1
+}
+
+run_healthcheck() {
+  local recovery_rc speed_rc cooldown_rc
   configured_endpoint >/dev/null || {
     log "WireGuard configuration must contain exactly one numeric endpoint"
     return 1
@@ -1100,6 +1325,53 @@ main() {
     fi
   fi
   write_status healthy all_checks_passed
+}
+
+dispatch_command() {
+  classify_pending_marker || return 1
+  case "$PENDING_KIND" in
+    v1)
+      reconcile_pending_rotation || return 1
+      (( RECONCILED_PENDING )) || return 1
+      if [[ "$COMMAND" == check && "$AIRVPN_PROFILE_SOURCE" == static ]]; then
+        return 0
+      fi
+      PENDING_KIND=none
+      ;;
+    v2)
+      load_managed_module || return 1
+      declare -F managed_reconcile_pending >/dev/null || {
+        log "Managed runtime module lacks its reconciliation owner"
+        return 1
+      }
+      managed_reconcile_pending
+      return $?
+      ;;
+    none) ;;
+    *) return 1 ;;
+  esac
+
+  if [[ "$COMMAND" == check && "$AIRVPN_PROFILE_SOURCE" == static ]]; then
+    run_healthcheck
+    return $?
+  fi
+  load_managed_module || return 1
+  declare -F managed_dispatch_command >/dev/null || {
+    log "Managed runtime module lacks its command dispatcher"
+    return 1
+  }
+  managed_dispatch_command "$COMMAND" "$ACTION_MODE" "$STATUS_JSON" "$CREDENTIAL_FD"
+}
+
+main() {
+  parse_cli "$@" || return $?
+  if [[ "$COMMAND" == version ]]; then
+    printf 'wg-healthcheck %s\n' "$WG_HEALTHCHECK_VERSION"
+    return 0
+  fi
+  load_command_context || return 1
+  (( CONTEXT_LOCKED )) || return 0
+  dispatch_command
 }
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   umask 077

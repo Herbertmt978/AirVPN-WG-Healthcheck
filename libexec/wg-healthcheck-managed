@@ -1,0 +1,67 @@
+#!/bin/bash
+
+# Securely sourced by bin/wg-healthcheck after fixed-path ownership and mode checks.
+# Transaction, persistent-state, and lifecycle command implementations land in later
+# approved slices; this module owns their fail-closed dispatch boundary now.
+
+managed_file_size() {
+  stat -c '%s' -- "$1" 2>/dev/null
+}
+
+managed_credential_record_valid() {
+  local path="${1:?}"
+  LC_ALL=C command grep -aEq '^[0-9a-f]{64}$' -- "$path" 2>/dev/null
+}
+
+open_installed_api_key() {
+  local output_variable="${1:?}" parent file_meta parent_meta size opened_fd
+  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  parent="${AIRVPN_API_KEY_FILE%/*}"
+  [[ "$parent" != "$AIRVPN_API_KEY_FILE" ]] || return 1
+
+  if ! path_is_directory "$parent" || path_is_symlink "$parent"; then
+    log "API credential directory failed trust validation"
+    return 1
+  fi
+  parent_meta="$(owner_mode "$parent")" || return 1
+  if [[ "$parent_meta" != 0:700 ]]; then
+    log "API credential directory failed trust validation"
+    return 1
+  fi
+  if ! path_is_regular "$AIRVPN_API_KEY_FILE" || path_is_symlink "$AIRVPN_API_KEY_FILE"; then
+    log "Installed API credential failed trust validation"
+    return 1
+  fi
+  file_meta="$(owner_mode "$AIRVPN_API_KEY_FILE")" || return 1
+  if [[ "$file_meta" != 0:600 ]]; then
+    log "Installed API credential failed trust validation"
+    return 1
+  fi
+  size="$(managed_file_size "$AIRVPN_API_KEY_FILE")" || return 1
+  if [[ "$size" != 65 ]] || ! managed_credential_record_valid "$AIRVPN_API_KEY_FILE"; then
+    log "Installed API credential has an invalid record shape"
+    return 1
+  fi
+
+  exec {opened_fd}<"$AIRVPN_API_KEY_FILE" || return 1
+  printf -v "$output_variable" '%s' "$opened_fd"
+}
+
+managed_reconcile_pending() {
+  log "Managed-profile reconciliation is not available in this implementation slice"
+  return 1
+}
+
+managed_dispatch_command() {
+  local command="${1:-}"
+  case "$command" in
+    check|provision|adopt|rotate|restore-static|reset-api-state|status)
+      log "Managed command '$command' is not available in this implementation slice"
+      return 69
+      ;;
+    *)
+      log "Unknown managed command"
+      return 64
+      ;;
+  esac
+}
