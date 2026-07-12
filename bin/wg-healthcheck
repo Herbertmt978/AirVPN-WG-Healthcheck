@@ -216,6 +216,9 @@ validate_single_line() {
   fi
 }
 validate_container_name() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; }
+validate_managed_container_name() {
+  validate_container_name "${1:-}" && [[ ! "${1:-}" =~ ^[0-9a-f]{64}$ ]]
+}
 validate_process_name() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}$ ]]; }
 
 validate_ip_address() {
@@ -452,6 +455,11 @@ validate_settings() {
   fi
   if [[ -n "$QBITTORRENT_CONTAINER" ]] && ! validate_container_name "$QBITTORRENT_CONTAINER"; then
     log "QBITTORRENT_CONTAINER is invalid"
+    return 1
+  fi
+  if [[ "$AIRVPN_PROFILE_SOURCE" == api && -n "$QBITTORRENT_CONTAINER" ]] &&
+      ! validate_managed_container_name "$QBITTORRENT_CONTAINER"; then
+    log "QBITTORRENT_CONTAINER is ambiguous with an immutable Docker container ID"
     return 1
   fi
   if ! validate_process_name "$QBITTORRENT_PROCESS_NAME"; then

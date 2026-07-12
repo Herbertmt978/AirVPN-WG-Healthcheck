@@ -595,6 +595,35 @@ test_api_settings_require_device_allowed_port_and_normalize_countries() {
   assert_eq 1 "$rc" "profile source must be exactly static or api"
 }
 
+test_managed_qb_container_name_rejects_exact_immutable_id_without_static_regression() {
+  local ambiguous_name rc
+  source "$SCRIPT"
+  log() { :; }
+  ambiguous_name=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+  validate_container_name "$ambiguous_name" ||
+    fail "the legacy Docker-name grammar must continue to accept a 64-hex name" || return 1
+
+  reset_configurable_defaults
+  AIRVPN_PROFILE_SOURCE=api
+  AIRVPN_DEVICE=default
+  QBITTORRENT_CONTAINER="$ambiguous_name"
+  QBITTORRENT_LISTEN_IP=192.0.2.2
+  QBITTORRENT_LISTEN_PORT=6881
+  set +e; validate_settings >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" \
+    "managed mode must reject a Docker name that is indistinguishable from an immutable ID" ||
+    return 1
+
+  reset_configurable_defaults
+  AIRVPN_PROFILE_SOURCE=static
+  QBITTORRENT_CONTAINER="$ambiguous_name"
+  QBITTORRENT_LISTEN_IP=192.0.2.2
+  QBITTORRENT_LISTEN_PORT=6881
+  validate_settings ||
+    fail "static mode must retain its existing broad Docker-name compatibility"
+}
+
 test_restart_cooldown_prevents_every_rotation_side_effect() {
   local tmp events original rc
   tmp="$(mktemp -d)"
@@ -2076,6 +2105,7 @@ tests=(
   test_config_parser_rejects_ambiguous_syntax_without_execution_or_partial_apply
   test_config_parser_rejects_oversized_file_and_line
   test_api_settings_require_device_allowed_port_and_normalize_countries
+  test_managed_qb_container_name_rejects_exact_immutable_id_without_static_regression
   test_restart_cooldown_prevents_every_rotation_side_effect
   test_exact_endpoint_mismatch_rolls_back_and_verifies_qbittorrent
   test_rotation_stamp_is_written_only_after_every_postcondition
