@@ -93,8 +93,10 @@ managed_api_state_defaults() {
   local now="${1:?}"
   managed_epoch_is_valid "$now" || return 1
   MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_OBSERVED_AT="$now"
   MANAGED_API_WINDOW_START="$now"
   MANAGED_API_ATTEMPT_COUNT=0
+  MANAGED_API_ATTEMPT_EPOCHS=()
   MANAGED_API_BACKOFF_UNTIL=0
   MANAGED_API_FAILURE_CLASS=none
   MANAGED_API_CREDENTIAL_DEVICE=0
@@ -151,29 +153,51 @@ managed_api_metadata_is_valid() {
 # durable v1 record must carry.
 managed_api_state_memory_is_valid() {
   local persistent="${1:-0}" now="${MANAGED_API_STATE_NOW-}"
-  local maximum_backoff maximum_exclusion index name expiry
+  local observed="${MANAGED_API_OBSERVED_AT-}" maximum_backoff maximum_exclusion
+  local index name expiry previous_epoch=''
   local -A seen=()
   [[ "$persistent" == 0 || "$persistent" == 1 ]] || return 1
   managed_epoch_is_valid "$now" || return 1
+  managed_epoch_is_valid "$observed" || return 1
+  [[ "$now" == "$observed" ]] || return 1
   managed_epoch_is_valid "${MANAGED_API_WINDOW_START-}" || return 1
   managed_epoch_is_valid "${MANAGED_API_BACKOFF_UNTIL-}" || return 1
-  (( 10#$MANAGED_API_WINDOW_START <= 10#$now )) || return 1
-  maximum_backoff=$((10#$now + 86400))
+  (( 10#$MANAGED_API_WINDOW_START <= 10#$observed )) || return 1
+  maximum_backoff=$((10#$observed + 86400))
   (( maximum_backoff <= 4294967295 )) || return 1
   (( 10#$MANAGED_API_BACKOFF_UNTIL <= maximum_backoff )) || return 1
   managed_uint_is_canonical "${MANAGED_API_ATTEMPT_COUNT-}" 6 || return 1
+  (( 10#$MANAGED_API_ATTEMPT_COUNT == ${#MANAGED_API_ATTEMPT_EPOCHS[@]} )) || return 1
+  if (( 10#$MANAGED_API_ATTEMPT_COUNT == 0 )); then
+    [[ "$MANAGED_API_WINDOW_START" == "$observed" ]] || return 1
+  else
+    [[ "$MANAGED_API_WINDOW_START" == "${MANAGED_API_ATTEMPT_EPOCHS[0]}" ]] || return 1
+  fi
+  for ((index = 0; index < ${#MANAGED_API_ATTEMPT_EPOCHS[@]}; index++)); do
+    managed_epoch_is_valid "${MANAGED_API_ATTEMPT_EPOCHS[$index]}" || return 1
+    (( 10#${MANAGED_API_ATTEMPT_EPOCHS[$index]} <= 10#$observed )) || return 1
+    (( 10#$observed - 10#${MANAGED_API_ATTEMPT_EPOCHS[$index]} < 86400 )) || return 1
+    if [[ -n "$previous_epoch" ]]; then
+      (( 10#${MANAGED_API_ATTEMPT_EPOCHS[$index]} >= 10#$previous_epoch )) || return 1
+    fi
+    previous_epoch="${MANAGED_API_ATTEMPT_EPOCHS[$index]}"
+  done
   case "${MANAGED_API_FAILURE_CLASS-}" in
     none|auth|device|rate|transient) ;;
     *) return 1 ;;
   esac
-  if [[ "$MANAGED_API_FAILURE_CLASS" == none && "$MANAGED_API_BACKOFF_UNTIL" != 0 ]]; then
-    return 1
-  fi
+  case "$MANAGED_API_FAILURE_CLASS" in
+    none) [[ "$MANAGED_API_BACKOFF_UNTIL" == 0 ]] || return 1 ;;
+    *) (( 10#$MANAGED_API_BACKOFF_UNTIL > 0 )) || return 1 ;;
+  esac
   managed_api_metadata_is_valid \
     "${MANAGED_API_CREDENTIAL_DEVICE-}" \
     "${MANAGED_API_CREDENTIAL_INODE-}" \
     "${MANAGED_API_CREDENTIAL_MTIME-}" \
     "${MANAGED_API_CREDENTIAL_SIZE-}" || return 1
+  if [[ "${MANAGED_API_CREDENTIAL_SIZE-}" == 65 ]]; then
+    (( 10#$MANAGED_API_CREDENTIAL_MTIME <= 10#$observed + 300 )) || return 1
+  fi
   if [[ -n "${MANAGED_API_CONFIGURED_DEVICE-}" ]]; then
     managed_device_name_is_valid "$MANAGED_API_CONFIGURED_DEVICE" || return 1
   fi
@@ -185,7 +209,7 @@ managed_api_state_memory_is_valid() {
   fi
   (( ${#MANAGED_API_EXCLUDE_NAMES[@]} == ${#MANAGED_API_EXCLUDE_EXPIRIES[@]} )) || return 1
   (( ${#MANAGED_API_EXCLUDE_NAMES[@]} <= 16 )) || return 1
-  maximum_exclusion=$((10#$now + 21600))
+  maximum_exclusion=$((10#$observed + 21600))
   for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
     name="${MANAGED_API_EXCLUDE_NAMES[$index]}"
     expiry="${MANAGED_API_EXCLUDE_EXPIRIES[$index]}"
@@ -198,10 +222,11 @@ managed_api_state_memory_is_valid() {
 }
 
 managed_api_state_load() {
-  local now="${1:?}" size count index expected_index window attempts backoff failure
+  local now="${1:?}" size exclude_count attempt_count index expected_index offset
+  local observed window backoff failure
   local credential_device credential_inode credential_mtime credential_size configured_device
   local line name expiry
-  local -a lines=() names=() expiries=()
+  local -a lines=() attempt_epochs=() names=() expiries=()
   local -A seen=()
   managed_epoch_is_valid "$now" || return 1
   managed_api_state_parent_is_secure || return 1
@@ -215,35 +240,47 @@ managed_api_state_load() {
   (( 10#$size > 0 )) || return 1
   managed_api_state_bytes_are_strict "$AIRVPN_API_STATE_FILE" || return 1
   mapfile -t lines < "$AIRVPN_API_STATE_FILE" || return 1
-  (( ${#lines[@]} >= 11 && ${#lines[@]} <= 27 )) || return 1
+  (( ${#lines[@]} >= 12 && ${#lines[@]} <= 34 )) || return 1
   for line in "${lines[@]}"; do (( ${#line} <= 256 )) || return 1; done
 
   [[ "${lines[0]}" == version=1 ]] || return 1
-  [[ "${lines[1]}" =~ ^window_start=(0|[1-9][0-9]*)$ ]] || return 1
+  [[ "${lines[1]}" =~ ^observed_at=(0|[1-9][0-9]*)$ ]] || return 1
+  observed="${BASH_REMATCH[1]}"
+  [[ "${lines[2]}" =~ ^window_start=(0|[1-9][0-9]*)$ ]] || return 1
   window="${BASH_REMATCH[1]}"
-  [[ "${lines[2]}" =~ ^attempt_count=(0|[1-9][0-9]*)$ ]] || return 1
-  attempts="${BASH_REMATCH[1]}"
-  [[ "${lines[3]}" =~ ^backoff_until=(0|[1-9][0-9]*)$ ]] || return 1
+  [[ "${lines[3]}" =~ ^attempt_count=(0|[1-9][0-9]*)$ ]] || return 1
+  attempt_count="${BASH_REMATCH[1]}"
+  managed_uint_is_canonical "$attempt_count" 6 || return 1
+  (( ${#lines[@]} >= 12 + 10#$attempt_count )) || return 1
+  for ((index = 1; index <= 10#$attempt_count; index++)); do
+    line="${lines[$((3 + index))]}"
+    [[ "$line" =~ ^attempt_([0-9]{2})=(0|[1-9][0-9]*)$ ]] || return 1
+    printf -v expected_index '%02d' "$index"
+    [[ "${BASH_REMATCH[1]}" == "$expected_index" ]] || return 1
+    attempt_epochs+=("${BASH_REMATCH[2]}")
+  done
+  offset=$((4 + 10#$attempt_count))
+  [[ "${lines[$offset]}" =~ ^backoff_until=(0|[1-9][0-9]*)$ ]] || return 1
   backoff="${BASH_REMATCH[1]}"
-  [[ "${lines[4]}" =~ ^failure_class=(none|auth|device|rate|transient)$ ]] || return 1
+  [[ "${lines[$((offset + 1))]}" =~ ^failure_class=(none|auth|device|rate|transient)$ ]] || return 1
   failure="${BASH_REMATCH[1]}"
-  [[ "${lines[5]}" =~ ^credential_device=(0|[1-9][0-9]*)$ ]] || return 1
+  [[ "${lines[$((offset + 2))]}" =~ ^credential_device=(0|[1-9][0-9]*)$ ]] || return 1
   credential_device="${BASH_REMATCH[1]}"
-  [[ "${lines[6]}" =~ ^credential_inode=(0|[1-9][0-9]*)$ ]] || return 1
+  [[ "${lines[$((offset + 3))]}" =~ ^credential_inode=(0|[1-9][0-9]*)$ ]] || return 1
   credential_inode="${BASH_REMATCH[1]}"
-  [[ "${lines[7]}" =~ ^credential_mtime=(0|[1-9][0-9]*)$ ]] || return 1
+  [[ "${lines[$((offset + 4))]}" =~ ^credential_mtime=(0|[1-9][0-9]*)$ ]] || return 1
   credential_mtime="${BASH_REMATCH[1]}"
-  [[ "${lines[8]}" =~ ^credential_size=(0|[1-9][0-9]*)$ ]] || return 1
+  [[ "${lines[$((offset + 5))]}" =~ ^credential_size=(0|[1-9][0-9]*)$ ]] || return 1
   credential_size="${BASH_REMATCH[1]}"
-  [[ "${lines[9]}" =~ ^configured_device=(.*)$ ]] || return 1
+  [[ "${lines[$((offset + 6))]}" =~ ^configured_device=(.*)$ ]] || return 1
   configured_device="${BASH_REMATCH[1]}"
-  [[ "${lines[10]}" =~ ^exclude_count=(0|[1-9][0-9]*)$ ]] || return 1
-  count="${BASH_REMATCH[1]}"
-  managed_uint_is_canonical "$count" 16 || return 1
-  (( ${#lines[@]} == 11 + 10#$count )) || return 1
+  [[ "${lines[$((offset + 7))]}" =~ ^exclude_count=(0|[1-9][0-9]*)$ ]] || return 1
+  exclude_count="${BASH_REMATCH[1]}"
+  managed_uint_is_canonical "$exclude_count" 16 || return 1
+  (( ${#lines[@]} == offset + 8 + 10#$exclude_count )) || return 1
 
-  for ((index = 1; index <= 10#$count; index++)); do
-    line="${lines[$((10 + index))]}"
+  for ((index = 1; index <= 10#$exclude_count; index++)); do
+    line="${lines[$((offset + 7 + index))]}"
     [[ "$line" =~ ^exclude_([0-9]{2})=([A-Za-z0-9-]{1,64}),(0|[1-9][0-9]*)$ ]] || return 1
     printf -v expected_index '%02d' "$index"
     [[ "${BASH_REMATCH[1]}" == "$expected_index" ]] || return 1
@@ -255,9 +292,11 @@ managed_api_state_load() {
     expiries+=("$expiry")
   done
 
-  MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_STATE_NOW="$observed"
+  MANAGED_API_OBSERVED_AT="$observed"
   MANAGED_API_WINDOW_START="$window"
-  MANAGED_API_ATTEMPT_COUNT="$attempts"
+  MANAGED_API_ATTEMPT_COUNT="$attempt_count"
+  MANAGED_API_ATTEMPT_EPOCHS=("${attempt_epochs[@]}")
   MANAGED_API_BACKOFF_UNTIL="$backoff"
   MANAGED_API_FAILURE_CLASS="$failure"
   MANAGED_API_CREDENTIAL_DEVICE="$credential_device"
@@ -267,7 +306,9 @@ managed_api_state_load() {
   MANAGED_API_CONFIGURED_DEVICE="$configured_device"
   MANAGED_API_EXCLUDE_NAMES=("${names[@]}")
   MANAGED_API_EXCLUDE_EXPIRIES=("${expiries[@]}")
-  managed_api_state_memory_is_valid 1
+  managed_api_state_memory_is_valid 1 || return 1
+  (( 10#$now >= 10#$observed )) || return 1
+  managed_api_state_prune "$now"
 }
 
 managed_api_state_write() {
@@ -285,8 +326,13 @@ managed_api_state_write() {
   {
     printf '%s\n' \
       'version=1' \
+      "observed_at=$MANAGED_API_OBSERVED_AT" \
       "window_start=$MANAGED_API_WINDOW_START" \
-      "attempt_count=$MANAGED_API_ATTEMPT_COUNT" \
+      "attempt_count=$MANAGED_API_ATTEMPT_COUNT"
+    for ((index = 0; index < ${#MANAGED_API_ATTEMPT_EPOCHS[@]}; index++)); do
+      printf 'attempt_%02d=%s\n' "$((index + 1))" "${MANAGED_API_ATTEMPT_EPOCHS[$index]}"
+    done
+    printf '%s\n' \
       "backoff_until=$MANAGED_API_BACKOFF_UNTIL" \
       "failure_class=$MANAGED_API_FAILURE_CLASS" \
       "credential_device=$MANAGED_API_CREDENTIAL_DEVICE" \
@@ -313,13 +359,21 @@ managed_api_state_write() {
 
 managed_api_state_prune() {
   local now="${1:?}" index
-  local -a names=() expiries=()
+  local -a attempt_epochs=() names=() expiries=()
   managed_epoch_is_valid "$now" || return 1
-  managed_epoch_is_valid "${MANAGED_API_WINDOW_START-}" || return 1
-  (( 10#$now >= 10#$MANAGED_API_WINDOW_START )) || return 1
-  if (( 10#$now - 10#$MANAGED_API_WINDOW_START >= 86400 )); then
+  managed_epoch_is_valid "${MANAGED_API_OBSERVED_AT-}" || return 1
+  (( 10#$now >= 10#$MANAGED_API_OBSERVED_AT )) || return 1
+  for ((index = 0; index < ${#MANAGED_API_ATTEMPT_EPOCHS[@]}; index++)); do
+    if (( 10#$now - 10#${MANAGED_API_ATTEMPT_EPOCHS[$index]} < 86400 )); then
+      attempt_epochs+=("${MANAGED_API_ATTEMPT_EPOCHS[$index]}")
+    fi
+  done
+  MANAGED_API_ATTEMPT_EPOCHS=("${attempt_epochs[@]}")
+  MANAGED_API_ATTEMPT_COUNT="${#MANAGED_API_ATTEMPT_EPOCHS[@]}"
+  if (( MANAGED_API_ATTEMPT_COUNT == 0 )); then
     MANAGED_API_WINDOW_START="$now"
-    MANAGED_API_ATTEMPT_COUNT=0
+  else
+    MANAGED_API_WINDOW_START="${MANAGED_API_ATTEMPT_EPOCHS[0]}"
   fi
   for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
     if (( 10#${MANAGED_API_EXCLUDE_EXPIRIES[$index]} > 10#$now )); then
@@ -330,6 +384,7 @@ managed_api_state_prune() {
   MANAGED_API_EXCLUDE_NAMES=("${names[@]}")
   MANAGED_API_EXCLUDE_EXPIRIES=("${expiries[@]}")
   MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_OBSERVED_AT="$now"
   managed_api_state_memory_is_valid
 }
 
@@ -392,8 +447,11 @@ managed_api_attempt_allowed() {
 managed_api_record_attempt() {
   local now="${1:?}" administrative_bypass="${2:-0}"
   managed_api_attempt_allowed "$now" "$administrative_bypass" || return $?
-  MANAGED_API_ATTEMPT_COUNT=$((10#$MANAGED_API_ATTEMPT_COUNT + 1))
+  MANAGED_API_ATTEMPT_EPOCHS+=("$now")
+  MANAGED_API_ATTEMPT_COUNT="${#MANAGED_API_ATTEMPT_EPOCHS[@]}"
+  MANAGED_API_WINDOW_START="${MANAGED_API_ATTEMPT_EPOCHS[0]}"
   MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_OBSERVED_AT="$now"
   managed_api_state_write
 }
 
@@ -425,8 +483,7 @@ managed_api_record_outcome() {
   local now="${1:?}" outcome="${2:?}" retry_after="${3-}" failed_server="${4-}" jitter="${5-}"
   local backoff
   managed_epoch_is_valid "$now" || return 1
-  (( 10#$now >= 10#$MANAGED_API_WINDOW_START )) || return 1
-  MANAGED_API_STATE_NOW="$now"
+  managed_api_state_prune "$now" || return 1
   case "$outcome" in
     none)
       [[ -z "$retry_after" && -z "$failed_server" ]] || return 1
@@ -452,17 +509,48 @@ managed_api_record_outcome() {
   managed_api_state_write
 }
 
+managed_api_credential_fd_metadata() {
+  local output_variable="${1:?}" credential_fd="${2:?}" owner_pid captured_metadata
+  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  validate_credential_fd_number "$credential_fd" || return 1
+  owner_pid=$BASHPID
+  [[ -f "/proc/$owner_pid/fd/$credential_fd" ]] || return 1
+  captured_metadata="$(stat -Lc '%d %i %Y %s %u %a' -- "/proc/$owner_pid/fd/$credential_fd" {credential_fd}<&- 2>/dev/null)" || return 1
+  printf -v "$output_variable" '%s' "$captured_metadata"
+}
+
 managed_api_state_refresh_identity() {
-  local now="${1:?}" key_fd metadata device inode mtime size changed=0
+  local now="${1:?}" credential_fd="${2-}" locally_opened_fd='' close_after=0
+  local metadata device inode mtime size uid mode changed=0
   managed_epoch_is_valid "$now" || return 1
   managed_device_name_is_valid "${AIRVPN_DEVICE-}" || return 1
-  open_installed_api_key key_fd || return 1
-  exec {key_fd}<&-
-  metadata="$(stat -c '%d %i %Y %s' -- "$AIRVPN_API_KEY_FILE" 2>/dev/null)" || return 1
-  read -r device inode mtime size <<< "$metadata"
-  [[ "$metadata" == "$device $inode $mtime $size" ]] || return 1
-  managed_api_metadata_is_valid "$device" "$inode" "$mtime" "$size" || return 1
-  [[ "$size" == 65 ]] || return 1
+  managed_api_state_prune "$now" || return 1
+  if [[ -z "$credential_fd" ]]; then
+    open_installed_api_key locally_opened_fd || return 1
+    credential_fd="$locally_opened_fd"
+    close_after=1
+  else
+    validate_credential_fd_number "$credential_fd" || return 1
+  fi
+  if ! managed_api_credential_fd_metadata metadata "$credential_fd"; then
+    (( close_after == 0 )) || exec {locally_opened_fd}<&-
+    return 1
+  fi
+  read -r device inode mtime size uid mode <<< "$metadata"
+  if [[ "$metadata" != "$device $inode $mtime $size $uid $mode" ||
+        "$uid" != 0 || "$mode" != 600 ]]; then
+    (( close_after == 0 )) || exec {locally_opened_fd}<&-
+    return 1
+  fi
+  if ! managed_api_metadata_is_valid "$device" "$inode" "$mtime" "$size"; then
+    (( close_after == 0 )) || exec {locally_opened_fd}<&-
+    return 1
+  fi
+  if [[ "$size" != 65 ]]; then
+    (( close_after == 0 )) || exec {locally_opened_fd}<&-
+    return 1
+  fi
+  (( close_after == 0 )) || exec {locally_opened_fd}<&-
   if [[ "$device" != "${MANAGED_API_CREDENTIAL_DEVICE-}" ||
         "$inode" != "${MANAGED_API_CREDENTIAL_INODE-}" ||
         "$mtime" != "${MANAGED_API_CREDENTIAL_MTIME-}" ||
@@ -475,7 +563,6 @@ managed_api_state_refresh_identity() {
   MANAGED_API_CREDENTIAL_MTIME="$mtime"
   MANAGED_API_CREDENTIAL_SIZE="$size"
   MANAGED_API_CONFIGURED_DEVICE="$AIRVPN_DEVICE"
-  MANAGED_API_STATE_NOW="$now"
   if (( changed )) && [[ "$MANAGED_API_FAILURE_CLASS" == auth || "$MANAGED_API_FAILURE_CLASS" == device ]]; then
     MANAGED_API_FAILURE_CLASS=none
     MANAGED_API_BACKOFF_UNTIL=0
@@ -489,27 +576,37 @@ managed_admin_dry_run_bypass() {
   case "$command" in provision|adopt|rotate) return 0 ;; *) return 1 ;; esac
 }
 
+managed_capture_owner_mode() {
+  local output_variable="${1:?}" path="${2:?}" captured_metadata
+  captured_metadata="$(owner_mode "$path")" || return 1
+  printf -v "$output_variable" '%s' "$captured_metadata"
+}
+
+managed_chmod_api_lock() { chmod 600 -- "$1"; }
+managed_flock_api_lock() { flock -x "$1"; }
+
 managed_global_api_lock_acquire() {
-  local parent metadata
+  local credential_fd="${1-}" parent metadata
+  if [[ -n "$credential_fd" ]]; then validate_credential_fd_number "$credential_fd" || return 1; fi
   (( ${CONTEXT_LOCKED:-0} == 1 )) || return 1
   [[ "${LOCK_FD-}" =~ ^[0-9]+$ ]] || return 1
   [[ -z "${MANAGED_API_LOCK_FD-}" ]] || return 1
   [[ -n "${AIRVPN_API_LOCK:-}" && "$AIRVPN_API_LOCK" == "${STATE_DIR%/}/airvpn-api.lock" ]] || return 1
   parent="${AIRVPN_API_LOCK%/*}"
   [[ -d "$parent" && ! -L "$parent" ]] || return 1
-  metadata="$(owner_mode "$parent")" || return 1
+  managed_call_without_private_fd "$credential_fd" managed_capture_owner_mode metadata "$parent" || return 1
   [[ "$metadata" == 0:700 ]] || return 1
   if [[ -e "$AIRVPN_API_LOCK" || -L "$AIRVPN_API_LOCK" ]]; then
     [[ -f "$AIRVPN_API_LOCK" && ! -L "$AIRVPN_API_LOCK" ]] || return 1
   fi
   MANAGED_API_LOCK_FD=''
   exec {MANAGED_API_LOCK_FD}>"$AIRVPN_API_LOCK" || return 1
-  if ! chmod 600 -- "$AIRVPN_API_LOCK"; then
+  if ! managed_call_without_private_fd "$credential_fd" managed_chmod_api_lock "$AIRVPN_API_LOCK"; then
     exec {MANAGED_API_LOCK_FD}>&-
     MANAGED_API_LOCK_FD=''
     return 1
   fi
-  metadata="$(owner_mode "$AIRVPN_API_LOCK")" || {
+  managed_call_without_private_fd "$credential_fd" managed_capture_owner_mode metadata "$AIRVPN_API_LOCK" || {
     exec {MANAGED_API_LOCK_FD}>&-
     MANAGED_API_LOCK_FD=''
     return 1
@@ -519,7 +616,7 @@ managed_global_api_lock_acquire() {
     MANAGED_API_LOCK_FD=''
     return 1
   }
-  flock -x "$MANAGED_API_LOCK_FD" || {
+  managed_call_without_private_fd "$credential_fd" managed_flock_api_lock "$MANAGED_API_LOCK_FD" || {
     exec {MANAGED_API_LOCK_FD}>&-
     MANAGED_API_LOCK_FD=''
     return 1
@@ -545,36 +642,84 @@ managed_call_without_private_fd() {
   fi
 }
 
+managed_select_airvpn_candidate_closed() {
+  local output_variable="${1:?}" now="${2:?}" current_endpoint="${3-}"
+  local candidate_output
+  local -a exclusion_arguments=()
+  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  managed_api_exclusion_args exclusion_arguments "$now" || return 1
+  validate_secure_executable "$AIRVPN_API_HELPER" || return 1
+  candidate_output="$(
+    "$AIRVPN_API_HELPER" select \
+      --url "$AIRVPN_STATUS_URL" \
+      --countries "$AIRVPN_COUNTRIES" \
+      --port "$AIRVPN_WG_PORT" \
+      --current-endpoint "$current_endpoint" \
+      --timeout "$AIRVPN_API_TIMEOUT" \
+      "${exclusion_arguments[@]}"
+  )" || return 1
+  [[ -n "$candidate_output" && "$candidate_output" != *$'\r'* && "$candidate_output" != *$'\n'* ]] || return 1
+  # Assignment through the validated caller-selected name is this nameref's purpose.
+  # shellcheck disable=SC2034
+  local -n selection_result_reference="$output_variable"
+  # shellcheck disable=SC2034
+  selection_result_reference="$candidate_output"
+}
+
+managed_select_airvpn_candidate() {
+  local output_variable="${1:?}" now="${2:?}" credential_fd="${3-}" current_endpoint="${4-}"
+  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  if [[ -n "$credential_fd" ]]; then validate_credential_fd_number "$credential_fd" || return 1; fi
+  managed_call_without_private_fd "$credential_fd" \
+    managed_select_airvpn_candidate_closed "$output_variable" "$now" "$current_endpoint"
+}
+
+managed_fail_candidate_before_rollback() {
+  local now="${1:?}" server="${2:?}" rollback_callback="${3:?}"
+  shift 3 || return 1
+  [[ "$rollback_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  declare -F "$rollback_callback" >/dev/null || return 1
+  managed_api_state_add_exclusion "$server" "$now" || return 1
+  managed_api_state_write || return 1
+  "$rollback_callback" "$@"
+}
+
 # Provider callbacks receive only the private credential descriptor number and may set
 # the four MANAGED_API_PROVIDER_* result fields. Downstream is invoked only after the
 # authenticated outcome is durable and this process has released the global API lock.
 managed_run_authenticated_attempt() {
   local now="${1:?}" administrative_bypass="${2:-0}" credential_fd="${3-}"
   local provider_callback="${4:?}" downstream_callback="${5:?}"
-  local provider_rc outcome outcome_rc release_rc
+  local active_credential_fd="$credential_fd" provider_rc outcome outcome_rc release_rc
   [[ "$provider_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
   [[ "$downstream_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
   declare -F "$provider_callback" >/dev/null || return 1
   declare -F "$downstream_callback" >/dev/null || return 1
   if [[ -n "$credential_fd" ]]; then validate_credential_fd_number "$credential_fd" || return 1; fi
 
-  if ! managed_call_without_private_fd "$credential_fd" managed_global_api_lock_acquire; then
+  if ! managed_global_api_lock_acquire "$credential_fd"; then
     [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd" || return 1
     return 1
   fi
   managed_call_without_private_fd "$credential_fd" managed_api_state_load "$now"
   outcome_rc=$?
   if (( outcome_rc == 0 )); then
-    managed_call_without_private_fd "$credential_fd" managed_api_state_refresh_identity "$now"
+    if [[ -z "$active_credential_fd" ]]; then
+      open_installed_api_key active_credential_fd
+      outcome_rc=$?
+    fi
+  fi
+  if (( outcome_rc == 0 )); then
+    managed_api_state_refresh_identity "$now" "$active_credential_fd"
     outcome_rc=$?
   fi
   if (( outcome_rc == 0 )); then
-    managed_call_without_private_fd "$credential_fd" managed_api_record_attempt "$now" "$administrative_bypass"
+    managed_call_without_private_fd "$active_credential_fd" managed_api_record_attempt "$now" "$administrative_bypass"
     outcome_rc=$?
   fi
   if (( outcome_rc != 0 )); then
-    managed_call_without_private_fd "$credential_fd" managed_global_api_lock_release || outcome_rc=1
-    [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd" || outcome_rc=1
+    managed_call_without_private_fd "$active_credential_fd" managed_global_api_lock_release || outcome_rc=1
+    [[ -z "$active_credential_fd" ]] || close_private_fd "$active_credential_fd" || outcome_rc=1
     return "$outcome_rc"
   fi
 
@@ -582,8 +727,8 @@ managed_run_authenticated_attempt() {
   MANAGED_API_PROVIDER_RETRY_AFTER=''
   MANAGED_API_PROVIDER_FAILED_SERVER=''
   MANAGED_API_PROVIDER_JITTER=''
-  if "$provider_callback" "$credential_fd"; then provider_rc=0; else provider_rc=$?; fi
-  [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd" || provider_rc=1
+  if "$provider_callback" "$active_credential_fd"; then provider_rc=0; else provider_rc=$?; fi
+  [[ -z "$active_credential_fd" ]] || close_private_fd "$active_credential_fd" || provider_rc=1
   case "$provider_rc" in
     0) outcome=none ;;
     4)

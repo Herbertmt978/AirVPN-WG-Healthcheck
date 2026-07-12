@@ -58,6 +58,7 @@ setup_api_state_fixture() {
   chmod 700 -- "${AIRVPN_API_STATE_FILE%/*}" "${AIRVPN_API_KEY_FILE%/*}" "$STATE_DIR"
   write_valid_test_key "$AIRVPN_API_KEY_FILE"
   chmod 600 -- "$AIRVPN_API_KEY_FILE"
+  touch -d '@900' -- "$AIRVPN_API_KEY_FILE"
   : > "$TEST_TMP/sync-events"
   owner_mode() {
     if [[ -d "$1" ]]; then printf '0:700\n'; else printf '0:600\n'; fi
@@ -73,6 +74,7 @@ write_canonical_test_state() {
     backoff_until="${4:-0}" failure_class="${5:-none}" extra="${6:-}"
   printf '%s\n' \
     'version=1' \
+    "observed_at=$window_start" \
     "window_start=$window_start" \
     "attempt_count=$attempt_count" \
     "backoff_until=$backoff_until" \
@@ -85,52 +87,6 @@ write_canonical_test_state() {
     'exclude_count=0' > "$destination"
   [[ -z "$extra" ]] || printf '%b' "$extra" >> "$destination"
   chmod 600 -- "$destination"
-}
-
-select_with_persisted_exclusions() {
-  python3 - "$ROOT/libexec/airvpn-api" "$@" <<'PYTHON'
-import importlib.machinery
-import importlib.util
-import sys
-
-path = sys.argv[1]
-loader = importlib.machinery.SourceFileLoader("task5_airvpn_api", path)
-spec = importlib.util.spec_from_loader(loader.name, loader)
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-loader.exec_module(module)
-arguments = module._build_parser().parse_args(["select", *sys.argv[2:]])
-
-def server(name, address, load):
-    return {
-        "public_name": name,
-        "country_code": "GB",
-        "location": "London",
-        "bw_max": 10000,
-        "currentload": load,
-        "users": 1,
-        "health": "ok",
-        "ip_v4_in1": address,
-    }
-
-payload = {
-    "result": "ok",
-    "servers": [
-        server("Alpha-1", "198.51.100.10", 0),
-        server("Bravo-2", "198.51.100.11", 50),
-    ],
-}
-candidate = module.select_candidate(
-    payload,
-    ["GB"],
-    1637,
-    "",
-    arguments.exclude_server,
-)
-if candidate is None:
-    raise SystemExit("selector returned no candidate")
-print(candidate[0])
-PYTHON
 }
 
 write_valid_test_key() {
@@ -322,9 +278,11 @@ test_api_state_round_trip_is_canonical_bounded_and_durable() {
   require_task5_contract || return 1
   setup_api_state_fixture
 
-  managed_api_state_defaults 1000 || return 1
+  managed_api_state_defaults 1100 || return 1
+  MANAGED_API_OBSERVED_AT=1100
   MANAGED_API_WINDOW_START=1000
   MANAGED_API_ATTEMPT_COUNT=2
+  MANAGED_API_ATTEMPT_EPOCHS=(1000 1100)
   MANAGED_API_BACKOFF_UNTIL=1300
   MANAGED_API_FAILURE_CLASS=transient
   MANAGED_API_CREDENTIAL_DEVICE=11
@@ -337,7 +295,7 @@ test_api_state_round_trip_is_canonical_bounded_and_durable() {
 
   managed_api_state_write || return 1
   content="$(<"$AIRVPN_API_STATE_FILE")"
-  assert_eq $'version=1\nwindow_start=1000\nattempt_count=2\nbackoff_until=1300\nfailure_class=transient\ncredential_device=11\ncredential_inode=22\ncredential_mtime=33\ncredential_size=65\nconfigured_device=Device-One\nexclude_count=2\nexclude_01=Alpha-1,1200\nexclude_02=Bravo-2,1300' \
+  assert_eq $'version=1\nobserved_at=1100\nwindow_start=1000\nattempt_count=2\nattempt_01=1000\nattempt_02=1100\nbackoff_until=1300\nfailure_class=transient\ncredential_device=11\ncredential_inode=22\ncredential_mtime=33\ncredential_size=65\nconfigured_device=Device-One\nexclude_count=2\nexclude_01=Alpha-1,1200\nexclude_02=Bravo-2,1300' \
     "$content" "state writer must use the canonical ordered v1 schema" || return 1
   state_mode="$(stat -c '%a' -- "$AIRVPN_API_STATE_FILE")" || return 1
   assert_eq 600 "$state_mode" "state file must be mode 0600" || return 1
@@ -350,8 +308,10 @@ test_api_state_round_trip_is_canonical_bounded_and_durable() {
     "state must not retain the credential record" || return 1
 
   managed_api_state_defaults 1 || return 1
-  managed_api_state_load 1000 || return 1
+  managed_api_state_load 1100 || return 1
   assert_eq 2 "$MANAGED_API_ATTEMPT_COUNT" "state attempt count must round trip" || return 1
+  assert_eq '1000 1100' "${MANAGED_API_ATTEMPT_EPOCHS[*]}" \
+    "bounded attempt epochs must round trip in order" || return 1
   assert_eq transient "$MANAGED_API_FAILURE_CLASS" "state failure class must round trip" || return 1
   assert_eq 'Alpha-1 Bravo-2' "${MANAGED_API_EXCLUDE_NAMES[*]}" \
     "state exclusions must round trip in order"
@@ -389,12 +349,15 @@ test_api_state_rejects_unknown_duplicate_malformed_control_and_future_data() {
   base="$(<"$AIRVPN_API_STATE_FILE")"
 
   for case_name in unknown duplicate out_of_order malformed control clock_regression \
-      future_backoff future_exclusion duplicate_server gap count_mismatch oversized; do
+      future_backoff future_exclusion duplicate_server gap count_mismatch \
+      attempt_gap attempt_duplicate attempt_order attempt_future attempt_window_mismatch \
+      attempt_over_limit \
+      oversized; do
     case "$case_name" in
       unknown) printf '%s\nunknown_field=1\n' "$base" > "$AIRVPN_API_STATE_FILE" ;;
       duplicate) printf '%s\nattempt_count=1\n' "$base" > "$AIRVPN_API_STATE_FILE" ;;
       out_of_order)
-        printf '%s\n' "$base" | sed 's/window_start=1000/attempt_count=0/;s/attempt_count=0/window_start=1000/2' > "$AIRVPN_API_STATE_FILE"
+        printf '%s\n' "$base" | sed 's/observed_at=1000/window_start=1000/;s/window_start=1000/observed_at=1000/2' > "$AIRVPN_API_STATE_FILE"
         ;;
       malformed) printf '%s\n' "${base/attempt_count=0/attempt_count=-1}" > "$AIRVPN_API_STATE_FILE" ;;
       control) printf '%s\n' "${base/configured_device=Device-One/$'configured_device=Device\rOne'}" > "$AIRVPN_API_STATE_FILE" ;;
@@ -413,6 +376,26 @@ test_api_state_rejects_unknown_duplicate_malformed_control_and_future_data() {
       count_mismatch)
         printf '%s\n' "${base/exclude_count=0/exclude_count=2}" 'exclude_01=Alpha,2000' > "$AIRVPN_API_STATE_FILE"
         ;;
+      attempt_gap)
+        printf '%s\n' "${base/attempt_count=0/$'attempt_count=1\nattempt_02=900'}" > "$AIRVPN_API_STATE_FILE"
+        ;;
+      attempt_duplicate)
+        printf '%s\n' "${base/attempt_count=0/$'attempt_count=2\nattempt_01=900\nattempt_01=950'}" > "$AIRVPN_API_STATE_FILE"
+        ;;
+      attempt_order)
+        printf '%s\n' "${base/attempt_count=0/$'attempt_count=2\nattempt_01=1000\nattempt_02=900'}" > "$AIRVPN_API_STATE_FILE"
+        ;;
+      attempt_future)
+        printf '%s\n' "${base/attempt_count=0/$'attempt_count=1\nattempt_01=1001'}" | \
+          sed 's/window_start=1000/window_start=1001/' > "$AIRVPN_API_STATE_FILE"
+        ;;
+      attempt_window_mismatch)
+        printf '%s\n' "${base/attempt_count=0/$'attempt_count=1\nattempt_01=900'}" | \
+          sed 's/window_start=1000/window_start=901/' > "$AIRVPN_API_STATE_FILE"
+        ;;
+      attempt_over_limit)
+        printf '%s\n' "${base/attempt_count=0/attempt_count=7}" > "$AIRVPN_API_STATE_FILE"
+        ;;
       oversized) { printf '%s\n' "$base"; head -c 4096 /dev/zero | tr '\0' x; } > "$AIRVPN_API_STATE_FILE" ;;
     esac
     chmod 600 -- "$AIRVPN_API_STATE_FILE"
@@ -426,7 +409,7 @@ test_api_state_rejects_unknown_duplicate_malformed_control_and_future_data() {
 }
 
 test_api_state_rolling_attempt_cap_and_window_reset() {
-  local attempt rc
+  local attempt_epoch rc
   source_managed_contract || return 1
   require_task5_contract || return 1
   setup_api_state_fixture
@@ -438,18 +421,39 @@ test_api_state_rolling_attempt_cap_and_window_reset() {
   MANAGED_API_CONFIGURED_DEVICE=Device-One
   managed_api_state_write || return 1
 
-  for attempt in 1 2 3 4 5 6; do
-    managed_api_record_attempt 1000 0 || return 1
-    assert_eq "$attempt" "$MANAGED_API_ATTEMPT_COUNT" "attempt must be durably counted" || return 1
+  managed_api_record_attempt 1000 0 || return 1
+  for attempt_epoch in 87395 87396 87397 87398 87399; do
+    managed_api_record_attempt "$attempt_epoch" 0 || return 1
   done
-  set +e; managed_api_record_attempt 1000 0; rc=$?; set +e
-  assert_eq 75 "$rc" "seventh daily attempt must be suppressed" || return 1
-  set +e; managed_api_record_attempt 1000 1; rc=$?; set +e
-  assert_eq 75 "$rc" "administrative bypass must not bypass daily limit" || return 1
-
   managed_api_record_attempt 87400 0 || return 1
-  assert_eq 1 "$MANAGED_API_ATTEMPT_COUNT" "elapsed 24-hour window must reset attempt count" || return 1
-  assert_eq 87400 "$MANAGED_API_WINDOW_START" "new rolling window must start at the next attempt"
+  assert_eq 6 "$MANAGED_API_ATTEMPT_COUNT" \
+    "only the one epoch exactly outside the trailing day may be pruned" || return 1
+  assert_eq '87395 87396 87397 87398 87399 87400' "${MANAGED_API_ATTEMPT_EPOCHS[*]}" \
+    "recent pre-boundary attempts must survive the rolling-window boundary" || return 1
+  assert_eq 87395 "$MANAGED_API_WINDOW_START" \
+    "window start must track the oldest retained attempt" || return 1
+  set +e; managed_api_record_attempt 87400 0; rc=$?; set +e
+  assert_eq 75 "$rc" "boundary burst must not create a seventh trailing-day attempt" || return 1
+  set +e; managed_api_record_attempt 87400 1; rc=$?; set +e
+  assert_eq 75 "$rc" "administrative bypass must not bypass the exact rolling limit"
+}
+
+test_api_state_rejects_post_write_clock_regression() {
+  local rc
+  source_managed_contract || return 1
+  require_task5_contract || return 1
+  setup_api_state_fixture
+  managed_api_state_defaults 1000 || return 1
+  managed_api_state_refresh_identity 1000 || return 1
+  managed_api_record_attempt 1000 0 || return 1
+  managed_api_state_prune 2000 || return 1
+  managed_api_state_write || return 1
+
+  managed_api_state_defaults 1 || return 1
+  set +e; managed_api_state_load 1500 >/dev/null 2>&1; rc=$?; set +e
+  [[ "$rc" != 0 ]] || fail "load must reject time before the last durable observation" || return 1
+  managed_api_state_load 2000 || return 1
+  assert_eq 2000 "$MANAGED_API_OBSERVED_AT" "non-regressed observation must load"
 }
 
 test_api_state_backoff_is_exponential_jitter_bounded_and_retry_after_capped() {
@@ -497,6 +501,7 @@ test_api_state_auth_device_reset_only_on_identity_change() {
   replacement="$AIRVPN_API_KEY_FILE.replacement"
   printf '1%063d\n' 0 > "$replacement"
   chmod 600 -- "$replacement"
+  touch -d '@1050' -- "$replacement"
   mv -f -- "$replacement" "$AIRVPN_API_KEY_FILE"
   managed_api_state_refresh_identity 1100 || return 1
   assert_eq none "$MANAGED_API_FAILURE_CLASS" "credential replacement must clear authentication suppression" || return 1
@@ -506,6 +511,7 @@ test_api_state_auth_device_reset_only_on_identity_change() {
   replacement="$AIRVPN_API_KEY_FILE.replacement"
   printf '2%063d\n' 0 > "$replacement"
   chmod 600 -- "$replacement"
+  touch -d '@1050' -- "$replacement"
   mv -f -- "$replacement" "$AIRVPN_API_KEY_FILE"
   managed_api_state_refresh_identity 1100 || return 1
   assert_eq rate "$MANAGED_API_FAILURE_CLASS" "credential change must not clear rate suppression"
@@ -548,7 +554,8 @@ test_api_state_rejects_noncanonical_failure_classes_and_metadata() {
   base="$(<"$AIRVPN_API_STATE_FILE")"
 
   for case_name in derived_daily derived_corrupt leading_zero size_mismatch huge_inode \
-      zero_metadata empty_device; do
+      zero_metadata empty_device future_credential_mtime nonnone_zero_backoff \
+      none_nonzero_backoff; do
     case "$case_name" in
       derived_daily)
         printf '%s\n' "${base/failure_class=none/failure_class=daily}" > "$AIRVPN_API_STATE_FILE"
@@ -575,11 +582,41 @@ test_api_state_rejects_noncanonical_failure_classes_and_metadata() {
       empty_device)
         printf '%s\n' "${base/configured_device=Device-One/configured_device=}" > "$AIRVPN_API_STATE_FILE"
         ;;
+      future_credential_mtime)
+        printf '%s\n' "${base/credential_mtime=33/credential_mtime=1301}" > "$AIRVPN_API_STATE_FILE"
+        ;;
+      nonnone_zero_backoff)
+        printf '%s\n' "${base/failure_class=none/failure_class=transient}" > "$AIRVPN_API_STATE_FILE"
+        ;;
+      none_nonzero_backoff)
+        printf '%s\n' "${base/backoff_until=0/backoff_until=1}" > "$AIRVPN_API_STATE_FILE"
+        ;;
     esac
     chmod 600 -- "$AIRVPN_API_STATE_FILE"
     set +e; managed_api_state_load 1000 >/dev/null 2>&1; rc=$?; set +e
     [[ "$rc" != 0 ]] || fail "$case_name metadata/class must fail closed" || return 1
   done
+}
+
+test_api_state_memory_rejects_future_mtime_and_zero_failure_backoff() {
+  local rc
+  source_managed_contract || return 1
+  require_task5_contract || return 1
+  setup_api_state_fixture
+  managed_api_state_defaults 1000 || return 1
+  MANAGED_API_CREDENTIAL_DEVICE=11
+  MANAGED_API_CREDENTIAL_INODE=22
+  MANAGED_API_CREDENTIAL_MTIME=1301
+  MANAGED_API_CREDENTIAL_SIZE=65
+  MANAGED_API_CONFIGURED_DEVICE=Device-One
+  set +e; managed_api_state_memory_is_valid 1; rc=$?; set +e
+  [[ "$rc" != 0 ]] || fail "implausibly future credential mtime must fail in memory" || return 1
+
+  MANAGED_API_CREDENTIAL_MTIME=900
+  MANAGED_API_FAILURE_CLASS=transient
+  MANAGED_API_BACKOFF_UNTIL=0
+  set +e; managed_api_state_memory_is_valid 1; rc=$?; set +e
+  [[ "$rc" != 0 ]] || fail "non-none failure without backoff must fail in memory"
 }
 
 test_api_state_admin_bypass_outcomes_and_timer_suppression() {
@@ -648,31 +685,96 @@ test_api_state_failed_server_persists_then_expires_into_selector_argv() {
   [[ "$rc" != 0 ]] || fail "backward clock movement must block authenticated selection"
 }
 
-test_linux_persisted_exclusion_selects_alternate_then_reeligible_server() {
-  local selected
-  local -a args=()
+test_linux_managed_selector_persists_failure_rotates_and_reenables() {
+  local credential_fd expected selected helper_parent rc
   if [[ "$(uname -s)" != Linux ]]; then return 77; fi
   source_managed_contract || return 1
   require_task5_contract || return 1
+  declare -F managed_select_airvpn_candidate >/dev/null ||
+    fail "production managed selector is missing" || return 1
+  declare -F managed_fail_candidate_before_rollback >/dev/null ||
+    fail "record-before-rollback seam is missing" || return 1
   setup_api_state_fixture
+  owner_mode() { stat -c '%u:%a' -- "$1" 2>/dev/null; }
+  helper_parent="$TEST_TMP/trusted"
+  AIRVPN_API_HELPER="$helper_parent/airvpn-api"
+  AIRVPN_STATUS_URL='https://airvpn.org/api/status/?format=json'
+  AIRVPN_COUNTRIES='GB NL'
+  AIRVPN_WG_PORT=1637
+  AIRVPN_API_TIMEOUT=20
+  mkdir -p -- "$helper_parent"
+  chmod 755 -- "$helper_parent"
+  cat > "$AIRVPN_API_HELPER" <<'SELECTOR'
+#!/usr/bin/env bash
+set -u
+if [[ -n "${PROBE_FD:-}" && -e "/proc/self/fd/$PROBE_FD" ]]; then
+  printf 'credential-leaked\n' >> "$SELECTOR_EVENTS"
+  exit 91
+fi
+printf '%s\n' "$@" > "$SELECTOR_ARGV"
+printf 'called\n' >> "$SELECTOR_EVENTS"
+excluded=0
+while (( $# > 0 )); do
+  if [[ "$1" == --exclude-server && ${2-} == Alpha-1 ]]; then excluded=1; shift 2; else shift; fi
+done
+if (( excluded )); then
+  printf 'Bravo-2\t198.51.100.11:1637\tGB\tLondon\t10000\t50\t1\n'
+else
+  printf 'Alpha-1\t198.51.100.10:1637\tGB\tLondon\t10000\t0\t1\n'
+fi
+SELECTOR
+  chmod 755 -- "$AIRVPN_API_HELPER"
+  SELECTOR_ARGV="$TEST_TMP/selector.argv"
+  SELECTOR_EVENTS="$TEST_TMP/selector.events"
+  export SELECTOR_ARGV SELECTOR_EVENTS
+  : > "$SELECTOR_EVENTS"
+
   managed_api_state_defaults 1000 || return 1
   managed_api_state_refresh_identity 1000 || return 1
-  managed_api_record_attempt 1000 0 || return 1
-  managed_api_record_outcome 1000 transient '' Alpha-1 0 || return 1
+  managed_api_state_write || return 1
+  : > "$TEST_TMP/sync-events"
+  rollback_probe() {
+    grep -Fx 'exclude_01=Alpha-1,22600' "$AIRVPN_API_STATE_FILE" >/dev/null || return 1
+    printf 'rollback\n' >> "$TEST_TMP/sync-events"
+  }
+  managed_fail_candidate_before_rollback 1000 Alpha-1 rollback_probe || return 1
+  assert_eq $'file\nfile\ndirectory\nrollback' "$(<"$TEST_TMP/sync-events")" \
+    "failed candidate must be durable before the rollback seam" || return 1
 
   managed_api_state_defaults 1 || return 1
   managed_api_state_load 1001 || return 1
-  managed_api_exclusion_args args 1001 || return 1
-  selected="$(select_with_persisted_exclusions "${args[@]}")" || return 1
-  assert_eq Bravo-2 "$selected" \
-    "persisted failure must drive actual selection to the alternate server" || return 1
+  write_valid_test_key "$TEST_TMP/selector-credential"
+  chmod 600 -- "$TEST_TMP/selector-credential"
+  touch -d '@900' -- "$TEST_TMP/selector-credential"
+  exec {credential_fd}<"$TEST_TMP/selector-credential"
+  PROBE_FD="$credential_fd"
+  export PROBE_FD
+  managed_select_airvpn_candidate selected 1001 "$credential_fd" '198.51.100.99:1637' || return 1
+  assert_eq Bravo-2 "${selected%%$'\t'*}" \
+    "production managed selector must choose the persisted alternate" || return 1
+  expected=$'select\n--url\nhttps://airvpn.org/api/status/?format=json\n--countries\nGB NL\n--port\n1637\n--current-endpoint\n198.51.100.99:1637\n--timeout\n20\n--exclude-server\nAlpha-1'
+  assert_eq "$expected" "$(<"$SELECTOR_ARGV")" \
+    "production selector must use fixed public arguments and every live exclusion" || return 1
+  assert_not_contains credential-leaked "$(<"$SELECTOR_EVENTS")" \
+    "public selector helper must not inherit the credential descriptor" || return 1
+  [[ -e "/proc/self/fd/$credential_fd" ]] || fail "public selection must not consume the credential FD" || return 1
 
-  managed_api_state_defaults 1 || return 1
-  managed_api_state_load 22600 || return 1
-  managed_api_exclusion_args args 22600 || return 1
-  selected="$(select_with_persisted_exclusions "${args[@]}")" || return 1
-  assert_eq Alpha-1 "$selected" \
-    "expired persisted exclusion must restore the preferred server to eligibility"
+  managed_select_airvpn_candidate selected 22600 "$credential_fd" '198.51.100.99:1637' || return 1
+  assert_eq Alpha-1 "${selected%%$'\t'*}" \
+    "expired persisted exclusion must restore the preferred server" || return 1
+  assert_not_contains --exclude-server "$(<"$SELECTOR_ARGV")" \
+    "expired exclusions must be absent from the production selector argv" || return 1
+
+  : > "$SELECTOR_EVENTS"
+  chmod 775 -- "$helper_parent"
+  set +e
+  managed_select_airvpn_candidate selected 22601 "$credential_fd" '198.51.100.99:1637'
+  rc=$?
+  set +e
+  [[ "$rc" != 0 ]] || fail "untrusted selector helper must fail closed" || return 1
+  assert_eq '' "$(<"$SELECTOR_EVENTS")" \
+    "trust validation failure must prevent helper execution" || return 1
+  exec {credential_fd}<&-
 }
 
 test_api_state_corruption_blocks_authenticated_and_downstream_callbacks() {
@@ -724,6 +826,7 @@ AIRVPN_API_KEY_FILE="$TEST_ROOT/etc/$IFACE.api-key"
 LOCK="$STATE_DIR/$IFACE.lock"
 printf '%064d\n' 0 > "$AIRVPN_API_KEY_FILE"
 chmod 600 -- "$AIRVPN_API_KEY_FILE"
+touch -d '@900' -- "$AIRVPN_API_KEY_FILE"
 exec {LOCK_FD}>"$LOCK"
 flock "$LOCK_FD"
 CONTEXT_LOCKED=1
@@ -761,7 +864,7 @@ WORKER
 
   CONTEXT_LOCKED=0
   AIRVPN_API_LOCK="$TEST_TMP/run/airvpn-api.lock"
-  set +e; managed_global_api_lock_acquire; worker=$?; set +e
+  set +e; managed_global_api_lock_acquire ''; worker=$?; set +e
   [[ "$worker" != 0 ]] || fail "global lock must refuse reverse order without the interface lock" || return 1
   [[ ! -e "$AIRVPN_API_LOCK" ]] || fail "lock-order refusal must happen before opening the global lock" || return 1
 
@@ -805,8 +908,12 @@ test_authenticated_attempt_closes_supplied_credential_around_state_and_downstrea
   managed_api_record_outcome() {
     bash -c '[[ ! -e "/proc/self/fd/$1" ]]' bash "$PROBE_FD" || return 1
   }
-  managed_global_api_lock_acquire() {
+  lock_child_probe() {
     bash -c '[[ ! -e "/proc/self/fd/$1" ]]' bash "$PROBE_FD" || return 1
+  }
+  managed_global_api_lock_acquire() {
+    [[ "$1" == "$PROBE_FD" && -e "/proc/self/fd/$PROBE_FD" ]] || return 1
+    run_with_private_fd_closed "$1" lock_child_probe || return 1
     MANAGED_API_LOCK_FD=99
   }
   managed_global_api_lock_release() {
@@ -827,6 +934,107 @@ test_authenticated_attempt_closes_supplied_credential_around_state_and_downstrea
     "only the authenticated provider callback may observe the supplied credential" || return 1
   set +e; IFS= read -r -u "$credential_fd" _ 2>/dev/null; rc=$?; set +e
   assert_eq 1 "$rc" "managed attempt owner must close the supplied descriptor after provider use"
+}
+
+test_linux_global_lock_fd_never_aliases_supplied_credential() {
+  local competitor_fd credential_fd lock_target rc
+  if [[ "$(uname -s)" != Linux ]]; then return 77; fi
+  source_managed_contract || return 1
+  require_task5_contract || return 1
+  setup_api_state_fixture
+  exec {credential_fd}<"$AIRVPN_API_KEY_FILE"
+  PROBE_FD="$credential_fd"
+  owner_mode() {
+    bash -c '[[ ! -e "/proc/self/fd/$1" ]]' bash "$PROBE_FD" || return 1
+    if [[ -d "$1" ]]; then printf '0:700\n'; else printf '0:600\n'; fi
+  }
+  managed_chmod_api_lock() {
+    bash -c '[[ ! -e "/proc/self/fd/$1" ]]' bash "$PROBE_FD" || return 1
+    chmod 600 -- "$1"
+  }
+  managed_flock_api_lock() {
+    bash -c '[[ ! -e "/proc/self/fd/$1" ]]' bash "$PROBE_FD" || return 1
+    flock -x "$1"
+  }
+  : > "$TEST_TMP/alias-events"
+  provider_lock_probe() {
+    [[ "$1" == "$credential_fd" ]] || return 1
+    [[ "$MANAGED_API_LOCK_FD" != "$credential_fd" ]] || {
+      printf 'alias\n' >> "$TEST_TMP/alias-events"
+      return 1
+    }
+    lock_target="$(readlink -- "/proc/self/fd/$MANAGED_API_LOCK_FD")" || return 1
+    [[ "$lock_target" == "$AIRVPN_API_LOCK" ]] || {
+      printf 'wrong-target\n' >> "$TEST_TMP/alias-events"
+      return 1
+    }
+    exec {competitor_fd}>"$AIRVPN_API_LOCK" || return 1
+    if flock -n "$competitor_fd"; then
+      printf 'competitor-acquired\n' >> "$TEST_TMP/alias-events"
+      flock -u "$competitor_fd" || true
+      exec {competitor_fd}>&-
+      return 1
+    fi
+    exec {competitor_fd}>&-
+    printf 'provider-locked\n' >> "$TEST_TMP/alias-events"
+  }
+  downstream_lock_probe() { printf 'downstream\n' >> "$TEST_TMP/alias-events"; }
+
+  managed_run_authenticated_attempt 1000 0 "$credential_fd" provider_lock_probe downstream_lock_probe || return 1
+  assert_eq $'provider-locked\ndownstream' "$(<"$TEST_TMP/alias-events")" \
+    "provider must retain the distinct global lock until its outcome is durable" || return 1
+  [[ -z "${MANAGED_API_LOCK_FD:-}" ]] || fail "global lock descriptor must clear after release" || return 1
+  exec {competitor_fd}>"$AIRVPN_API_LOCK" || return 1
+  set +e; flock -n "$competitor_fd"; rc=$?; set +e
+  assert_eq 0 "$rc" "global lock must be acquirable after managed release" || return 1
+  flock -u "$competitor_fd" || return 1
+  exec {competitor_fd}>&-
+}
+
+test_linux_credential_identity_uses_exact_provider_fd_across_replacement() {
+  local first_fd first_inode replacement second_inode rc
+  if [[ "$(uname -s)" != Linux ]]; then return 77; fi
+  source_managed_contract || return 1
+  require_task5_contract || return 1
+  setup_api_state_fixture
+  managed_global_api_lock_acquire() { MANAGED_API_LOCK_FD=99; }
+  managed_global_api_lock_release() { MANAGED_API_LOCK_FD=; }
+  first_inode="$(stat -c '%i' -- "$AIRVPN_API_KEY_FILE")" || return 1
+  exec {first_fd}<"$AIRVPN_API_KEY_FILE"
+  replacement="$AIRVPN_API_KEY_FILE.replacement"
+  printf '1%063d\n' 0 > "$replacement"
+  chmod 600 -- "$replacement"
+  touch -d '@950' -- "$replacement"
+  second_inode="$(stat -c '%i' -- "$replacement")" || return 1
+  mv -f -- "$replacement" "$AIRVPN_API_KEY_FILE"
+  : > "$TEST_TMP/identity-events"
+  provider_old_auth() {
+    [[ "$1" == "$first_fd" ]] || return 1
+    [[ "$(stat -Lc '%i' -- "/proc/self/fd/$1")" == "$first_inode" ]] || return 1
+    printf 'old-auth\n' >> "$TEST_TMP/identity-events"
+    return 4
+  }
+  provider_new_success() {
+    [[ -n "$1" && "$(stat -Lc '%i' -- "/proc/self/fd/$1")" == "$second_inode" ]] || return 1
+    printf 'new-success\n' >> "$TEST_TMP/identity-events"
+  }
+  identity_downstream() { printf 'downstream\n' >> "$TEST_TMP/identity-events"; }
+
+  set +e
+  managed_run_authenticated_attempt 1000 0 "$first_fd" provider_old_auth identity_downstream
+  rc=$?
+  set +e
+  assert_eq 4 "$rc" "old exact credential must record its authentication result" || return 1
+  assert_eq "$first_inode" "$MANAGED_API_CREDENTIAL_INODE" \
+    "persisted identity must belong to the exact provider credential FD" || return 1
+  assert_eq auth "$MANAGED_API_FAILURE_CLASS" "old credential must enter auth suppression" || return 1
+
+  managed_run_authenticated_attempt 1001 0 '' provider_new_success identity_downstream || return 1
+  assert_eq $'old-auth\nnew-success\ndownstream' "$(<"$TEST_TMP/identity-events")" \
+    "atomic path replacement must reset auth suppression on the next exact-FD run" || return 1
+  assert_eq "$second_inode" "$MANAGED_API_CREDENTIAL_INODE" \
+    "replacement credential identity must be persisted after its run" || return 1
+  assert_eq none "$MANAGED_API_FAILURE_CLASS" "replacement success must clear auth suppression"
 }
 
 test_linux_supplied_credential_fd_is_private_until_managed_owner() {
@@ -1027,16 +1235,20 @@ tests=(
   test_api_state_defaults_are_memory_only_until_identity_refresh
   test_api_state_rejects_unknown_duplicate_malformed_control_and_future_data
   test_api_state_rolling_attempt_cap_and_window_reset
+  test_api_state_rejects_post_write_clock_regression
   test_api_state_backoff_is_exponential_jitter_bounded_and_retry_after_capped
   test_api_state_auth_device_reset_only_on_identity_change
   test_api_state_exclusions_are_unique_bounded_and_expire
   test_api_state_rejects_noncanonical_failure_classes_and_metadata
+  test_api_state_memory_rejects_future_mtime_and_zero_failure_backoff
   test_api_state_admin_bypass_outcomes_and_timer_suppression
   test_api_state_failed_server_persists_then_expires_into_selector_argv
-  test_linux_persisted_exclusion_selects_alternate_then_reeligible_server
+  test_linux_managed_selector_persists_failure_rotates_and_reenables
   test_api_state_corruption_blocks_authenticated_and_downstream_callbacks
   test_api_global_lock_requires_interface_lock_and_releases_before_downstream
   test_authenticated_attempt_closes_supplied_credential_around_state_and_downstream
+  test_linux_global_lock_fd_never_aliases_supplied_credential
+  test_linux_credential_identity_uses_exact_provider_fd_across_replacement
   test_linux_supplied_credential_fd_is_private_until_managed_owner
   test_linux_module_owner_and_mode_semantics
   test_linux_installed_key_owner_and_mode_semantics
