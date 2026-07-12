@@ -99,6 +99,14 @@ finally:
     os.close(fd)' "$1"
 }
 
+managed_sync_artifact_parent() {
+  managed_sync_directory "${1:?}"
+}
+
+managed_sync_journal_parent() {
+  managed_sync_directory "${1:?}"
+}
+
 managed_api_state_defaults() {
   local now="${1:?}"
   managed_epoch_is_valid "$now" || return 1
@@ -200,10 +208,10 @@ managed_profile_file_is_secure() {
   (( 10#$wgmanaged_size > 0 ))
 }
 
-managed_sha256_file() {
-  local wgmanaged_output_variable="${1:?}" wgmanaged_path="${2:?}"
+managed_sha256_file_core() {
+  local wgmanaged_path="${1:?}"
   local wgmanaged_result wgmanaged_digest
-  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  [[ -v wgmanaged_sha256_carrier ]] || return 1
   [[ "$wgmanaged_path" != *$'\r'* && "$wgmanaged_path" != *$'\n'* ]] || return 1
   managed_profile_file_is_secure "$wgmanaged_path" || return 1
   wgmanaged_result="$(command sha256sum -- "$wgmanaged_path" 2>/dev/null)" || return 1
@@ -212,7 +220,15 @@ managed_sha256_file() {
   managed_sha256_is_valid "$wgmanaged_digest" || return 1
   [[ "${wgmanaged_result:64:2}" == '  ' &&
      "${wgmanaged_result:66}" == "$wgmanaged_path" ]] || return 1
-  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_digest"
+  wgmanaged_sha256_carrier="$wgmanaged_digest"
+}
+
+managed_sha256_file() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_path="${2:?}"
+  local wgmanaged_sha256_carrier=''
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  managed_sha256_file_core "$wgmanaged_path" || return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_sha256_carrier"
 }
 
 managed_journal_memory_is_valid() {
@@ -333,22 +349,22 @@ _managed_journal_commit() {
   fi
   managed_journal_file_is_secure || return 1
   managed_sync_file "$ROTATION_PENDING" || return 1
-  managed_sync_directory "$wgmanaged_parent"
+  managed_sync_journal_parent "$wgmanaged_parent"
 }
 
 managed_classify_active_profile() {
   local wgmanaged_output_variable="${1:?}" wgmanaged_backup="${2:?}"
-  local wgmanaged_candidate="${3:?}" journal_actual_digest wgmanaged_class
+  local wgmanaged_candidate="${3:?}" wgmanaged_class wgmanaged_sha256_carrier=''
   managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
   managed_sha256_is_valid "$wgmanaged_backup" || return 1
   managed_sha256_is_valid "$wgmanaged_candidate" || return 1
   if [[ "$wgmanaged_backup" == "$wgmanaged_candidate" ]]; then
     wgmanaged_class=ambiguous
-  elif ! managed_sha256_file journal_actual_digest "$WG_CONF"; then
+  elif ! managed_sha256_file_core "$WG_CONF"; then
     wgmanaged_class=unknown
-  elif [[ "$journal_actual_digest" == "$wgmanaged_backup" ]]; then
+  elif [[ "$wgmanaged_sha256_carrier" == "$wgmanaged_backup" ]]; then
     wgmanaged_class=backup
-  elif [[ "$journal_actual_digest" == "$wgmanaged_candidate" ]]; then
+  elif [[ "$wgmanaged_sha256_carrier" == "$wgmanaged_candidate" ]]; then
     wgmanaged_class=candidate
   else
     wgmanaged_class=unknown
@@ -358,14 +374,14 @@ managed_classify_active_profile() {
 
 managed_classify_candidate_profile() {
   local wgmanaged_output_variable="${1:?}" wgmanaged_expected="${2:?}"
-  local journal_actual_digest wgmanaged_class
+  local wgmanaged_class wgmanaged_sha256_carrier=''
   managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
   managed_sha256_is_valid "$wgmanaged_expected" || return 1
   if [[ ! -e "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]]; then
     wgmanaged_class=missing
-  elif ! managed_sha256_file journal_actual_digest "$MANAGED_CANDIDATE"; then
+  elif ! managed_sha256_file_core "$MANAGED_CANDIDATE"; then
     wgmanaged_class=mismatch
-  elif [[ "$journal_actual_digest" == "$wgmanaged_expected" ]]; then
+  elif [[ "$wgmanaged_sha256_carrier" == "$wgmanaged_expected" ]]; then
     wgmanaged_class=present
   else
     wgmanaged_class=mismatch
@@ -415,16 +431,26 @@ managed_verify_journal_phase() {
 managed_journal_prepare() {
   local wgmanaged_qb="${1-}" journal_backup_first journal_candidate_first
   local journal_backup_second journal_candidate_second wgmanaged_old wgmanaged_new
+  local wgmanaged_parent wgmanaged_backup_path
   [[ $# == 1 && ( "$wgmanaged_qb" == 0 || "$wgmanaged_qb" == 1 ) ]] || return 1
   managed_journal_clear
   (( ${CONTEXT_LOCKED:-0} == 1 )) || return 1
   managed_journal_parent_is_secure || return 1
   [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]] || return 1
-  managed_sha256_file journal_backup_first "${WG_CONF}.bak-healthcheck" || return 1
+  wgmanaged_parent="${WG_CONF%/*}"
+  wgmanaged_backup_path="${WG_CONF}.bak-healthcheck"
+  [[ "${wgmanaged_backup_path%/*}" == "$wgmanaged_parent" &&
+     "${MANAGED_CANDIDATE%/*}" == "$wgmanaged_parent" ]] || return 1
+  managed_profile_file_is_secure "$wgmanaged_backup_path" || return 1
+  managed_sync_file "$wgmanaged_backup_path" || return 1
+  managed_profile_file_is_secure "$MANAGED_CANDIDATE" || return 1
+  managed_sync_file "$MANAGED_CANDIDATE" || return 1
+  managed_sync_artifact_parent "$wgmanaged_parent" || return 1
+  managed_sha256_file journal_backup_first "$wgmanaged_backup_path" || return 1
   managed_sha256_file journal_candidate_first "$MANAGED_CANDIDATE" || return 1
-  wgmanaged_old="$(configured_endpoint "${WG_CONF}.bak-healthcheck")" || return 1
+  wgmanaged_old="$(configured_endpoint "$wgmanaged_backup_path")" || return 1
   wgmanaged_new="$(configured_endpoint "$MANAGED_CANDIDATE")" || return 1
-  managed_sha256_file journal_backup_second "${WG_CONF}.bak-healthcheck" || return 1
+  managed_sha256_file journal_backup_second "$wgmanaged_backup_path" || return 1
   managed_sha256_file journal_candidate_second "$MANAGED_CANDIDATE" || return 1
   [[ "$journal_backup_first" == "$journal_backup_second" &&
      "$journal_candidate_first" == "$journal_candidate_second" ]] || return 1

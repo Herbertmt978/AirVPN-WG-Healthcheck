@@ -2051,26 +2051,42 @@ test_managed_journal_write_is_same_directory_atomic_and_fully_durable() {
     printf 'move\t%s\t%s\n' "$1" "$2" >> "$TEST_TMP/sync-events"
     command mv -fT -- "$1" "$2"
   }
+  managed_sync_artifact_parent() {
+    printf 'artifact-directory\t%s\t%s\n' "$1" "$(stat -c '%a' -- "$1")" >> "$TEST_TMP/sync-events"
+  }
+  managed_sync_journal_parent() {
+    printf 'journal-directory\t%s\t%s\n' "$1" "$(stat -c '%a' -- "$1")" >> "$TEST_TMP/sync-events"
+  }
   managed_sync_directory() {
-    printf 'directory\t%s\t%s\n' "$1" "$(stat -c '%a' -- "$1")" >> "$TEST_TMP/sync-events"
+    printf 'ambiguous-directory\t%s\t%s\n' "$1" "$(stat -c '%a' -- "$1")" >> "$TEST_TMP/sync-events"
   }
 
   managed_journal_prepare 0 || return 1
   mapfile -t events < "$TEST_TMP/sync-events"
-  assert_eq 4 "${#events[@]}" "journal commit must expose four ordered durability steps" || return 1
-  IFS=$'\t' read -r _ temporary _ <<< "${events[0]}"
+  assert_eq 7 "${#events[@]}" "artifact and journal commit must expose seven ordered durability steps" || return 1
+  IFS=$'\t' read -r _ temporary _ <<< "${events[3]}"
   tab=$'\t'
   [[ "${temporary%/*}" == "$parent" && "$temporary" == "$parent/.${ROTATION_PENDING##*/}.tmp."* ]] ||
     fail "journal temporary must be created beside the target" || return 1
-  assert_eq "file${tab}${temporary}${tab}600" "${events[0]}" "temporary must be 0600 and synced first" || return 1
-  assert_eq "move${tab}${temporary}${tab}${ROTATION_PENDING}" "${events[1]}" "rename must follow temporary sync" || return 1
-  assert_eq "file${tab}${ROTATION_PENDING}${tab}600" "${events[2]}" "renamed journal must be synced" || return 1
-  assert_eq "directory${tab}${parent}${tab}700" "${events[3]}" "parent directory must be synced last" || return 1
+  assert_eq "file${tab}${WG_CONF}.bak-healthcheck${tab}600" "${events[0]}" \
+    "backup artifact must be synced first" || return 1
+  assert_eq "file${tab}${MANAGED_CANDIDATE}${tab}600" "${events[1]}" \
+    "candidate artifact must be synced second" || return 1
+  assert_eq "artifact-directory${tab}${parent}${tab}700" "${events[2]}" \
+    "shared artifact parent must be synced before the journal" || return 1
+  assert_eq "file${tab}${temporary}${tab}600" "${events[3]}" \
+    "journal temporary must be 0600 and synced after artifacts" || return 1
+  assert_eq "move${tab}${temporary}${tab}${ROTATION_PENDING}" "${events[4]}" \
+    "rename must follow temporary sync" || return 1
+  assert_eq "file${tab}${ROTATION_PENDING}${tab}600" "${events[5]}" \
+    "renamed journal must be synced" || return 1
+  assert_eq "journal-directory${tab}${parent}${tab}700" "${events[6]}" \
+    "journal parent barrier must be explicit and last" || return 1
 
   marker_before="$(<"$ROTATION_PENDING")"
   managed_sync_file() { return 1; }
   managed_journal_move() { command mv -fT -- "$1" "$2"; }
-  managed_sync_directory() { return 0; }
+  managed_sync_journal_parent() { return 0; }
   set +e; managed_journal_transition client-stopped >/dev/null 2>&1; rc=$?; set +e
   assert_eq 1 "$rc" "pre-rename sync failure must fail the transition" || return 1
   assert_eq "$marker_before" "$(<"$ROTATION_PENDING")" "pre-rename failure must preserve prior journal bytes" || return 1
@@ -2083,6 +2099,127 @@ test_managed_journal_write_is_same_directory_atomic_and_fully_durable() {
   managed_journal_load || return 1
   assert_eq client-stopped "$MANAGED_JOURNAL_PHASE" \
     "post-rename failure must leave the new canonical marker available for recovery"
+}
+
+test_managed_journal_artifacts_are_durable_before_first_digest() {
+  local tab
+  local -a events=()
+  setup_managed_journal_fixture || return 1
+  managed_journal_fixture_digests || return 1
+  : > "$TEST_TMP/order-events"
+  eval "$(declare -f managed_sha256_file | sed '1s/managed_sha256_file/managed_sha256_file_before_order_probe/')"
+  managed_sync_file() { printf 'sync-file\t%s\n' "$1" >> "$TEST_TMP/order-events"; }
+  managed_sync_artifact_parent() { printf 'artifact-parent\t%s\n' "$1" >> "$TEST_TMP/order-events"; }
+  managed_sync_journal_parent() { printf 'journal-parent\t%s\n' "$1" >> "$TEST_TMP/order-events"; }
+  managed_sha256_file() {
+    printf 'digest\t%s\n' "$2" >> "$TEST_TMP/order-events"
+    managed_sha256_file_before_order_probe "$@"
+  }
+
+  managed_journal_prepare 0 || return 1
+  mapfile -t events < "$TEST_TMP/order-events"
+  tab=$'\t'
+  assert_eq "sync-file${tab}${WG_CONF}.bak-healthcheck" "${events[0]-}" \
+    "backup fsync must precede every content digest" || return 1
+  assert_eq "sync-file${tab}${MANAGED_CANDIDATE}" "${events[1]-}" \
+    "candidate fsync must precede every content digest" || return 1
+  assert_eq "artifact-parent${tab}${WG_CONF%/*}" "${events[2]-}" \
+    "artifact-parent fsync must precede every content digest" || return 1
+  assert_eq "digest${tab}${WG_CONF}.bak-healthcheck" "${events[3]-}" \
+    "first content digest must occur only after all artifact barriers"
+}
+
+test_managed_journal_artifact_barrier_failures_leave_no_journal_or_mutation() {
+  local case_name rc parent leftovers events
+  for case_name in backup candidate artifact-parent; do
+    (
+      setup_managed_journal_fixture || exit 1
+      parent="${WG_CONF%/*}"
+      cp -- "$WG_CONF" "$TEST_TMP/active.before"
+      cp -- "${WG_CONF}.bak-healthcheck" "$TEST_TMP/backup.before"
+      cp -- "$MANAGED_CANDIDATE" "$TEST_TMP/candidate.before"
+      : > "$TEST_TMP/barrier-events"
+      managed_sync_file() {
+        printf 'artifact-file:%s\n' "$1" >> "$TEST_TMP/barrier-events"
+        case "$case_name:$1" in
+          "backup:${WG_CONF}.bak-healthcheck"|"candidate:${MANAGED_CANDIDATE}") return 1 ;;
+          *) return 0 ;;
+        esac
+      }
+      managed_sync_artifact_parent() {
+        printf 'artifact-parent:%s\n' "$1" >> "$TEST_TMP/barrier-events"
+        [[ "$case_name" != artifact-parent ]]
+      }
+      managed_sync_journal_parent() {
+        printf 'unexpected-journal-parent\n' >> "$TEST_TMP/barrier-events"
+        return 0
+      }
+      managed_journal_move() {
+        printf 'unexpected-journal-move\n' >> "$TEST_TMP/barrier-events"
+        command mv -fT -- "$1" "$2"
+      }
+
+      set +e; managed_journal_prepare 0 >/dev/null 2>&1; rc=$?; set +e
+      assert_eq 1 "$rc" "$case_name artifact barrier failure must fail prepare" || exit 1
+      [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]] ||
+        fail "$case_name artifact barrier failure must not create a marker" || exit 1
+      leftovers="$(find "$parent" -maxdepth 1 -name ".${ROTATION_PENDING##*/}.tmp.*" -print -quit)"
+      assert_eq '' "$leftovers" "$case_name artifact barrier failure must leave no journal temporary" || exit 1
+      cmp -s -- "$TEST_TMP/active.before" "$WG_CONF" ||
+        fail "$case_name artifact barrier failure changed active bytes" || exit 1
+      cmp -s -- "$TEST_TMP/backup.before" "${WG_CONF}.bak-healthcheck" ||
+        fail "$case_name artifact barrier failure changed backup bytes" || exit 1
+      cmp -s -- "$TEST_TMP/candidate.before" "$MANAGED_CANDIDATE" ||
+        fail "$case_name artifact barrier failure changed candidate bytes" || exit 1
+      events="$(<"$TEST_TMP/barrier-events")"
+      [[ "$events" != *unexpected-journal* ]] ||
+        fail "$case_name artifact failure must precede every journal action" || exit 1
+    ) || return 1
+  done
+}
+
+test_managed_journal_classifiers_are_collision_safe_and_failure_atomic() {
+  local case_name expected rc journal_actual_digest wgmanaged_reserved_destination
+  setup_managed_journal_fixture || return 1
+  managed_journal_fixture_digests || return 1
+  for case_name in active candidate; do
+    journal_actual_digest=sentinel
+    if [[ "$case_name" == active ]]; then
+      managed_classify_active_profile journal_actual_digest \
+        "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA" || return 1
+      expected=backup
+    else
+      managed_classify_candidate_profile journal_actual_digest \
+        "$JOURNAL_TEST_CANDIDATE_SHA" || return 1
+      expected=present
+    fi
+    assert_eq "$expected" "$journal_actual_digest" \
+      "$case_name classifier must replace a collision-prone caller destination" || return 1
+
+    journal_actual_digest=sentinel
+    if [[ "$case_name" == active ]]; then
+      set +e; managed_classify_active_profile journal_actual_digest invalid \
+        "$JOURNAL_TEST_CANDIDATE_SHA" >/dev/null 2>&1; rc=$?; set +e
+    else
+      set +e; managed_classify_candidate_profile journal_actual_digest invalid \
+        >/dev/null 2>&1; rc=$?; set +e
+    fi
+    assert_eq 1 "$rc" "$case_name classifier must reject an invalid digest" || return 1
+    assert_eq sentinel "$journal_actual_digest" \
+      "$case_name classifier failure must not mutate the caller destination" || return 1
+
+    wgmanaged_reserved_destination=sentinel
+    if [[ "$case_name" == active ]]; then
+      set +e; managed_classify_active_profile wgmanaged_reserved_destination \
+        "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA" >/dev/null 2>&1; rc=$?; set +e
+    else
+      set +e; managed_classify_candidate_profile wgmanaged_reserved_destination \
+        "$JOURNAL_TEST_CANDIDATE_SHA" >/dev/null 2>&1; rc=$?; set +e
+    fi
+    assert_eq 1 "$rc" "$case_name classifier must reject reserved output names" || return 1
+    assert_eq sentinel "$wgmanaged_reserved_destination" \
+      "$case_name reserved-name failure must not mutate the caller destination" || return 1
+  done
 }
 
 test_managed_journal_phase_transitions_revalidate_all_digests_and_classify_factually() {
@@ -2338,6 +2475,9 @@ tests=(
   test_managed_journal_round_trip_is_exact_and_rejects_noop_transactions
   test_managed_journal_rejects_noncanonical_bytes_fields_and_security_shapes
   test_managed_journal_write_is_same_directory_atomic_and_fully_durable
+  test_managed_journal_artifacts_are_durable_before_first_digest
+  test_managed_journal_artifact_barrier_failures_leave_no_journal_or_mutation
+  test_managed_journal_classifiers_are_collision_safe_and_failure_atomic
   test_managed_journal_phase_transitions_revalidate_all_digests_and_classify_factually
   test_managed_journal_rejects_digest_bound_false_endpoints_before_transition_or_recovery
   test_managed_reconciliation_retains_every_unresolved_v2_shape_for_task7
