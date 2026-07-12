@@ -53,7 +53,10 @@ managed_reconcile_pending() {
 }
 
 managed_dispatch_command() {
-  local command="${1:-}"
+  local command="${1:-}" credential_fd="${4:-}"
+  if [[ -n "$credential_fd" ]]; then
+    close_private_fd "$credential_fd" || return 1
+  fi
   case "$command" in
     check|provision|adopt|rotate|restore-static|reset-api-state|status)
       log "Managed command '$command' is not available in this implementation slice"

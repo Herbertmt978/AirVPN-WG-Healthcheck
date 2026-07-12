@@ -20,6 +20,11 @@ assert_eq() {
   [[ "$actual" == "$expected" ]] || fail "$message (expected '$expected', got '$actual')"
 }
 
+assert_contains() {
+  local needle="$1" haystack="$2" message="${3:-text not found}"
+  [[ "$haystack" == *"$needle"* ]] || fail "$message (missing '$needle')"
+}
+
 write_valid_test_key() {
   printf '%064d\n' 0 > "$1"
 }
@@ -166,6 +171,126 @@ test_installed_key_opens_one_valid_record_on_a_private_descriptor() {
   assert_eq 65 "$count" "private descriptor must reference the exact one-record credential"
 }
 
+test_fail_closed_dispatch_closes_credential_before_logging() {
+  local credential_fd leaked='' rc read_rc
+  source_managed_contract || return 1
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  printf 'managed-dispatch-sentinel\n' > "$TEST_TMP/credential"
+  exec {credential_fd}<"$TEST_TMP/credential"
+  : > "$TEST_TMP/events"
+  log() {
+    if IFS= read -r -u "$credential_fd" leaked 2>/dev/null; then
+      printf 'leaked:%s\n' "$leaked" >> "$TEST_TMP/events"
+      return 1
+    fi
+    printf 'closed-before-log\n' >> "$TEST_TMP/events"
+  }
+
+  set +e
+  managed_dispatch_command provision dry-run 0 "$credential_fd"
+  rc=$?
+  set +e
+  assert_eq 69 "$rc" "fail-closed managed command must retain its unavailable result" || return 1
+  assert_eq closed-before-log "$(<"$TEST_TMP/events")" \
+    "fail-closed dispatch must close the credential before any logger child" || return 1
+  close_private_fd "$credential_fd" ||
+    fail "main's final credential cleanup must remain safe after managed-owner closure" || return 1
+  set +e
+  IFS= read -r -u "$credential_fd" leaked 2>/dev/null
+  read_rc=$?
+  set +e
+  assert_eq 1 "$read_rc" "fail-closed managed dispatch must leave the credential descriptor closed"
+}
+
+test_linux_supplied_credential_fd_is_private_until_managed_owner() {
+  local credential_fd events leaked='' rc read_rc sentinel=private-fd-sentinel
+  if [[ "$(uname -s)" != Linux ]]; then return 77; fi
+  source "$SCRIPT"
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  printf '%s\n' "$sentinel" > "$TEST_TMP/credential"
+  exec {credential_fd}<"$TEST_TMP/credential"
+  PROBE_FD="$credential_fd"
+  : > "$TEST_TMP/events"
+
+  probe_fd_closed_in_child() {
+    local stage="$1"
+    if ! bash -c '
+      fd="$1"
+      [[ ! -e "/proc/self/fd/$fd" ]] || exit 1
+      if IFS= read -r -u "$fd" value 2>/dev/null; then exit 1; fi
+    ' bash "$PROBE_FD"; then
+      printf 'leaked:%s\n' "$stage" >> "$TEST_TMP/events"
+      return 1
+    fi
+    printf 'closed:%s\n' "$stage" >> "$TEST_TMP/events"
+  }
+
+  derive_fixed_runtime_paths() {
+    probe_fd_closed_in_child context || return 1
+    CFG="$TEST_TMP/health.conf"
+    WG_CONF="$TEST_TMP/wg0.conf"
+    STATE_DIR="$TEST_TMP/state"
+    LOCK="$STATE_DIR/wg0.lock"
+    ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
+    MANAGED_MODULE="$TEST_TMP/wg-healthcheck-managed"
+  }
+  sanitize_process_environment() { probe_fd_closed_in_child environment; }
+  is_root() { probe_fd_closed_in_child root-check; }
+  validate_secure_file() { probe_fd_closed_in_child stat; }
+  parse_healthcheck_config() {
+    probe_fd_closed_in_child config || return 1
+    AIRVPN_PROFILE_SOURCE=api
+    AIRVPN_DEVICE=default
+  }
+  validate_settings() { probe_fd_closed_in_child settings; }
+  prepare_state_dir() { probe_fd_closed_in_child state-dir || return 1; mkdir -p -- "$STATE_DIR"; }
+  flock() { probe_fd_closed_in_child lock; }
+  log() { probe_fd_closed_in_child log; }
+  classify_pending_marker() {
+    probe_fd_closed_in_child marker || return 1
+    log preflight || return 1
+    PENDING_KIND=v1
+  }
+  reconcile_pending_rotation() {
+    probe_fd_closed_in_child reconciliation || return 1
+    RECONCILED_PENDING=1
+  }
+  load_managed_module() {
+    probe_fd_closed_in_child module || return 1
+    managed_dispatch_command() {
+      local received_fd="$4" record
+      [[ "$received_fd" == "$PROBE_FD" ]] || return 1
+      [[ "$LOCK_FD" != "$received_fd" && -e "/proc/self/fd/$LOCK_FD" ]] || return 1
+      IFS= read -r -u "$received_fd" record || return 1
+      [[ "$record" == "$sentinel" ]] || return 1
+      printf 'owner:%s\n' "$record" >> "$TEST_TMP/events"
+    }
+  }
+
+  set +e
+  main provision wg0 --dry-run --credential-fd "$credential_fd"
+  rc=$?
+  set +e
+  events="$(<"$TEST_TMP/events")"
+  assert_eq 0 "$rc" "private descriptor must reach the exact managed owner without preflight leakage" || return 1
+  for stage in context environment root-check stat config settings state-dir lock marker log reconciliation module; do
+    assert_contains "closed:$stage" "$events" "credential must be absent in $stage child" || return 1
+  done
+  assert_contains "owner:$sentinel" "$events" \
+    "managed owner must receive the original unconsumed credential record" || return 1
+  [[ "$events" != *leaked:* ]] || fail "no pre-provider child may inherit the credential descriptor" || return 1
+
+  set +e
+  IFS= read -r -u "$credential_fd" leaked 2>/dev/null
+  read_rc=$?
+  set +e
+  assert_eq 1 "$read_rc" "main must close the original credential descriptor before returning" || return 1
+  bash -c '[[ ! -e "/proc/self/fd/$1" ]]' bash "$credential_fd" ||
+    fail "subsequent children must not inherit the credential descriptor"
+}
+
 test_linux_module_owner_and_mode_semantics() {
   local rc
   if [[ "$(uname -s)" != Linux || "$(id -u)" != 0 ]]; then return 77; fi
@@ -226,6 +351,8 @@ tests=(
   test_managed_module_validation_requires_root_owned_0644_trusted_source
   test_installed_key_rejects_every_unsafe_shape_before_downstream_events
   test_installed_key_opens_one_valid_record_on_a_private_descriptor
+  test_fail_closed_dispatch_closes_credential_before_logging
+  test_linux_supplied_credential_fd_is_private_until_managed_owner
   test_linux_module_owner_and_mode_semantics
   test_linux_installed_key_owner_and_mode_semantics
 )

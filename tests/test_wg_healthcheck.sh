@@ -2,7 +2,7 @@
 
 # Intentional test patterns: dynamic sourcing, immediate trap capture, hostile
 # PATH/export fixtures, literal attack payloads, and function doubles.
-# shellcheck disable=SC1090,SC2016,SC2034,SC2064,SC2123,SC2163,SC2317,SC2329
+# shellcheck disable=SC1090,SC2016,SC2034,SC2064,SC2123,SC2153,SC2163,SC2317,SC2329
 
 set -u
 
@@ -192,7 +192,8 @@ test_sourceable_without_executing_or_enabling_errexit() {
 
   assert_eq 0 "$source_rc" "sourcing the orchestrator must succeed" || return 1
   local function_name
-  for function_name in main rotate_airvpn restart_iface speed_check ensure_qbittorrent_binding; do
+  for function_name in main rotate_airvpn restart_iface speed_check ensure_qbittorrent_binding \
+      close_private_fd run_with_private_fd_closed; do
     declare -F "$function_name" >/dev/null || fail "sourcing must define $function_name" || return 1
   done
   [[ $- != *e* ]] || fail "sourcing must not enable errexit in the caller"
@@ -1203,6 +1204,92 @@ test_main_lock_contention_is_nonblocking_and_side_effect_free() {
   assert_file_absent "$STATUS_FILE" "lock loser must not overwrite owner status"
 }
 
+test_explicit_lock_contention_is_busy_and_closes_credential_descriptors() {
+  local command
+  for command in provision adopt rotate restore-static reset-api-state status; do
+    (
+      local credential_fd='' leaked='' output rc read_rc
+      local -a argv
+      new_main_fixture
+      : > "$TEST_TMP/events"
+      flock() { return 1; }
+      load_managed_module() { printf 'unexpected-dispatch\n' >> "$TEST_TMP/events"; return 1; }
+      write_status() { printf 'unexpected-status\n' >> "$TEST_TMP/events"; return 1; }
+      if [[ "$command" == status ]]; then
+        argv=(status wg0)
+      else
+        argv=("$command" wg0 --dry-run)
+      fi
+      if [[ "$command" == provision || "$command" == adopt ]]; then
+        printf 'administrative-fd-sentinel\n' > "$TEST_TMP/credential"
+        exec {credential_fd}<"$TEST_TMP/credential"
+        argv+=(--credential-fd "$credential_fd")
+      fi
+
+      set +e
+      main "${argv[@]}" > "$TEST_TMP/output" 2>&1
+      rc=$?
+      set +e
+      output="$(file_text "$TEST_TMP/output")"
+      assert_eq 75 "$rc" "$command lock contention must report temporary busy" || exit 1
+      assert_eq '' "$output" "$command lock contention must not claim command success" || exit 1
+      assert_file_equals '' "$TEST_TMP/events" "$command lock contention must not dispatch or write status" || exit 1
+      if [[ -n "$credential_fd" ]]; then
+        set +e
+        IFS= read -r -u "$credential_fd" leaked 2>/dev/null
+        read_rc=$?
+        set +e
+        assert_eq 1 "$read_rc" "$command lock contention must close the supplied credential descriptor" || exit 1
+      fi
+    ) || return 1
+  done
+
+  (
+    local rc
+    new_main_fixture
+    flock() { return 1; }
+    set +e; main wg0; rc=$?; set +e
+    assert_eq 0 "$rc" "legacy timer lock contention must remain benign"
+  ) || return 1
+
+  (
+    local credential_fd leaked='' rc read_rc
+    new_main_fixture
+    printf 'administrative-fd-sentinel\n' > "$TEST_TMP/credential"
+    exec {credential_fd}<"$TEST_TMP/credential"
+    is_root() { return 1; }
+    set +e
+    main provision wg0 --dry-run --credential-fd "$credential_fd" >/dev/null 2>&1
+    rc=$?
+    set +e
+    assert_eq 1 "$rc" "context failure must remain an error" || exit 1
+    set +e
+    IFS= read -r -u "$credential_fd" leaked 2>/dev/null
+    read_rc=$?
+    set +e
+    assert_eq 1 "$read_rc" "context failure must close the supplied credential descriptor"
+  ) || return 1
+
+  (
+    local credential_fd leaked='' rc read_rc
+    source "$SCRIPT"
+    TEST_TMP="$(mktemp -d)"
+    trap "rm -rf -- '$TEST_TMP'" EXIT
+    printf 'administrative-fd-sentinel\n' > "$TEST_TMP/credential"
+    exec {credential_fd}<"$TEST_TMP/credential"
+    set +e
+    main provision wg0 --credential-fd "$credential_fd" >/dev/null 2>&1
+    rc=$?
+    set +e
+    assert_eq 64 "$rc" "CLI failure must retain its usage result" || exit 1
+    set +e
+    IFS= read -r -u "$credential_fd" leaked 2>/dev/null
+    read_rc=$?
+    set +e
+    assert_eq 1 "$read_rc" "CLI failure must close a previously accepted credential descriptor"
+  )
+}
+
 test_load_command_context_allows_only_provision_to_lack_profile() {
   local command rc
   source "$SCRIPT"
@@ -1979,6 +2066,7 @@ tests=(
   test_fixed_command_wrappers_pass_exact_argv
   test_main_uses_root_seam_and_validates_both_files
   test_main_lock_contention_is_nonblocking_and_side_effect_free
+  test_explicit_lock_contention_is_busy_and_closes_credential_descriptors
   test_load_command_context_allows_only_provision_to_lack_profile
   test_static_no_marker_never_touches_credential_provider_or_managed_code
   test_static_selector_validates_provider_only_when_selection_is_needed

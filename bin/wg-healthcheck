@@ -26,6 +26,7 @@ CONTEXT_LOCKED=0
 LOCK_FD=''
 PENDING_KIND=none
 MANAGED_MODULE_LOADED=0
+DISPATCH_READY=0
 
 reset_configurable_defaults() {
   MAX_AGE=180
@@ -95,6 +96,24 @@ validate_credential_fd_number() {
   local value="${1:-}"
   [[ "$value" =~ ^[1-9][0-9]*$ && ${#value} -le 4 ]] || return 1
   (( 10#$value >= 3 && 10#$value <= 1023 ))
+}
+
+close_private_fd() {
+  local private_fd="${1:-}"
+  [[ -z "$private_fd" ]] && return 0
+  validate_credential_fd_number "$private_fd" || return 1
+  exec {private_fd}<&-
+}
+
+run_with_private_fd_closed() {
+  local private_fd="${1:-}" invocation
+  shift || return 1
+  validate_credential_fd_number "$private_fd" || return 1
+  (( $# > 0 )) && declare -F "$1" >/dev/null || return 1
+  printf -v invocation '%q ' "$@"
+  # The descriptor is validated numeric data; %q protects every function argument.
+  # shellcheck disable=SC2294
+  eval "$invocation ${private_fd}<&-"
 }
 
 parse_cli() {
@@ -1245,9 +1264,10 @@ load_command_context() {
   parse_healthcheck_config "$CFG" || return 1
   validate_settings || return 1
   prepare_state_dir || return 1
+}
 
-  LOCK_FD=
-  exec {LOCK_FD}>"$LOCK" || return 1
+acquire_command_lock() {
+  CONTEXT_LOCKED=0
   if ! flock -n "$LOCK_FD"; then
     return 0
   fi
@@ -1327,7 +1347,8 @@ run_healthcheck() {
   write_status healthy all_checks_passed
 }
 
-dispatch_command() {
+prepare_command_dispatch() {
+  DISPATCH_READY=0
   classify_pending_marker || return 1
   case "$PENDING_KIND" in
     v1)
@@ -1360,18 +1381,97 @@ dispatch_command() {
     log "Managed runtime module lacks its command dispatcher"
     return 1
   }
+  DISPATCH_READY=1
+}
+
+dispatch_command() {
+  local dispatch_rc
+  if [[ -n "$CREDENTIAL_FD" ]]; then
+    if run_with_private_fd_closed "$CREDENTIAL_FD" prepare_command_dispatch; then
+      dispatch_rc=0
+    else
+      dispatch_rc=$?
+    fi
+  elif prepare_command_dispatch; then
+    dispatch_rc=0
+  else
+    dispatch_rc=$?
+  fi
+  (( dispatch_rc == 0 )) || return "$dispatch_rc"
+  (( DISPATCH_READY )) || return 0
   managed_dispatch_command "$COMMAND" "$ACTION_MODE" "$STATUS_JSON" "$CREDENTIAL_FD"
 }
 
+close_cli_credential_fd() {
+  local private_fd="${CREDENTIAL_FD:-}"
+  [[ -z "$private_fd" ]] && return 0
+  close_private_fd "$private_fd" || return 1
+  CREDENTIAL_FD=
+}
+
 main() {
-  parse_cli "$@" || return $?
+  local main_rc
+  if parse_cli "$@"; then
+    main_rc=0
+  else
+    main_rc=$?
+    close_cli_credential_fd || return 1
+    return "$main_rc"
+  fi
   if [[ "$COMMAND" == version ]]; then
     printf 'wg-healthcheck %s\n' "$WG_HEALTHCHECK_VERSION"
     return 0
   fi
-  load_command_context || return 1
-  (( CONTEXT_LOCKED )) || return 0
-  dispatch_command
+
+  if [[ -n "$CREDENTIAL_FD" ]]; then
+    if run_with_private_fd_closed "$CREDENTIAL_FD" load_command_context; then
+      main_rc=0
+    else
+      main_rc=$?
+    fi
+  elif load_command_context; then
+    main_rc=0
+  else
+    main_rc=$?
+  fi
+  if (( main_rc != 0 )); then
+    close_cli_credential_fd || return 1
+    return "$main_rc"
+  fi
+
+  LOCK_FD=
+  if ! exec {LOCK_FD}>"$LOCK"; then
+    close_cli_credential_fd || return 1
+    return 1
+  fi
+  if [[ -n "$CREDENTIAL_FD" ]]; then
+    if run_with_private_fd_closed "$CREDENTIAL_FD" acquire_command_lock; then
+      main_rc=0
+    else
+      main_rc=$?
+    fi
+  elif acquire_command_lock; then
+    main_rc=0
+  else
+    main_rc=$?
+  fi
+  if (( main_rc != 0 )); then
+    close_cli_credential_fd || return 1
+    return "$main_rc"
+  fi
+  if (( ! CONTEXT_LOCKED )); then
+    close_cli_credential_fd || return 1
+    [[ "$COMMAND" == check ]] && return 0
+    return 75
+  fi
+
+  if dispatch_command; then
+    main_rc=0
+  else
+    main_rc=$?
+  fi
+  close_cli_credential_fd || return 1
+  return "$main_rc"
 }
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   umask 077
