@@ -1,6 +1,9 @@
+import base64
+from dataclasses import FrozenInstanceError
 import importlib.machinery
 import importlib.util
 import io
+import ipaddress
 import json
 from pathlib import Path
 import subprocess
@@ -58,6 +61,362 @@ def _server(
 
 def _status(*servers):
     return {"result": "ok", "servers": list(servers)}
+
+
+def _dummy_wireguard_key(value):
+    return base64.b64encode(bytes([value]) * 32).decode("ascii")
+
+
+def _wireguard_profile(
+    *,
+    address="10.20.30.40/32",
+    private_key=None,
+    mtu="1320",
+    dns=("10.128.0.1", "1.1.1.1"),
+    table="off",
+    public_key=None,
+    preshared_key=None,
+    endpoint="198.51.100.10:1637",
+    allowed_ips="0.0.0.0/0",
+    persistent_keepalive="15",
+    interface_extra=(),
+    peer_extra=(),
+    trailer=(),
+    line_ending="\n",
+    terminal_newline=True,
+):
+    private_key = private_key or _dummy_wireguard_key(1)
+    public_key = public_key or _dummy_wireguard_key(2)
+    preshared_key = preshared_key or _dummy_wireguard_key(3)
+    lines = [
+        "# Redacted provider-success shape",
+        "[Interface]",
+        f"Address = {address}",
+        f"PrivateKey = {private_key}",
+        f"MTU = {mtu}",
+    ]
+    if dns is not None:
+        lines.append(f"DNS = {', '.join(dns)}")
+    if table is not None:
+        lines.append(f"Table = {table}")
+    lines.extend(interface_extra)
+    lines.extend(
+        [
+            "",
+            "[Peer]",
+            f"PublicKey = {public_key}",
+            f"PresharedKey = {preshared_key}",
+            f"Endpoint = {endpoint}",
+            f"AllowedIPs = {allowed_ips}",
+            f"PersistentKeepalive = {persistent_keepalive}",
+        ]
+    )
+    lines.extend(peer_extra)
+    lines.extend(trailer)
+    text = line_ending.join(lines)
+    if terminal_newline:
+        text += line_ending
+    return text.encode("utf-8")
+
+
+class ProfileParsingTests(unittest.TestCase):
+    def _parse(self, payload, **kwargs):
+        self.assertTrue(
+            hasattr(airvpn_api, "parse_wireguard_profile"),
+            "parse_wireguard_profile is not implemented",
+        )
+        return airvpn_api.parse_wireguard_profile(payload, **kwargs)
+
+    def test_redacted_real_success_shape_parses(self):
+        profile = self._parse(
+            _wireguard_profile(line_ending="\r\n"),
+            expected_endpoint="198.51.100.10:1637",
+        )
+
+        self.assertEqual(profile.address, ipaddress.IPv4Interface("10.20.30.40/32"))
+        self.assertEqual(profile.private_key, _dummy_wireguard_key(1))
+        self.assertEqual(profile.mtu, 1320)
+        self.assertEqual(profile.dns, ("10.128.0.1", "1.1.1.1"))
+        self.assertEqual(profile.table, "off")
+        self.assertEqual(profile.public_key, _dummy_wireguard_key(2))
+        self.assertEqual(profile.preshared_key, _dummy_wireguard_key(3))
+        self.assertEqual(profile.endpoint, "198.51.100.10:1637")
+        self.assertEqual(profile.allowed_ips, "0.0.0.0/0")
+        self.assertEqual(profile.persistent_keepalive, 15)
+        self.assertEqual(
+            self._parse(_wireguard_profile(terminal_newline=False)),
+            profile,
+        )
+        rendered_repr = repr(profile)
+        for value in range(1, 4):
+            self.assertNotIn(_dummy_wireguard_key(value), rendered_repr)
+        with self.assertRaises(FrozenInstanceError):
+            profile.endpoint = "198.51.100.11:1637"
+
+    def test_duplicate_sections_fields_and_extra_peer_are_rejected(self):
+        cases = {
+            "duplicate interface": _wireguard_profile(trailer=("[Interface]",)),
+            "duplicate field": _wireguard_profile(
+                interface_extra=("Address = 10.20.30.41/32",)
+            ),
+            "extra peer": _wireguard_profile(trailer=("[Peer]",)),
+        }
+
+        for label, payload in cases.items():
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                self._parse(payload)
+
+    def test_hooks_saveconfig_unknown_directives_and_shell_syntax_are_rejected(self):
+        cases = {
+            "SaveConfig": _wireguard_profile(interface_extra=("SaveConfig = true",)),
+            "PreUp": _wireguard_profile(interface_extra=("PreUp = /usr/bin/true",)),
+            "PostUp": _wireguard_profile(interface_extra=("PostUp = /usr/bin/true",)),
+            "PreDown": _wireguard_profile(interface_extra=("PreDown = /usr/bin/true",)),
+            "PostDown": _wireguard_profile(interface_extra=("PostDown = /usr/bin/true",)),
+            "unknown": _wireguard_profile(interface_extra=("Unknown = value",)),
+            "shell syntax": _wireguard_profile(table="$(touch /tmp/provider-command)"),
+        }
+
+        for label, payload in cases.items():
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                self._parse(payload)
+
+    def test_noncanonical_or_zero_wireguard_keys_are_rejected(self):
+        zero_key = base64.b64encode(bytes([0]) * 32).decode("ascii")
+        short_key = base64.b64encode(bytes([4]) * 31).decode("ascii")
+        cases = {
+            "missing canonical padding": _wireguard_profile(
+                private_key=_dummy_wireguard_key(1).rstrip("=")
+            ),
+            "wrong decoded length": _wireguard_profile(private_key=short_key),
+            "zero private key": _wireguard_profile(private_key=zero_key),
+            "zero public key": _wireguard_profile(public_key=zero_key),
+            "zero preshared key": _wireguard_profile(preshared_key=zero_key),
+        }
+
+        for label, payload in cases.items():
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                self._parse(payload)
+
+    def test_address_requires_one_ipv4_32(self):
+        for address in (
+            "10.20.30.40/24",
+            "2001:db8::40/128",
+            "10.20.30.40",
+            "10.20.30.40/32, 10.20.30.41/32",
+        ):
+            with self.subTest(address=address), self.assertRaises(ValueError):
+                self._parse(_wireguard_profile(address=address))
+
+    def test_hostname_ipv6_and_wrong_endpoint_are_rejected(self):
+        for endpoint in (
+            "vpn.example.test:1637",
+            "[2001:db8::10]:1637",
+        ):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                self._parse(_wireguard_profile(endpoint=endpoint))
+
+        with self.assertRaises(ValueError):
+            self._parse(
+                _wireguard_profile(),
+                expected_endpoint="198.51.100.11:1637",
+            )
+
+    def test_mtu_keepalive_and_allowed_ips_are_exact(self):
+        cases = {
+            "wrong MTU": _wireguard_profile(mtu="1321"),
+            "noncanonical MTU": _wireguard_profile(mtu="01320"),
+            "wrong keepalive": _wireguard_profile(persistent_keepalive="14"),
+            "noncanonical keepalive": _wireguard_profile(
+                persistent_keepalive="015"
+            ),
+            "additional route": _wireguard_profile(
+                allowed_ips="0.0.0.0/0, ::/0"
+            ),
+            "unexpected route": _wireguard_profile(allowed_ips="10.0.0.0/8"),
+        }
+
+        for label, payload in cases.items():
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                self._parse(payload)
+
+    def test_control_non_utf8_bare_cr_long_line_and_oversize_are_rejected(self):
+        valid = _wireguard_profile()
+        cases = {
+            "control byte": valid.replace(b"[Interface]", b"[Inter\x00face]"),
+            "non-UTF-8": b"\xff" + valid,
+            "bare CR": valid.replace(b"\n", b"\r", 1),
+            "long line": b"#" + (b"x" * 1024) + b"\n" + valid,
+            "too many lines": (b"# bounded\n" * 65) + valid,
+            "oversize": b"x" * ((64 * 1024) + 1),
+        }
+
+        for label, payload in cases.items():
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                self._parse(payload)
+
+
+class CountryListingTests(unittest.TestCase):
+    def _eligible(self, payload):
+        self.assertTrue(
+            hasattr(airvpn_api, "list_eligible_countries"),
+            "list_eligible_countries is not implemented",
+        )
+        return airvpn_api.list_eligible_countries(payload)
+
+    def test_list_countries_is_credential_free_and_sorted(self):
+        payload = _status(
+            _server(
+                "NetherlandsOne",
+                "198.51.100.21",
+                country="nl",
+                country_name="Netherlands",
+            ),
+            _server(
+                "BritainOne",
+                "198.51.100.22",
+                country="GB",
+                country_name="United\tKingdom",
+            ),
+            _server(
+                "BritainTwo",
+                "198.51.100.23",
+                country="gb",
+                country_name="United Kingdom",
+            ),
+            _server(
+                "GermanyWarning",
+                "198.51.100.24",
+                country="DE",
+                country_name="Germany",
+                health="warning",
+            ),
+        )
+        expected = [
+            ("GB", "United Kingdom", "2"),
+            ("NL", "Netherlands", "1"),
+        ]
+
+        self.assertEqual(self._eligible(payload), expected)
+
+        response = io.BytesIO(json.dumps(payload).encode("utf-8"))
+        opener = mock.Mock()
+        opener.open.return_value = response
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch(
+            "builtins.open", side_effect=AssertionError("credential opened")
+        ), mock.patch.object(
+            airvpn_api.urllib.request, "build_opener", return_value=opener
+        ), mock.patch.object(sys, "stdout", stdout), mock.patch.object(
+            sys, "stderr", stderr
+        ):
+            return_code = airvpn_api.main(
+                [
+                    "list-countries",
+                    "--url",
+                    "https://status.example.test/api",
+                    "--timeout",
+                    "1",
+                ]
+            )
+
+        self.assertEqual(return_code, 0, stderr.getvalue())
+        self.assertEqual(
+            stdout.getvalue(),
+            "GB\tUnited Kingdom\t2\nNL\tNetherlands\t1\n",
+        )
+        request = opener.open.call_args.args[0]
+        headers = {name.lower(): value for name, value in request.header_items()}
+        self.assertNotIn("api-key", headers)
+
+    def test_list_countries_requires_a_healthy_valid_ipv4_server(self):
+        self.assertEqual(
+            self._eligible(
+                _status(
+                    _server(
+                        "WarningOnly",
+                        "198.51.100.30",
+                        country="GB",
+                        country_name="United Kingdom",
+                        health="warning",
+                    )
+                )
+            ),
+            [],
+        )
+        self.assertEqual(
+            self._eligible(
+                _status(
+                    _server(
+                        "Healthy",
+                        "198.51.100.31",
+                        country="GB",
+                        country_name="United Kingdom",
+                    )
+                )
+            ),
+            [("GB", "United Kingdom", "1")],
+        )
+        for invalid_ip in ("not-an-ip", "2001:db8::31"):
+            with self.subTest(ip=invalid_ip), self.assertRaises(ValueError):
+                self._eligible(
+                    _status(
+                        _server(
+                            "InvalidIPv4",
+                            invalid_ip,
+                            country="GB",
+                            country_name="United Kingdom",
+                        )
+                    )
+                )
+
+    def test_list_countries_rejects_duplicate_conflicting_or_malformed_codes(self):
+        with self.assertRaises(ValueError):
+            self._eligible(
+                _status(
+                    _server(
+                        "Britain",
+                        "198.51.100.40",
+                        country="gb",
+                        country_name="United Kingdom",
+                    ),
+                    _server(
+                        "Conflict",
+                        "198.51.100.41",
+                        country="GB",
+                        country_name="Great Britain",
+                    ),
+                )
+            )
+
+        for country in ("G", "GBR", "G1", "G\x00", "\u00e9X", " GB "):
+            with self.subTest(country=repr(country)), self.assertRaises(ValueError):
+                self._eligible(
+                    _status(
+                        _server(
+                            "MalformedCountry",
+                            "198.51.100.42",
+                            country=country,
+                            country_name="United Kingdom",
+                        )
+                    )
+                )
+
+        for country_name in (None, "United\x00Kingdom"):
+            with self.subTest(country_name=repr(country_name)), self.assertRaises(
+                ValueError
+            ):
+                self._eligible(
+                    _status(
+                        _server(
+                            "MalformedName",
+                            "198.51.100.43",
+                            country="GB",
+                            country_name=country_name,
+                        )
+                    )
+                )
 
 
 class StatusValidationTests(unittest.TestCase):

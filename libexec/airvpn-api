@@ -2,6 +2,9 @@
 """Validate AirVPN API responses and select a deterministic server."""
 
 import argparse
+import base64
+import binascii
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 import ipaddress
 import json
@@ -23,8 +26,16 @@ MAX_NUMERIC_EXPONENT = 9
 MAX_NUMERIC_SCALE = 12
 MAX_NUMERIC_OUTPUT_CHARS = 64
 MAX_DISPLAY_FIELD_CHARS = 256
+MAX_PROFILE_BYTES = 64 * 1024
+MAX_PROFILE_LINES = 64
+MAX_PROFILE_LINE_BYTES = 1024
 _TSV_SEPARATORS = re.compile(r"[\t\r\n]+")
 _COUNTRY_SEPARATORS = re.compile(r"[\s,]+")
+_COUNTRY_CODE = re.compile(r"[A-Za-z]{2}\Z")
+_INTERFACE_FIELDS = frozenset(("Address", "PrivateKey", "MTU", "DNS", "Table"))
+_PEER_FIELDS = frozenset(
+    ("PublicKey", "PresharedKey", "Endpoint", "AllowedIPs", "PersistentKeepalive")
+)
 
 
 class AirVPNAPIError(ValueError):
@@ -33,6 +44,22 @@ class AirVPNAPIError(ValueError):
 
 class NoCandidateError(AirVPNAPIError):
     """Raised when a valid status response has no eligible server."""
+
+
+@dataclass(frozen=True)
+class WireGuardProfile:
+    """Validated WireGuard profile data with key material omitted from repr."""
+
+    address: ipaddress.IPv4Interface
+    private_key: str = field(repr=False)
+    mtu: int
+    dns: tuple[str, ...]
+    table: str | None
+    public_key: str = field(repr=False)
+    preshared_key: str = field(repr=False)
+    endpoint: str
+    allowed_ips: str
+    persistent_keepalive: int
 
 
 def _validate_port(value):
@@ -88,6 +115,232 @@ def parse_endpoint_ip(endpoint):
         family = "IPv6" if expected_version == 6 else "IPv4"
         raise AirVPNAPIError(f"endpoint must contain a valid {family} address")
     return str(address)
+
+
+def _profile_lines(payload):
+    if not isinstance(payload, bytes):
+        raise AirVPNAPIError("WireGuard profile payload must be bytes")
+    if len(payload) > MAX_PROFILE_BYTES:
+        raise AirVPNAPIError(
+            f"WireGuard profile exceeds {MAX_PROFILE_BYTES} bytes"
+        )
+
+    normalized = payload.replace(b"\r\n", b"\n")
+    if b"\r" in normalized:
+        raise AirVPNAPIError("WireGuard profile contains a bare carriage return")
+    if any((byte < 32 and byte != 10) or byte == 127 for byte in normalized):
+        raise AirVPNAPIError("WireGuard profile contains a control byte")
+
+    raw_lines = normalized.split(b"\n")
+    if normalized.endswith(b"\n"):
+        raw_lines.pop()
+    if len(raw_lines) > MAX_PROFILE_LINES:
+        raise AirVPNAPIError(
+            f"WireGuard profile exceeds {MAX_PROFILE_LINES} lines"
+        )
+    if any(len(line) > MAX_PROFILE_LINE_BYTES for line in raw_lines):
+        raise AirVPNAPIError(
+            f"WireGuard profile line exceeds {MAX_PROFILE_LINE_BYTES} bytes"
+        )
+
+    try:
+        lines = [line.decode("utf-8") for line in raw_lines]
+    except UnicodeDecodeError as exc:
+        raise AirVPNAPIError("WireGuard profile must be UTF-8") from exc
+    if any(
+        not character.isprintable()
+        for line in lines
+        for character in line
+    ):
+        raise AirVPNAPIError("WireGuard profile contains a control character")
+    return lines
+
+
+def _wireguard_key(value, field_name):
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise AirVPNAPIError(
+            f"WireGuard profile {field_name} must be a canonical key"
+        ) from exc
+    if (
+        len(decoded) != 32
+        or not any(decoded)
+        or base64.b64encode(decoded).decode("ascii") != value
+    ):
+        raise AirVPNAPIError(
+            f"WireGuard profile {field_name} must be a canonical nonzero key"
+        )
+    return value
+
+
+def _profile_address(value):
+    try:
+        address = ipaddress.ip_interface(value)
+    except ValueError as exc:
+        raise AirVPNAPIError(
+            "WireGuard profile Address must be one canonical IPv4 /32"
+        ) from exc
+    if (
+        not isinstance(address, ipaddress.IPv4Interface)
+        or address.network.prefixlen != 32
+        or str(address) != value
+    ):
+        raise AirVPNAPIError(
+            "WireGuard profile Address must be one canonical IPv4 /32"
+        )
+    return address
+
+
+def _profile_dns(value):
+    values = value.split(",")
+    if not values:
+        raise AirVPNAPIError("WireGuard profile DNS must contain numeric addresses")
+
+    normalized = []
+    for item in values:
+        item = item.strip()
+        if not item or "%" in item:
+            raise AirVPNAPIError(
+                "WireGuard profile DNS must contain numeric addresses"
+            )
+        try:
+            address = ipaddress.ip_address(item)
+        except ValueError as exc:
+            raise AirVPNAPIError(
+                "WireGuard profile DNS must contain numeric addresses"
+            ) from exc
+        if str(address) != item:
+            raise AirVPNAPIError(
+                "WireGuard profile DNS must contain canonical numeric addresses"
+            )
+        normalized.append(str(address))
+    return tuple(normalized)
+
+
+def _profile_table(value):
+    if value in ("auto", "off"):
+        return value
+    if not re.fullmatch(r"[0-9]+", value) or len(value) > 10:
+        raise AirVPNAPIError("WireGuard profile Table must be auto, off, or numeric")
+    table = int(value)
+    if not 1 <= table <= 4294967295 or str(table) != value:
+        raise AirVPNAPIError("WireGuard profile Table must be auto, off, or numeric")
+    return value
+
+
+def _profile_endpoint(value):
+    if not isinstance(value, str) or value.count(":") != 1:
+        raise AirVPNAPIError(
+            "WireGuard profile Endpoint must be a canonical IPv4 endpoint"
+        )
+    host, port_text = value.rsplit(":", 1)
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise AirVPNAPIError(
+            "WireGuard profile Endpoint must be a canonical IPv4 endpoint"
+        ) from exc
+    if not isinstance(address, ipaddress.IPv4Address):
+        raise AirVPNAPIError(
+            "WireGuard profile Endpoint must be a canonical IPv4 endpoint"
+        )
+    port = _validate_port(port_text)
+    canonical = f"{address}:{port}"
+    if canonical != value:
+        raise AirVPNAPIError(
+            "WireGuard profile Endpoint must be a canonical IPv4 endpoint"
+        )
+    return canonical
+
+
+def parse_wireguard_profile(
+    payload: bytes, *, expected_endpoint: str | None = None
+) -> WireGuardProfile:
+    """Strictly parse untrusted WireGuard profile bytes into validated data."""
+
+    fields = {"Interface": {}, "Peer": {}}
+    sections = []
+    section = None
+    for line_number, line in enumerate(_profile_lines(payload), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        if stripped in ("[Interface]", "[Peer]"):
+            section_name = stripped[1:-1]
+            expected = "Interface" if not sections else "Peer"
+            if section_name != expected or section_name in sections:
+                raise AirVPNAPIError(
+                    "WireGuard profile must contain one Interface then one Peer"
+                )
+            sections.append(section_name)
+            section = section_name
+            continue
+        if stripped.startswith("[") or stripped.endswith("]"):
+            raise AirVPNAPIError("WireGuard profile contains an unknown section")
+        if section is None:
+            raise AirVPNAPIError(
+                f"WireGuard profile directive before Interface on line {line_number}"
+            )
+        if "=" not in stripped:
+            raise AirVPNAPIError(
+                f"WireGuard profile has malformed directive on line {line_number}"
+            )
+
+        name, value = (part.strip() for part in stripped.split("=", 1))
+        allowed = _INTERFACE_FIELDS if section == "Interface" else _PEER_FIELDS
+        if not name or not value or name not in allowed:
+            raise AirVPNAPIError(
+                f"WireGuard profile contains a disallowed directive on line {line_number}"
+            )
+        if name in fields[section]:
+            raise AirVPNAPIError(
+                f"WireGuard profile contains a duplicate directive on line {line_number}"
+            )
+        fields[section][name] = value
+
+    if sections != ["Interface", "Peer"]:
+        raise AirVPNAPIError(
+            "WireGuard profile must contain one Interface then one Peer"
+        )
+    interface = fields["Interface"]
+    peer = fields["Peer"]
+    if not {"Address", "PrivateKey", "MTU"}.issubset(interface):
+        raise AirVPNAPIError("WireGuard profile is missing an Interface directive")
+    if not _PEER_FIELDS.issubset(peer):
+        raise AirVPNAPIError("WireGuard profile is missing a Peer directive")
+
+    if interface["MTU"] != "1320":
+        raise AirVPNAPIError("WireGuard profile MTU must be exactly 1320")
+    if peer["PersistentKeepalive"] != "15":
+        raise AirVPNAPIError(
+            "WireGuard profile PersistentKeepalive must be exactly 15"
+        )
+    if peer["AllowedIPs"] != "0.0.0.0/0":
+        raise AirVPNAPIError(
+            "WireGuard profile AllowedIPs must be exactly 0.0.0.0/0"
+        )
+
+    endpoint = _profile_endpoint(peer["Endpoint"])
+    if expected_endpoint is not None:
+        if endpoint != _profile_endpoint(expected_endpoint):
+            raise AirVPNAPIError(
+                "WireGuard profile Endpoint does not match the expected endpoint"
+            )
+
+    return WireGuardProfile(
+        address=_profile_address(interface["Address"]),
+        private_key=_wireguard_key(interface["PrivateKey"], "PrivateKey"),
+        mtu=1320,
+        dns=_profile_dns(interface["DNS"]) if "DNS" in interface else (),
+        table=_profile_table(interface["Table"]) if "Table" in interface else None,
+        public_key=_wireguard_key(peer["PublicKey"], "PublicKey"),
+        preshared_key=_wireguard_key(peer["PresharedKey"], "PresharedKey"),
+        endpoint=endpoint,
+        allowed_ips="0.0.0.0/0",
+        persistent_keepalive=15,
+    )
 
 
 def validate_status_payload(data):
@@ -270,6 +523,72 @@ def _server_entry_ips(server, index):
                 )
             entry_ips.append((field, address))
     return entry_ips
+
+
+def _country_name(server, index):
+    value = server.get("country_name")
+    if not isinstance(value, str):
+        raise AirVPNAPIError(
+            f"status server {index} field country_name must be text"
+        )
+    if any(
+        character not in "\t\r\n" and not character.isprintable()
+        for character in value
+    ):
+        raise AirVPNAPIError(
+            f"status server {index} field country_name contains a control character"
+        )
+    name = _sanitize_tsv(value)
+    if not name:
+        raise AirVPNAPIError(
+            f"status server {index} field country_name must be non-empty"
+        )
+    return name
+
+
+def list_eligible_countries(data):
+    """Return sorted TSV-ready countries with healthy IPv4 server counts."""
+
+    countries = {}
+    for index, server in enumerate(validate_status_payload(data)):
+        health = server.get("health")
+        if not isinstance(health, str):
+            raise AirVPNAPIError(
+                f"status server {index} field health must be text"
+            )
+        if health != "ok":
+            continue
+
+        entry_ips = _server_entry_ips(server, index)
+        if not any(field == "ip_v4_in1" for field, _address in entry_ips):
+            raise AirVPNAPIError(
+                f"status server {index} field ip_v4_in1 must be a valid IPv4 address"
+            )
+
+        country_code = server.get("country_code")
+        if not isinstance(country_code, str) or not _COUNTRY_CODE.fullmatch(
+            country_code
+        ):
+            raise AirVPNAPIError(
+                f"status server {index} field country_code must be two ASCII letters"
+            )
+        country_code = country_code.upper()
+        country_name = _country_name(server, index)
+
+        existing = countries.get(country_code)
+        if existing is not None and existing[0] != country_name:
+            raise AirVPNAPIError(
+                f"status country {country_code} has conflicting names"
+            )
+        if existing is None:
+            countries[country_code] = [country_name, 1]
+        else:
+            existing[1] += 1
+
+    return [
+        (country_code, countries[country_code][0], str(countries[country_code][1]))
+        for country_code in sorted(countries)
+    ]
 
 
 def select_candidate(data, allowed_countries, port, current_endpoint):
@@ -474,6 +793,12 @@ def _build_parser():
     select_parser.add_argument("--current-endpoint", default="")
     select_parser.add_argument("--timeout", default=DEFAULT_TIMEOUT)
 
+    countries_parser = subparsers.add_parser(
+        "list-countries", help="list countries with healthy IPv4 servers"
+    )
+    countries_parser.add_argument("--url", default=DEFAULT_STATUS_URL)
+    countries_parser.add_argument("--timeout", default=DEFAULT_TIMEOUT)
+
     subparsers.add_parser(
         "verify-egress", help="validate a whatismyip JSON document from stdin"
     )
@@ -503,6 +828,10 @@ def main(argv=None):
             if candidate is None:
                 raise NoCandidateError("no eligible AirVPN server")
             print("\t".join(candidate))
+        elif args.command == "list-countries":
+            data = _fetch_json(args.url, args.timeout)
+            for country in list_eligible_countries(data):
+                print("\t".join(country))
         elif args.command == "verify-egress":
             stdin_stream = getattr(sys.stdin, "buffer", sys.stdin)
             data = _load_json_stream(stdin_stream, "stdin JSON input")
