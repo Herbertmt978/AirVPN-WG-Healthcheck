@@ -31,6 +31,32 @@
 - Deferred release gate: the helper and its test file exceed 800 lines. Task 14 must make
   and verify an explicit split decision before release.
 
+### Task 2: canonical rendering and identity pinning
+
+- Accepted commits: `9abc77675ac665988b7e1993c967588e15f99b65`,
+  `422a2a16dbf950a383d4efc12ff392eb94945705`, and
+  `8073a50648318e69063ef97cfec9f1d0098861e3`.
+- Initial RED: all five planned rendering tests failed only for missing renderer,
+  identity, and composition functions.
+- Review RED evidence:
+  - forged newline content initially escaped rendering validation;
+  - 27 forged-object subcases exposed invalid field types, ignored fields, chained
+    exceptions, and secret-retaining surrogate encoding failures;
+  - 18 comparator subcases exposed raw failures and attacker-controlled key-bearing
+    equality exceptions in both public argument positions.
+- Final GREEN evidence:
+  - focused rendering tests: 5/5 passed;
+  - complete helper suite: 45/45 passed;
+  - compile and Python 3.10 grammar checks passed;
+  - direct surrogate and malicious-equality probes returned generic unchained
+    `AirVPNAPIError` with no key retention;
+  - canonical bytes, exact public signatures, constant-time private-key comparison, exact
+    address equality, and pinned-Table composition remained intact.
+- Independent specification and code-quality/security re-reviews approved the final tree
+  with no residual findings.
+- Scope remained limited to `libexec/airvpn-api` and `tests/test_airvpn_api.py`; the
+  worktree and dynamic-key fixture scan were clean.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.

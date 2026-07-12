@@ -283,20 +283,20 @@ candidates; the pre-managed snapshot preserves original bytes.
 
 **Verification:** `python3 -m unittest tests.test_airvpn_api.ProfileRenderingTests -v`.
 
-- [ ] **Write RED tests.** Add tests named
+- [x] **Write RED tests.** Add tests named
   `test_renderer_has_fixed_header_order_spacing_and_terminal_newline`,
   `test_parse_render_parse_is_stable`,
   `test_identity_compares_private_key_and_address_without_exposure`,
   `test_identity_pinning_preserves_only_validated_table`, and
   `test_profile_and_manifest_repr_are_redacted`.
-- [ ] **Verify RED.** Require failures for missing renderer/identity functions.
-- [ ] **Implement minimal rendering.** Implement `render_wireguard_profile` with fixed field
+- [x] **Verify RED.** Require failures for missing renderer/identity functions.
+- [x] **Implement minimal rendering.** Implement `render_wireguard_profile` with fixed field
   order and a fixed generated header. Implement `profiles_have_same_identity` with
   `hmac.compare_digest`; composition copies only the validated current `Table` and requires
   exact private-key/address equality.
-- [ ] **Verify GREEN.** Run focused and full Python tests plus
+- [x] **Verify GREEN.** Run focused and full Python tests plus
   `python3 -m py_compile libexec/airvpn-api`.
-- [ ] **Commit.** `git commit -m "Render pinned managed profiles"`.
+- [x] **Commit.** `git commit -m "Render pinned managed profiles"`.
 
 ## Task 3: Fixed-origin authenticated generation and descriptor transport
 
