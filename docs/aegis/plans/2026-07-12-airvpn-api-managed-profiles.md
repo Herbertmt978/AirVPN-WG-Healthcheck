@@ -13,9 +13,9 @@ release and migrate the download VM through a controlled rollback drill.
 - `bin/wg-healthcheck` remains the stable healthcheck entry point and owns CLI dispatch,
   common tunnel verification, static endpoint recovery, and mode selection.
 - `libexec/wg-healthcheck-managed` is a securely sourced Bash module that owns API state,
-  managed-profile transactions, qBittorrent stop/start sequencing, and v2 reconciliation.
-  Static timer runs do not source it unless a pre-mode pending classifier finds a v2
-  journal that must be reconciled.
+  managed-profile transactions, qBittorrent containment, safety records, and v2
+  reconciliation. Static timer runs do not source it unless a pre-mode classifier finds a
+  safety record or v2 journal that must be reconciled.
 - `libexec/airvpn-api` remains the Python provider boundary and gains strict profile
   parsing, fixed-origin authenticated generation, canonical rendering, identity pinning,
   and descriptor-only secret/profile transport.
@@ -23,7 +23,7 @@ release and migrate the download VM through a controlled rollback drill.
   credential input, two-mode setup, safe configuration rewrites, and fixed-argument
   orchestration. It never owns tunnel transactions.
 - The installer owns managed code/directories but preserves profiles, credentials,
-  pre-managed snapshots, pending journals, and persistent API state.
+  pre-managed snapshots, pending journals, safety records, and persistent API state.
 
 ## Tech stack
 
@@ -51,7 +51,7 @@ release and migrate the download VM through a controlled rollback drill.
   `AIRVPN_PROFILE_SOURCE=static` without opening a key.
 - Static endpoint rotation and the v1 one-line pending marker remain supported.
 - The installer never overwrites an existing WireGuard profile, health configuration,
-  credential, pre-managed snapshot, backup, candidate, marker, or API state.
+  credential, pre-managed snapshot, backup, candidate, marker, safety record, or API state.
 - Public CI remains deterministic and credential-free.
 - API-managed mode never falls back to endpoint-only mutation after an authenticated
   failure; switching modes is an explicit operator action.
@@ -431,30 +431,51 @@ the reconciliation dispatcher recognizes both versions.
 
 ## Task 7: qBittorrent sequencing and verified managed rollback
 
-**Files:** modify `libexec/wg-healthcheck-managed`,
-`tests/test_wg_managed_profiles.sh`.
+**Files:** modify `libexec/wg-healthcheck-managed`, `bin/wg-healthcheck`,
+`tests/test_wg_managed_profiles.sh`, and `tests/test_wg_healthcheck.sh`.
 
-**Why:** qBittorrent must not run during an unverified full-profile transition.
+**Why:** qBittorrent must not run during an unverified full-profile transition, and a
+crash between journal cleanup and candidate commit must never leave the profile without an
+authoritative recovery owner.
 
 **Impact/compatibility:** static endpoint behavior and ordinary missing-binding restart
 remain unchanged.
 
 **Verification:** focused managed transaction tests, then all Bash tests.
 
-- [ ] **Write RED tests.** Cover running/stopped container detection, stop-before-down,
-  stop failure abort, old-config down ordering, staged digest check, candidate install/up,
-  start-after-network-verification, TCP/UDP proof, previously stopped preservation,
-  failure rollback, rollback failure leaving client stopped, and crash injection at every
-  phase.
+- [ ] **Write RED tests.** Cover running/stopped/unmanaged container detection,
+  stop-before-down, stop failure abort, old-config down ordering, staged digest check,
+  candidate install/up, start-after-network-verification, TCP/UDP proof, previously
+  stopped preservation, failure rollback, rollback failure leaving the client stopped,
+  and crash injection at every phase. Add exact active-to-candidate and
+  backup-to-candidate identity tests for private key, canonical IPv4 `/32`, and optional
+  `Table`, including malformed/duplicate inputs and a canary absent from output, logs,
+  tracing, helper arguments, and pipelines. Add strict safety-record schema, cross-field,
+  permission, durability, state-transition, and recovery-classification tests, including
+  invalid or orphan journals without a safety record. Inject an external qBittorrent
+  restart at every forward/rollback containment checkpoint, recreate
+  a container under the same name, drift the configured tuple, and fail journal unlink,
+  journal parent sync, safety transition, final unlink, and final parent sync. Prove every
+  path retains a rollback owner or a committed candidate owner and that rolled-back
+  candidates never leave a success rotation stamp.
 - [ ] **Verify RED.** Require ordering assertions to fail before any implementation and
   confirm no static regression.
-- [ ] **Implement minimal transaction.** Add container state/stop/restore functions and
-  the approved prepared → verified state machine. Down uses the old installed profile;
-  candidate is installed only after tunnel-down; rollback revalidates the backup digest,
-  restores exact bytes/mode/owner, verifies old tunnel and binding, then clears state.
+- [ ] **Implement minimal transaction.** Add a status-only secret-safe identity comparator;
+  strict durable `pending|committed|finalizing` safety-record owner; immutable Docker-ID/
+  configuration tuple capture; containment checkpoints; and exact stop/restore/final-state
+  proofs. Keep the v2 journal as phase evidence. Down uses the old installed profile and
+  the candidate is installed only after tunnel-down. Remove/sync candidate and journal
+  while the safety record is still `pending`, atomically commit the safety record, then
+  write cooldown/status as post-commit best effort and remove the safety record last.
+  Reclassify the visible safety state after any transition/durability error and never
+  roll back a visible committed candidate.
+  Pending reconciliation restores exact backup bytes/mode/owner, verifies the old tunnel,
+  restores qBittorrent only when the recorded immutable identity and current tuple still
+  match, and retains the safety record on every incomplete postcondition.
 - [ ] **Verify GREEN.** Run focused/full managed tests, full static tests, syntax, and
   ShellCheck.
-- [ ] **Commit.** `git commit -m "Protect qBittorrent during profile switches"`.
+- [ ] **Commit follow-up without amending the provisional commit.**
+  `git commit -m "Harden managed profile recovery ownership"`.
 
 ## Task 8: Provision, adopt, rotate, restore, and status commands
 
@@ -479,7 +500,7 @@ only legacy no-flag path.
   recovery is proved rather than only administrative rotation. Add reset-state dry-run,
   worker/timer/lock/pending refusal, corrupt-state apply reset, and directory durability
   tests. Require adopt/restore/mode-change/credential-removal/state-reset commands to refuse
-  both v1 and v2 unresolved markers.
+  v1 or v2 unresolved markers and every managed safety record.
 - [ ] **Verify RED.** Require only missing command owners to fail and assert zero Docker/
   network events for all dry runs.
 - [ ] **Implement minimal commands.** Wire provider FD contracts, candidate staging,
@@ -572,8 +593,8 @@ incompatible with `--enable`/`DESTDIR`.
 
 - [ ] **Write RED tests.** Cover staged managed module/setup/state directory; artifact
   order; preservation of key/pre-managed/state; refusal of active worker, held lock, or
-  pending journal; `--quiesce` stop/wait/leave-disabled behavior; invalid flag combinations;
-  root/modes; and `LimitCORE=0`.
+  pending journal or safety record; `--quiesce` stop/wait/leave-disabled behavior; invalid
+  flag combinations; root/modes; and `LimitCORE=0`.
 - [ ] **Verify RED.** Require new install contracts to fail while every current preservation
   and atomic-install test stays green.
 - [ ] **Implement minimal installer changes.** Validate/install provider helper, managed
@@ -681,8 +702,9 @@ qBittorrent ownership, and route probes.
 
 - [ ] **Create the preflight evidence bundle.** Record version, enabled/running state,
   owner/modes and SHA-256 hashes without contents, qB state, last status, and absence of a
-  pending marker. Preserve a root-only rollback bundle and verified v1.0 package. Stop and
-  mask timer, stop worker, wait inactive, and acquire/check the interface lock.
+  pending marker and safety record. Preserve a root-only rollback bundle and verified v1.0
+  package. Stop and mask timer, stop worker, wait inactive, and acquire/check the interface
+  lock.
 - [ ] **Run authenticated RED-safe dry run.** Transfer the supplied test key through a
   non-echoing protected channel to a temporary root-only descriptor/file, run adoption dry
   run, retain only redacted response shape, prove active profile/tunnel hashes unchanged,
@@ -690,8 +712,8 @@ qBittorrent ownership, and route probes.
 - [ ] **Install/apply and drill rollback.** Install the branch with `--quiesce`; adopt with
   timer disabled; force post-candidate speed verification to fail with a temporary
   impossible threshold so the old profile is restored without making rollback speed a
-  postcondition. Verify exact old hash/mode, cleared or reconciled journal, healthy tunnel,
-  and restored qB binding.
+  postcondition. Verify exact old hash/mode, cleared or reconciled journal and safety
+  record, healthy tunnel, and restored qB binding.
 - [ ] **Verify successful API operation.** Restore the health config exactly, run one
   controlled managed rotation, verify interface identity, handshake, route/rule, AirVPN
   egress, qB TCP/UDP ownership, and public-peer source routing or the documented substitute;
@@ -730,12 +752,13 @@ downloaded assets.
 
 - A generator contract mismatch blocks API mode before mutation; static mode remains usable.
 - Unsupported hooks or changed identity block adoption and preserve the current profile.
-- Digest/journal mismatch leaves qBittorrent stopped and state intact for operator repair.
+- Digest/journal/safety mismatch leaves qBittorrent stopped and state intact for operator
+  repair.
 - Authentication/device failures back off persistently; they do not affect static health.
 - The release can publish without leaving the VM in API mode, but the user's VM-migration
   goal is not complete until a fresh production key is installed.
 - Rollback ladder: restore the exact pre-managed/static profile first; reinstall verified
-  `v1.0.0` only when code rollback is required and no v2 marker remains.
+  `v1.0.0` only when code rollback is required and no v2 marker or safety record remains.
 
 ## Retirement
 

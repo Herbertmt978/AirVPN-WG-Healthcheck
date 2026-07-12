@@ -170,6 +170,28 @@
   install effect and treat any transition-write failure as rollback-required. No live API key
   was used; Task 14's mandatory split/ownership gate remains open.
 
+### Task 7: provisional implementation review (not accepted)
+
+- Provisional commit `f9231ef` passed its original focused 16/16 transaction groups,
+  complete managed root 60/60 and normal-user 56/56 plus four ownership skips, static
+  68/68, syntax, ShellCheck, diff, and current-tree Gitleaks checks.
+- Independent and direct adversarial review nevertheless reproduced five release blockers:
+  - a candidate with a different Interface private key and address committed successfully;
+  - an external qBittorrent restart during tunnel downtime was accepted as restoration;
+  - configuration drift could make rollback target a new/empty container instead of the
+    original immutable container;
+  - journal removal followed by parent-sync and marker-recreation failure left no recovery
+    owner while the candidate was active and qBittorrent was stopped;
+  - a failure after success-stamp creation rolled back the profile but retained the stamp.
+- The approved design and plan were amended to add secret-safe active/backup identity
+  comparisons, immutable Docker identity and containment checkpoints, and a strict durable
+  `pending|committed|finalizing` safety record whose state transition is the commit point.
+- An independent amendment review approved the final schema, exact recovery table,
+  post-cleanup commit proof, transition-error reclassification, static/v1 compatibility,
+  and all five review-blocker closures.
+- Task 7 remains `needs-verification`; the prior GREEN evidence is retained only as a
+  regression baseline, not acceptance evidence.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.

@@ -350,6 +350,7 @@ versioned full-profile transaction:
 - Candidate: `/etc/wireguard/.<iface>.conf.managed-candidate`, root-owned mode `0600`.
 - Pending journal: `/etc/wireguard/<iface>.conf.pending-healthcheck`, root-owned mode
   `0600`.
+- Safety record: `/etc/wireguard/<iface>.conf.safety-healthcheck`, root-owned mode `0600`.
 - Pre-managed snapshot: `/etc/wireguard/<iface>.conf.pre-managed`, root-owned mode `0600`.
 
 The v2 pending journal is strict line-oriented data with unique fields:
@@ -365,6 +366,50 @@ candidate_endpoint=<canonical numeric endpoint>
 qb_was_running=0|1
 ```
 
+The companion safety record is the authoritative crash owner for the period in which
+deleting the phase journal and finalizing a successful transaction cannot be one atomic
+filesystem operation. It is strict ASCII line-oriented data with this exact schema:
+
+```text
+version=1
+record=managed-profile-safety
+state=pending|committed|finalizing
+backup_sha256=<64 lowercase hex>
+candidate_sha256=<64 lowercase hex>
+old_endpoint=<canonical numeric IPv4 endpoint>
+candidate_endpoint=<canonical numeric IPv4 endpoint>
+qb_intent=unmanaged|running|stopped
+qb_container=-|<validated container name>
+qb_container_id=-|<64 lowercase Docker container ID>
+qb_process=-|<validated process name>
+qb_listen_ipv4=-|<canonical IPv4>
+qb_listen_port=0|<1..65535>
+```
+
+The safety-record parent is the same root-owned mode-`0700` WireGuard directory. The file
+is a root-owned, non-symlink regular file with exact mode `0600`, at most 4 KiB, exactly
+the listed unique fields, LF separators, and a final LF. Each create or state transition
+uses a same-directory private temporary file, file sync, atomic rename, final-file sync,
+and parent-directory sync.
+
+The two digests and endpoints must differ. `qb_intent=unmanaged` requires every
+qBittorrent tuple field to use its `-`/`0` sentinel. A `running` or `stopped` intent
+requires a complete tuple whose listen address equals the single digest-bound interface
+IPv4 `/32`; its immutable Docker container ID and current configured container/process/
+listen tuple must all match. The safety record and v2 journal duplicate digests,
+endpoints, and running intent consistently: `running` maps to `qb_was_running=1`, while
+`stopped` and `unmanaged` map to `0`. A container name alone is insufficient because
+Docker may recreate a different container under that name.
+
+Before any pre-exclusion, qBittorrent, backup, journal, profile, or network effect, a
+status-only comparator opens the active and candidate files directly and requires exact
+Interface `PrivateKey`, canonical dotted IPv4 `/32`, and optional `Table` presence/value
+identity. `Table` is only `auto`, `off`, or a canonical integer from 1 through
+4294967295. It rejects duplicates, invalid addresses, and changed identity without ever
+placing the private key in shell variables, arguments, stdout, stderr, logs, or a
+pipeline. The same comparison is repeated between the durable backup and candidate after
+backup creation and before the safety record is written.
+
 Every journal update is written to a non-symlink same-directory temporary file, mode
 `0600`, then atomically renamed and followed by file and parent-directory durability
 barriers. The backup and candidate are fully written, synced, hashed, and re-read before
@@ -373,49 +418,95 @@ backup, and candidate digests before continuing.
 
 The v1.1 reader remains compatible with the v1.0 one-line canonical-endpoint marker. It
 classifies that shape as an endpoint transaction, verifies the backup endpoint, and runs
-the existing restore path. Upgrade instructions still require no pending marker before
-install, but an interrupted v1.0 transaction is not rendered unrecoverable by the new code.
+the existing restore path. Upgrade instructions still require no pending marker or safety
+record before install, but an interrupted v1.0 transaction is not rendered unrecoverable
+by the new code.
 
 Pending classification occurs after fixed-path and lock validation but before profile-mode
-dispatch. A normal static run with no v2 marker never loads managed code. Static mode with
-a v2 marker securely loads the managed module solely to reconcile before any normal check;
-API mode with a v1 marker uses the built-in endpoint reconciler first. Every mode change,
-static restore, credential removal, and state purge refuses while either marker type remains
-unresolved.
+dispatch. The safety record is classified before the journal because it owns every
+ambiguous post-mutation state. A normal static run with neither file never loads managed
+code; any safety record or v2 journal securely loads it solely for reconciliation before
+normal dispatch. API mode with a v1 marker uses the built-in endpoint reconciler first.
+Every mode change, static restore, credential removal, state purge, installation, upgrade,
+and uninstall refuses while a safety record or either marker type remains unresolved.
 
-1. Acquire the existing per-interface lock and a global authenticated-API lock.
-2. Respect persistent request backoff, daily limits, and candidate-failure exclusions.
-3. Select a healthy alternate server and generate a candidate for the fixed device.
-4. Strictly validate and stage the normalized candidate as root mode `0600` on the
-   `/etc/wireguard` filesystem.
-5. Confirm interface identity and all local compatibility invariants before mutation.
-6. Durably back up the complete current profile.
-7. Write and sync the `prepared` journal with verified backup/candidate SHA-256 digests,
-   endpoints, and the recorded qBittorrent running state. It contains no profile or
-   credential content.
-8. If the configured qBittorrent container is running, stop it. Failure aborts before
-   tunnel downtime.
-9. Update the journal to `client-stopped`, bring the interface down while the old profile
-   is still installed, then record `tunnel-down`.
-10. Reverify the candidate digest, atomically install and sync it, record
-    `candidate-installed`, bring the interface up, then record `candidate-up`.
-11. Verify live interface address, peer public key, exact endpoint, fresh handshake,
-    required route/rule, AirVPN egress, and optional post-rotation speed.
-12. Restart qBittorrent only after network verification, then require matching TCP and UDP
-    ownership on the WireGuard address. A previously stopped container remains stopped.
-13. Record `verified`, write status and cooldown state, then remove and sync the pending
-    marker last. Candidate cleanup occurs only after the active digest is reverified.
+The recovery classifier is exact:
 
-On failure or interruption, reconciliation brings down any candidate, restores the full
-backup, starts and verifies the previous tunnel, restores the recorded qBittorrent running
-state, and proves its binding. The marker remains whenever rollback is incomplete.
+| Safety record | Pending journal | Action |
+| --- | --- | --- |
+| absent | absent | normal dispatch |
+| absent | canonical v1 | existing endpoint reconciliation |
+| absent | v2 | contain qBittorrent, retain evidence, and fail as an orphan |
+| absent | invalid or unknown | contain the configured client where safely identifiable, retain evidence, and fail |
+| `pending` | matching v2 | roll back from the safety record and phase evidence |
+| `pending` | absent | roll back from the safety record alone |
+| `pending` | invalid or mismatched | contain recorded and configured clients, retain evidence, and fail |
+| `committed` or `finalizing` | absent | finish candidate verification and cleanup idempotently |
+| `committed` or `finalizing` | any marker | contain clients, retain evidence, and fail as impossible state |
+| invalid | any | contain the configured client, retain evidence, and fail |
 
-Reconciliation first classifies the active file by digest and phase. It verifies the
-backup digest before restore and never guesses when the active, backup, candidate, or
-journal state does not match the recorded transaction. Any digest mismatch leaves the
-marker in place, keeps qBittorrent stopped, writes a redacted failed status, and requires
-operator repair. Successful rollback restores the exact bytes, owner, and mode of the
-backup before removing the candidate or marker.
+The forward transaction is:
+
+1. Acquire the per-interface lock, then use the global authenticated-API lock only for
+   bounded provider/state work. Respect backoff, daily limits, and exclusions.
+2. Select, generate, strictly validate, and durably stage the normalized candidate on the
+   `/etc/wireguard` filesystem. Verify candidate digest/endpoint and compare active to
+   candidate identity before any local mutation.
+3. Snapshot the configured qBittorrent tuple, immutable container ID, and running intent;
+   malformed or unprovable Docker state fails before mutation. Durably back up the entire
+   active profile, then repeat the identity comparison from backup to candidate.
+4. Persist any pre-switch candidate state, write and sync the `pending` safety record,
+   then write the matching `prepared` journal. Neither file contains profile or credential
+   content.
+5. If qBittorrent was running, stop the recorded container ID and prove it stopped. Record
+   `client-stopped`. A stopped or unmanaged client remains stopped/unmanaged.
+6. Run containment checkpoints after the stop, immediately before and after tunnel down,
+   before and after candidate installation, before and after candidate up, and before and
+   after network verification. Any unexpected running state, malformed state, or inspect
+   failure triggers a best-effort stop-and-prove operation and fails the transaction.
+7. Bring the interface down while the old profile remains installed and record
+   `tunnel-down`. Reverify the candidate, atomically install and sync it, record
+   `candidate-installed`, bring it up, and record `candidate-up`.
+8. Verify live interface address, peer public key, exact endpoint, fresh handshake,
+   required route/rule, AirVPN egress, and optional post-rotation speed.
+9. Restore qBittorrent only after network verification. A recorded-running client must
+   still be stopped; the transaction owns exactly one start of the recorded immutable ID,
+   then re-inspects it and proves the same configured tuple plus TCP and UDP ownership. An
+   already-running or replaced container is contained and fails. A recorded-stopped or
+   unmanaged client must remain so.
+10. Record `verified` and re-prove candidate digest, network health, immutable container
+    identity, configured tuple, and final qBittorrent intent before cleanup.
+11. Remove and sync the candidate, reverify the active digest, then unlink and sync the v2
+    journal. A journal unlink or sync failure is never repaired by recreating the journal;
+    the still-`pending` safety record owns rollback.
+12. Repeat active/network/qBittorrent proof after cleanup, then atomically transition the
+    safety record from `pending` to `committed` and sync it. This is the candidate commit
+    point: a crash observes either a pending rollback owner or a committed candidate owner,
+    never an unowned intermediate state. If the transition reports a durability failure,
+    a strict re-read controls the next action: visible `pending` rolls back; visible
+    `committed|finalizing` finalizes without rollback; missing or invalid state is contained
+    without guessing.
+13. Write success status and rotation cooldown as post-commit best effort. Their failure
+    never rolls back a committed candidate and therefore cannot leave a success stamp for
+    a profile that was restored.
+14. Transition to `finalizing`, repeat active/network/qBittorrent proof, and unlink and sync
+    the safety record last. If the final unlink reappears after a crash, finalization is
+    harmlessly repeated.
+
+Pending rollback first stops and proves stopped both the recorded immutable container and
+any different currently configured target. It validates the safety record, journal when
+present, digests, endpoints, backup, and active classification without guessing; runs the
+same containment checkpoints around down, restore, up, and verification; restores and
+syncs the exact backup bytes/mode/owner; and verifies the old tunnel. It then removes and
+syncs candidate and journal artifacts. Only when the current configuration still matches
+the recorded tuple may it restore the recorded qBittorrent intent and prove the immutable
+ID, TCP/UDP binding, and final state. Configuration drift keeps both targets stopped and
+the safety record present. The safety record is removed and synced only after the complete
+rollback postcondition passes. Any mismatch or incomplete rollback retains it, keeps
+qBittorrent stopped, writes only redacted status, and requires operator repair.
+Rollback status reporting is best-effort bookkeeping, not commit authority; required
+failed-candidate exclusion durability retains its existing fail-closed contract. Managed
+rollback never creates or removes a rotation-success stamp.
 
 ## Failure, retry, and state model
 
@@ -464,7 +555,7 @@ or tunnel work. No code path acquires them in reverse order. Invalid persistent 
 backward clock movement, or an implausible future timestamp blocks timer-driven API calls
 without changing the tunnel. An explicit setup dry run may display the redacted problem
 and `--reset-api-state --apply` clears it only after the timer and worker are inactive, no
-interface/global lock is held, and no pending journal exists.
+interface/global lock is held, and no pending journal or safety record exists.
 
 The global lock contract is process-tested with two interface workers and a blocking
 provider double: maximum authenticated generator concurrency is exactly one, while the
@@ -473,14 +564,17 @@ lock must be released before either worker begins Docker or tunnel work.
 The installer creates the persistent directory with the required ownership for live and
 staged installs. Normal uninstall preserves API state and credentials for recovery;
 explicit setup purge flags remove them after the timer, worker, locks, and pending journal
-are proven inactive.
+and safety record are proven inactive.
 
 ## qBittorrent and leak boundary
 
 - When a qBittorrent container is configured, managed rotation must stop it before
   bringing down the verified tunnel and start it only after route and AirVPN egress pass.
-- A successful transaction still requires the same process and container PID to own both
-  TCP and UDP listeners on the configured WireGuard address and port.
+- A successful transaction still requires the recorded immutable container ID and same
+  process to own both TCP and UDP listeners on the configured WireGuard address and port.
+- An external restart, replacement container, configuration drift, malformed inspect
+  result, or unexpected running state during forward or rollback work is contained and
+  fails closed; the transaction never treats it as its own successful restore.
 - If rollback cannot restore a verified tunnel, qBittorrent stays stopped.
 - Hosts without a configured qBittorrent container remain responsible for an independent
   firewall kill switch. The software does not claim to protect arbitrary clients.
@@ -489,17 +583,17 @@ are proven inactive.
 
 - Fresh installation remains non-interactive and never starts or provisions a tunnel.
 - A live v1.1 installer refuses to replace runtime files while an instance timer or worker
-  is active, an interface lock is held, or a pending journal exists.
+  is active, an interface lock is held, or a pending journal or safety record exists.
 - `install.sh --quiesce <iface>` is the explicit upgrade convenience: it records whether
   the timer was enabled, stops timer and worker, waits for inactivity, checks the lock and
-  journal, installs in helper/main/setup/unit/template order, validates preserved files,
-  and leaves the timer disabled for a manual check.
+  recovery artifacts, installs in helper/main/setup/unit/template order, validates
+  preserved files, and leaves the timer disabled for a manual check.
 - Neither the installer nor setup automatically re-enables a previously enabled timer.
   Setup offers re-enablement only after the installed version completes a healthy or
   recovered manual invocation.
 - Both v1.0 one-line and v1.1 versioned markers are recognized by v1.1 reconciliation.
-  Downgrade to v1.0 is refused while a v2 marker exists; the current v1.1 code must finish
-  or roll back that transaction first.
+  Downgrade to v1.0 is refused while a v2 marker or safety record exists; the current v1.1
+  code must finish or roll back that transaction first.
 - Installation, upgrade, rollback, and uninstall are tested with live-layout fixtures and
   `DESTDIR` staging, including preservation of existing credentials and pre-managed files.
 
@@ -515,12 +609,20 @@ Automated tests must prove:
 - authenticated requests reject redirects and never echo headers or response bodies;
 - malicious profiles with hooks, duplicates, extra peers, malformed keys, hostnames,
   changed identity, or unexpected routes are rejected before tunnel-down;
+- active-to-candidate and backup-to-candidate identity checks reject changed private key,
+  canonical IPv4 `/32`, or optional `Table` without exposing a key through output, logs,
+  tracing, process arguments, or helper pipelines;
 - 401, 403, 429, 5xx, timeout, and malformed responses preserve the working profile;
 - crash injection at every transaction boundary either restores the old verified state or
   retains actionable pending state;
+- journal unlink/fsync failure, safety-record state-transition failure, and final safety
+  unlink/fsync failure always leave either a rollback owner or committed candidate owner;
 - candidate health, identity, route, egress, speed, qBittorrent stop/start, and binding
   failures perform verified rollback;
-- rollback failure retains the marker and leaves qBittorrent stopped;
+- unexpected qBittorrent restart, container recreation under the same name, and configured
+  tuple drift are contained in both forward and rollback paths;
+- rollback failure retains the safety record and any still-valid journal evidence and
+  leaves qBittorrent stopped;
 - concurrent interfaces cannot exceed one authenticated generator request at a time;
 - persistent backoff survives reboot simulation and prevents request storms;
 - dry-run produces only a redacted manifest and does not mutate files or networking.
