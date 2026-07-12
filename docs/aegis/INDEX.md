@@ -10,7 +10,7 @@
 
 ## Plans
 
-No implementation plans have been approved yet.
+- [AirVPN API-managed WireGuard profiles implementation](plans/2026-07-12-airvpn-api-managed-profiles.md)
 
 ## Architecture decisions
 

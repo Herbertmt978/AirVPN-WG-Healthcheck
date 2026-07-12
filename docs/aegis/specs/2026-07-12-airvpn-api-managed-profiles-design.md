@@ -109,6 +109,14 @@ The guide presents exactly two choices:
 1. Existing/static WireGuard profile
 2. AirVPN API-managed profile
 
+After API mode is selected, setup queries the credential-free public status API and shows
+only countries with at least one currently healthy IPv4/WireGuard-capable server. The user
+must explicitly select one or more countries by displayed number or two-letter code before
+the credential prompt. Selecting one country is a strict single-country policy. Selecting
+several creates a hard allowlist; list order is a soft preference while server health,
+load, users, and capacity continue to choose the candidate within that allowlist. An
+explicit `ALL` choice permits every eligible country.
+
 The setup helper is a standard-library Python program so secret input does not pass through
 a shell variable. It never accepts an API key value in an argument or environment variable.
 API mode reads it with a hidden controlling-terminal prompt, passes it only through a
@@ -141,11 +149,18 @@ wg-healthcheck-setup [OPTIONS] <iface>
   --restore-pre-managed
   --replace-credential
   --remove-credential
+  --reset-api-state
 ```
 
 Interactive setup may suggest the provider's conventional `default` device name, but it
 must confirm it through generated-profile identity. Non-interactive API setup requires an
-explicit device. Presence of a credential file never selects API mode by itself.
+explicit device and `--countries` containing one or more two-letter codes or the single
+token `ALL`. Presence of a credential file never selects API mode by itself.
+
+`--reset-api-state` is a maintenance action, requires `--dry-run` or `--apply`, and cannot
+enable the timer. It may be combined with `--mode static --remove-credential --apply` for
+an explicit API-data purge after all inactivity checks; it never removes the pre-managed
+recovery snapshot.
 
 ### Runtime commands
 
@@ -158,6 +173,8 @@ explicit device. Presence of a credential file never selects API mode by itself.
   only `--apply` may run the managed transaction.
 - `wg-healthcheck status <iface> [--json]` prints a secret-free summary of mode, timer,
   tunnel, last check/rotation, credential presence, pending state, and qBittorrent proof.
+- `wg-healthcheck reset-api-state <iface> --dry-run|--apply` is the single owner for
+  clearing corrupt/backoff/exclusion state after worker, lock, and pending checks.
 - `wg-healthcheck --version` remains stable.
 
 Mutating administrative commands require exactly one of `--dry-run` or `--apply` so an
@@ -179,6 +196,12 @@ fail before a request.
 Existing country, port, timeout, cooldown, speed, routing, and qBittorrent settings remain
 authoritative. `AIRVPN_ROTATE_ENABLED` continues to control whether recovery may move to
 another server; its implementation depends on the selected profile source.
+
+`AIRVPN_COUNTRIES` is normalized to unique uppercase two-letter codes in the selected
+order, with at most 32 entries. It is a hard candidate allowlist. An empty value means the
+operator explicitly chose `ALL`; setup never silently converts an omitted API-mode choice
+to all countries. The first code receives the existing soft preference, but a healthier
+later country may win. Setup displays this distinction before confirmation.
 
 The generator URL and authenticated origin are fixed in code. They are deliberately not
 configurable because the credential must never be sent to an operator-supplied host.
@@ -216,6 +239,11 @@ does not repair or rotate the AirVPN device identity.
 - Runtime opens the file on a private descriptor. The Python helper reads that descriptor;
   secret content is never placed in Bash variables, arguments, the environment, URLs,
   logs, status, state, exceptions, or tests.
+- Before every installed-key use, runtime requires the fixed path to be a root-owned
+  regular non-symlink file with exact mode `0600`, a secure root-owned mode-`0700` parent,
+  bounded size, and exactly one newline-terminated ASCII record. Validation and open occur
+  before provider, Docker, profile, or network actions; the helper independently validates
+  the bytes after receiving the descriptor.
 - Authenticated requests use the `API-KEY` header, a fixed AirVPN HTTPS origin, no
   redirects, bounded time and response size, and a neutral user agent.
 - Core dumps are disabled for the service.
@@ -240,6 +268,14 @@ new API key that was not pasted into chat; otherwise it is returned to verified 
 
 The Python helper must parse and canonically render authenticated generator output. It
 must never copy provider text verbatim into an active profile.
+
+Before credential input, `airvpn-api list-countries` reads the existing public status
+endpoint and prints sorted, tab-separated `CODE`, sanitized country name, and healthy
+eligible server count fields. A country is eligible only when its code is exactly two
+ASCII letters and at least one server has `health=ok` plus a valid `ip_v4_in1`. Duplicate
+codes, conflicting names, malformed fields, control characters, and oversized responses
+fail the setup step before any secret is read. The interactive chooser does not use a
+cached or hard-coded country inventory.
 
 Authenticated generation uses one `GET` request to the fixed URL
 `https://airvpn.org/api/generator/` with the `API-KEY` header and percent-encoded query
@@ -395,6 +431,9 @@ backup before removing the candidate or marker.
   a separately selected operating mode, not an error fallback.
 - A failed managed candidate is excluded until its bounded expiry so deterministic
   selection cannot immediately choose it again.
+- The public selector accepts at most 16 validated repeated server-name exclusions and
+  filters them before scoring. Every failed managed candidate is recorded before rollback;
+  pruning expiry makes it eligible again. Static selection supplies no exclusion list.
 
 Persistent state is root-owned non-symlink data at
 `/var/lib/wg-healthcheck/<iface>.api-state`, directory mode `0700` and file mode `0600`.
@@ -410,7 +449,12 @@ authenticated response and persistent attempt state are durably recorded, before
 or tunnel work. No code path acquires them in reverse order. Invalid persistent state,
 backward clock movement, or an implausible future timestamp blocks timer-driven API calls
 without changing the tunnel. An explicit setup dry run may display the redacted problem
-and reset state only after operator confirmation.
+and `--reset-api-state --apply` clears it only after the timer and worker are inactive, no
+interface/global lock is held, and no pending journal exists.
+
+The global lock contract is process-tested with two interface workers and a blocking
+provider double: maximum authenticated generator concurrency is exactly one, while the
+lock must be released before either worker begins Docker or tunnel work.
 
 The installer creates the persistent directory with the required ownership for live and
 staged installs. Normal uninstall preserves API state and credentials for recovery;
@@ -466,6 +510,9 @@ Automated tests must prove:
 - concurrent interfaces cannot exceed one authenticated generator request at a time;
 - persistent backoff survives reboot simulation and prevents request storms;
 - dry-run produces only a redacted manifest and does not mutate files or networking.
+- country discovery is credential-free, shows only eligible healthy countries, rejects
+  malformed/conflicting provider data, preserves explicit user order after normalization,
+  and never treats an omitted API-mode selection as `ALL`.
 
 ## Public documentation and install guide
 
