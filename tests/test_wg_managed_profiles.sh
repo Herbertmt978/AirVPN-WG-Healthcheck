@@ -1845,12 +1845,24 @@ require_task7_contract() {
   done
 }
 
+require_amended_task7_contract() {
+  local function_name
+  for function_name in \
+      managed_profiles_have_same_private_identity managed_safety_load \
+      managed_safety_prepare managed_safety_transition \
+      managed_qb_snapshot managed_qb_containment_checkpoint \
+      managed_qb_restore_recorded_intent managed_finalize_committed_transaction; do
+    declare -F "$function_name" >/dev/null ||
+      fail "managed module must export amended Task 7 function $function_name" || return 1
+  done
+}
+
 write_managed_candidate_fixture() {
   local endpoint="${1:-198.51.100.20:1637}"
   printf '%s\n' \
     '[Interface]' \
     'Address = 192.0.2.2/32' \
-    'PrivateKey = fixture-old-interface-value' \
+    'PrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=' \
     '[Peer]' \
     'PublicKey = BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=' \
     'PresharedKey = fixture-new-preshared-value' \
@@ -1867,6 +1879,7 @@ setup_managed_journal_fixture() {
   IFACE=wg0
   WG_CONF="$TEST_TMP/etc/wireguard/wg0.conf"
   ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
+  MANAGED_SAFETY="${WG_CONF}.safety-healthcheck"
   MANAGED_CANDIDATE="${WG_CONF%/*}/.${WG_CONF##*/}.managed-candidate"
   STATUS_FILE="$TEST_TMP/run/wg-healthcheck/wg0.status"
   mkdir -p -- "${WG_CONF%/*}" "${STATUS_FILE%/*}"
@@ -1874,7 +1887,7 @@ setup_managed_journal_fixture() {
   printf '%s\n' \
     '[Interface]' \
     'Address = 192.0.2.2/32' \
-    'PrivateKey = fixture-old-interface-value' \
+    'PrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=' \
     '[Peer]' \
     'PublicKey = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' \
     'PresharedKey = fixture-old-preshared-value' \
@@ -1918,6 +1931,31 @@ write_raw_managed_journal() {
     "candidate_endpoint=$candidate_endpoint" \
     "qb_was_running=$qb_was_running" > "$ROTATION_PENDING"
   chmod 600 -- "$ROTATION_PENDING"
+}
+
+write_raw_managed_safety() {
+  local state="${1:?}" backup_sha="${2:?}" candidate_sha="${3:?}"
+  local intent="${4:-running}"
+  local container=qbittorrent container_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  local process=qbittorrent-nox listen_ipv4=192.0.2.2 listen_port=6881
+  if [[ "$intent" == unmanaged ]]; then
+    container=- container_id=- process=- listen_ipv4=- listen_port=0
+  fi
+  printf '%s\n' \
+    'version=1' \
+    'record=managed-profile-safety' \
+    "state=$state" \
+    "backup_sha256=$backup_sha" \
+    "candidate_sha256=$candidate_sha" \
+    'old_endpoint=192.0.2.10:1637' \
+    'candidate_endpoint=198.51.100.20:1637' \
+    "qb_intent=$intent" \
+    "qb_container=$container" \
+    "qb_container_id=$container_id" \
+    "qb_process=$process" \
+    "qb_listen_ipv4=$listen_ipv4" \
+    "qb_listen_port=$listen_port" > "$MANAGED_SAFETY"
+  chmod 600 -- "$MANAGED_SAFETY"
 }
 
 test_managed_journal_round_trip_is_exact_and_rejects_noop_transactions() {
@@ -2304,7 +2342,9 @@ test_managed_journal_rejects_digest_bound_false_endpoints_before_transition_or_r
       wrong_candidate='203.0.113.51:1637'
     fi
     write_raw_managed_journal prepared "$JOURNAL_TEST_BACKUP_SHA" \
-      "$JOURNAL_TEST_CANDIDATE_SHA" "$wrong_old" "$wrong_candidate" 1
+      "$JOURNAL_TEST_CANDIDATE_SHA" "$wrong_old" "$wrong_candidate" 0
+    write_raw_managed_safety pending "$JOURNAL_TEST_BACKUP_SHA" \
+      "$JOURNAL_TEST_CANDIDATE_SHA" unmanaged
     marker_before="$(<"$ROTATION_PENDING")"
     managed_journal_load || fail "$case_name forged journal remains syntactically canonical" || return 1
 
@@ -2324,6 +2364,257 @@ test_managed_journal_rejects_digest_bound_false_endpoints_before_transition_or_r
     [[ -f "$ROTATION_PENDING" && -f "$MANAGED_CANDIDATE" ]] ||
       fail "$case_name endpoint mismatch must retain marker and candidate" || return 1
   done
+}
+
+write_private_identity_profile() {
+  local destination="${1:?}" private_key="${2:?}" address="${3:?}"
+  local table="${4:--}"
+  {
+    printf '%s\n' \
+      '[Interface]' \
+      "Address = $address" \
+      "PrivateKey = $private_key"
+    [[ "$table" == - ]] || printf 'Table = %s\n' "$table"
+    printf '%s\n' \
+      '[Peer]' \
+      'PublicKey = AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=' \
+      'PresharedKey = BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=' \
+      'Endpoint = 198.51.100.20:1637' \
+      'AllowedIPs = 0.0.0.0/0'
+  } > "$destination"
+  chmod 600 -- "$destination"
+}
+
+test_private_identity_comparator_is_status_only_strict_and_secret_safe() {
+  local rc trace_fd captured case_name
+  local key_one='AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE='
+  local key_two='AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI='
+  local zero_key='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+  setup_managed_journal_fixture || return 1
+  declare -F managed_profiles_have_same_private_identity >/dev/null ||
+    fail "amended Task 7 secret-safe identity comparator is missing" || return 1
+
+  write_private_identity_profile "$WG_CONF" "$key_one" 192.0.2.2/32 -
+  write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.2/32 -
+  managed_profiles_have_same_private_identity "$WG_CONF" ||
+    fail "matching nonzero private identity must pass" || return 1
+
+  for case_name in private-key address ipv6 prefix leading-zero table-presence \
+      duplicate-key duplicate-address duplicate-table invalid-table-zero \
+      invalid-table-leading-zero invalid-table-high zero-key duplicate-interface \
+      outside-field multiple-address prefix-032 octet-high table-case; do
+    write_private_identity_profile "$WG_CONF" "$key_one" 192.0.2.2/32 -
+    write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.2/32 -
+    case "$case_name" in
+      private-key) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_two" 192.0.2.2/32 - ;;
+      address) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.3/32 - ;;
+      ipv6) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 2001:db8::2/32 - ;;
+      prefix) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.2/24 - ;;
+      leading-zero) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.002.2/32 - ;;
+      table-presence) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.2/32 auto ;;
+      duplicate-key) sed -i '/^\[Peer\]/i PrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=' "$MANAGED_CANDIDATE" ;;
+      duplicate-address) sed -i '/^\[Peer\]/i Address = 192.0.2.2/32' "$MANAGED_CANDIDATE" ;;
+      duplicate-table)
+        write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.2/32 auto
+        sed -i '/^\[Peer\]/i Table = auto' "$MANAGED_CANDIDATE"
+        ;;
+      invalid-table-zero) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.2/32 0 ;;
+      invalid-table-leading-zero) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.2/32 01 ;;
+      invalid-table-high) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.2/32 4294967296 ;;
+      zero-key)
+        write_private_identity_profile "$WG_CONF" "$zero_key" 192.0.2.2/32 -
+        write_private_identity_profile "$MANAGED_CANDIDATE" "$zero_key" 192.0.2.2/32 -
+        ;;
+      duplicate-interface) sed -i '1i [Interface]' "$MANAGED_CANDIDATE" ;;
+      outside-field) sed -i '1i PrivateKey = AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=' "$MANAGED_CANDIDATE" ;;
+      multiple-address) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" '192.0.2.2/32,192.0.2.3/32' - ;;
+      prefix-032) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.2/032 - ;;
+      octet-high) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.256/32 - ;;
+      table-case) write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.2/32 Auto ;;
+    esac
+    set +e
+    managed_profiles_have_same_private_identity "$WG_CONF" >/dev/null 2>&1
+    rc=$?
+    set +e
+    assert_eq 1 "$rc" "$case_name identity shape must fail closed" || return 1
+  done
+
+  for captured in auto off 1 4294967295; do
+    write_private_identity_profile "$WG_CONF" "$key_one" 192.0.2.2/32 "$captured"
+    write_private_identity_profile "$MANAGED_CANDIDATE" "$key_one" 192.0.2.2/32 "$captured"
+    managed_profiles_have_same_private_identity "$WG_CONF" ||
+      fail "canonical matching Table=$captured must pass" || return 1
+  done
+
+  cp -- "$WG_CONF" "$TEST_TMP/arbitrary-reference"
+  chmod 600 -- "$TEST_TMP/arbitrary-reference"
+  set +e; managed_profiles_have_same_private_identity "$TEST_TMP/arbitrary-reference" >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "identity reference path must be fixed" || return 1
+  set +e; managed_profiles_have_same_private_identity "$WG_CONF" "$MANAGED_CANDIDATE" >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "identity comparator must reject a caller-selected candidate path" || return 1
+
+  write_private_identity_profile "$WG_CONF" "$key_two" 192.0.2.2/32 off
+  write_private_identity_profile "$MANAGED_CANDIDATE" "$key_two" 192.0.2.2/32 off
+  : > "$TEST_TMP/identity-output"
+  : > "$TEST_TMP/identity-errors"
+  : > "$TEST_TMP/identity-trace"
+  exec {trace_fd}>"$TEST_TMP/identity-trace" || return 1
+  BASH_XTRACEFD=$trace_fd
+  set -x
+  managed_profiles_have_same_private_identity "$WG_CONF" \
+    >"$TEST_TMP/identity-output" 2>"$TEST_TMP/identity-errors"
+  rc=$?
+  set +x
+  exec {trace_fd}>&-
+  unset BASH_XTRACEFD
+  assert_eq 0 "$rc" "status-only comparator must succeed without output" || return 1
+  captured="$(find "$TEST_TMP" -maxdepth 1 -type f \
+    \( -name 'identity-*' -o -name 'journal-events' \) -exec sed -n '1,$p' {} + 2>/dev/null)"
+  assert_not_contains "$key_two" "$captured" \
+    "private-key canary must not enter output, errors, logs, or xtrace" || return 1
+  assert_eq '' "$(<"$TEST_TMP/identity-output")" "identity comparator stdout must remain empty" || return 1
+  assert_eq '' "$(<"$TEST_TMP/identity-errors")" "identity comparator stderr must remain empty"
+}
+
+test_managed_safety_contract_is_strict_and_exact() {
+  local backup_digest candidate_digest expected case_name rc
+  setup_managed_journal_fixture || return 1
+  declare -F managed_safety_prepare >/dev/null ||
+    fail "amended Task 7 safety-record owner is missing" || return 1
+  declare -F managed_safety_load >/dev/null ||
+    fail "amended Task 7 safety-record parser is missing" || return 1
+  declare -F managed_safety_transition >/dev/null ||
+    fail "amended Task 7 safety-record transition owner is missing" || return 1
+  managed_sha256_file backup_digest "${WG_CONF}.bak-healthcheck" || return 1
+  managed_sha256_file candidate_digest "$MANAGED_CANDIDATE" || return 1
+  MANAGED_QB_INTENT=running
+  MANAGED_QB_CONTAINER=qbittorrent
+  MANAGED_QB_CONTAINER_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  MANAGED_QB_PROCESS=qbittorrent-nox
+  MANAGED_QB_LISTEN_IPV4=192.0.2.2
+  MANAGED_QB_LISTEN_PORT=6881
+  managed_safety_prepare || return 1
+  expected="$(printf '%s\n' \
+    'version=1' \
+    'record=managed-profile-safety' \
+    'state=pending' \
+    "backup_sha256=$backup_digest" \
+    "candidate_sha256=$candidate_digest" \
+    'old_endpoint=192.0.2.10:1637' \
+    'candidate_endpoint=198.51.100.20:1637' \
+    'qb_intent=running' \
+    'qb_container=qbittorrent' \
+    'qb_container_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    'qb_process=qbittorrent-nox' \
+    'qb_listen_ipv4=192.0.2.2' \
+    'qb_listen_port=6881')"
+  assert_eq "$expected" "$(<"$MANAGED_SAFETY")" \
+    "safety record must use the exact canonical 13-line schema" || return 1
+  managed_safety_load || return 1
+  assert_eq pending "$MANAGED_SAFETY_STATE" "pending state must round-trip" || return 1
+  assert_eq running "$MANAGED_SAFETY_QB_INTENT" "qB intent must round-trip" || return 1
+  assert_eq "$MANAGED_QB_CONTAINER_ID" "$MANAGED_SAFETY_QB_CONTAINER_ID" \
+    "immutable container ID must round-trip" || return 1
+  cp -- "$MANAGED_CANDIDATE" "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+  rm -f -- "$MANAGED_CANDIDATE"
+  managed_safety_transition committed || return 1
+  managed_safety_load || return 1
+  assert_eq committed "$MANAGED_SAFETY_STATE" "pending must transition to committed" || return 1
+  managed_safety_transition finalizing || return 1
+  managed_safety_load || return 1
+  assert_eq finalizing "$MANAGED_SAFETY_STATE" "committed must transition to finalizing" || return 1
+  set +e; managed_safety_transition pending >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "safety state transitions must never move backward" || return 1
+
+  cp -- "${WG_CONF}.bak-healthcheck" "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+  write_managed_candidate_fixture
+
+  for case_name in unknown duplicate bad-state equal-digest equal-endpoint bad-id \
+      partial-unmanaged partial-running bad-listen bad-port control no-final-lf; do
+    printf '%s\n' "$expected" > "$MANAGED_SAFETY"
+    case "$case_name" in
+      unknown) printf 'unknown=value\n' >> "$MANAGED_SAFETY" ;;
+      duplicate) printf 'state=pending\n' >> "$MANAGED_SAFETY" ;;
+      bad-state) sed -i 's/^state=pending$/state=rollback/' "$MANAGED_SAFETY" ;;
+      equal-digest) sed -i "s/^candidate_sha256=.*/candidate_sha256=$backup_digest/" "$MANAGED_SAFETY" ;;
+      equal-endpoint) sed -i 's/^candidate_endpoint=.*/candidate_endpoint=192.0.2.10:1637/' "$MANAGED_SAFETY" ;;
+      bad-id) sed -i 's/^qb_container_id=.*/qb_container_id=AAAA/' "$MANAGED_SAFETY" ;;
+      partial-unmanaged)
+        sed -i 's/^qb_intent=.*/qb_intent=unmanaged/' "$MANAGED_SAFETY"
+        ;;
+      partial-running) sed -i 's/^qb_process=.*/qb_process=-/' "$MANAGED_SAFETY" ;;
+      bad-listen) sed -i 's/^qb_listen_ipv4=.*/qb_listen_ipv4=192.0.002.2/' "$MANAGED_SAFETY" ;;
+      bad-port) sed -i 's/^qb_listen_port=.*/qb_listen_port=0/' "$MANAGED_SAFETY" ;;
+      control) printf '\001' >> "$MANAGED_SAFETY" ;;
+      no-final-lf) truncate -s -1 "$MANAGED_SAFETY" ;;
+    esac
+    chmod 600 -- "$MANAGED_SAFETY"
+    set +e; managed_safety_load >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$case_name safety shape must fail closed" || return 1
+  done
+
+  printf '%s\n' "$expected" > "$MANAGED_SAFETY"
+  chmod 640 -- "$MANAGED_SAFETY"
+  set +e; managed_safety_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "wrong-mode safety record must fail" || return 1
+  chmod 600 -- "$MANAGED_SAFETY"
+  printf '%s\n' "$expected" > "$TEST_TMP/safety-real"
+  rm -f -- "$MANAGED_SAFETY"
+  ln -s -- "$TEST_TMP/safety-real" "$MANAGED_SAFETY"
+  set +e; managed_safety_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "safety symlink must fail" || return 1
+  rm -f -- "$MANAGED_SAFETY"
+  { printf '%s\n' "$expected"; head -c 4096 /dev/zero | tr '\0' X; } > "$MANAGED_SAFETY"
+  chmod 600 -- "$MANAGED_SAFETY"
+  set +e; managed_safety_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "oversized safety record must fail" || return 1
+  printf '%s\r\n' "$expected" > "$MANAGED_SAFETY"
+  set +e; managed_safety_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "CRLF safety record must fail" || return 1
+  printf '%s\n' "$expected" > "$MANAGED_SAFETY"
+  sed -i '4{h;d};5{G;}' "$MANAGED_SAFETY"
+  set +e; managed_safety_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "reordered safety fields must fail" || return 1
+
+  rm -f -- "$MANAGED_SAFETY"
+  MANAGED_QB_INTENT=stopped
+  managed_safety_prepare || return 1
+  managed_safety_load || return 1
+  assert_eq stopped "$MANAGED_SAFETY_QB_INTENT" "stopped safety intent must round-trip" || return 1
+  rm -f -- "$MANAGED_SAFETY"
+  MANAGED_QB_INTENT=unmanaged
+  MANAGED_QB_CONTAINER=-
+  MANAGED_QB_CONTAINER_ID=-
+  MANAGED_QB_PROCESS=-
+  MANAGED_QB_LISTEN_IPV4=-
+  MANAGED_QB_LISTEN_PORT=0
+  managed_safety_prepare || return 1
+  managed_safety_load || return 1
+  assert_eq unmanaged "$MANAGED_SAFETY_QB_INTENT" "unmanaged safety intent must round-trip" || return 1
+
+  rm -f -- "$MANAGED_SAFETY"
+  MANAGED_QB_INTENT=running
+  MANAGED_QB_CONTAINER=qbittorrent
+  MANAGED_QB_CONTAINER_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  MANAGED_QB_PROCESS=qbittorrent-nox
+  MANAGED_QB_LISTEN_IPV4=192.0.2.2
+  MANAGED_QB_LISTEN_PORT=6881
+  managed_safety_prepare || return 1
+  write_private_identity_profile "$MANAGED_CANDIDATE" \
+    'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=' 192.0.2.3/32 -
+  set +e; managed_safety_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "pending safety listen IPv4 must bind to staged candidate identity" || return 1
+
+  write_managed_candidate_fixture
+  cp -- "$MANAGED_CANDIDATE" "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+  rm -f -- "$MANAGED_CANDIDATE"
+  sed -i 's/^state=pending$/state=committed/' "$MANAGED_SAFETY"
+  sed -i 's/^Address = .*/Address = 192.0.2.3\/32/' "$WG_CONF"
+  set +e; managed_safety_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "committed safety listen IPv4 must bind to active candidate identity"
 }
 
 transaction_phase() {
@@ -2386,6 +2677,31 @@ setup_managed_transaction_fixture() {
   TRANSACTION_EXCLUSION_DURABLE=1
 
   managed_docker_available() { return 0; }
+  TRANSACTION_QB_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  managed_docker_inspect_identity() {
+    local output_variable="${1:?}" target="${2:?}"
+    transaction_event "qb-inspect:${MANAGED_QB_CHECKPOINT:-$(transaction_phase)}:$TRANSACTION_QB_STATE"
+    transaction_should_fail inspect && return 1
+    [[ "$target" == "$QBITTORRENT_CONTAINER" || "$target" == "$TRANSACTION_QB_ID" ]] || return 1
+    case "$TRANSACTION_QB_STATE" in running|stopped) ;; *) return 1 ;; esac
+    printf -v "$output_variable" '%s|%s' "$TRANSACTION_QB_ID" "$TRANSACTION_QB_STATE"
+  }
+  managed_docker_stop_target() {
+    local target="${1:?}" checkpoint="${MANAGED_QB_CHECKPOINT:-}"
+    [[ -n "$checkpoint" && "$checkpoint" != restore ]] || checkpoint="$(transaction_phase)"
+    transaction_event "qb-stop:$checkpoint"
+    transaction_should_fail stop && return 1
+    [[ "$target" == "$QBITTORRENT_CONTAINER" || "$target" == "$TRANSACTION_QB_ID" ]] || return 1
+    TRANSACTION_QB_STATE=stopped
+  }
+  managed_docker_start_target() {
+    local target="${1:?}" checkpoint="${MANAGED_QB_CHECKPOINT:-}"
+    [[ -n "$checkpoint" && "$checkpoint" != restore ]] || checkpoint="$(transaction_phase)"
+    transaction_event "qb-start:$checkpoint"
+    transaction_should_fail start && return 1
+    [[ "$target" == "$TRANSACTION_QB_ID" ]] || return 1
+    TRANSACTION_QB_STATE=running
+  }
   managed_docker_command() {
     local action="${1:?}"
     case "$action" in
@@ -2508,6 +2824,240 @@ setup_managed_transaction_fixture() {
     transaction_event "exclude-remove:${1:?}:${2:?}"
     return 0
   }
+}
+
+setup_immutable_docker_fake() {
+  DOCKER_FAKE_DIR="$TEST_TMP/docker-fake"
+  DOCKER_FAKE_EVENTS="$TEST_TMP/docker-fake-events"
+  mkdir -p -- "$DOCKER_FAKE_DIR/names" "$DOCKER_FAKE_DIR/states"
+  : > "$DOCKER_FAKE_EVENTS"
+  DOCKER_ID_A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  DOCKER_ID_B=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  printf '%s\n' "$DOCKER_ID_A" > "$DOCKER_FAKE_DIR/names/qbittorrent"
+  printf '%s\n' "$DOCKER_ID_B" > "$DOCKER_FAKE_DIR/names/other-client"
+  printf 'running\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_A"
+  printf 'stopped\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_B"
+  DOCKER_FAKE_INSPECT_MODE=normal
+
+  docker_fake_resolve() {
+    local target="${1:?}"
+    if [[ "$target" =~ ^[0-9a-f]{64}$ ]]; then
+      [[ -f "$DOCKER_FAKE_DIR/states/$target" ]] || return 1
+      printf '%s\n' "$target"
+    else
+      [[ -f "$DOCKER_FAKE_DIR/names/$target" ]] || return 1
+      command sed -n '1p' "$DOCKER_FAKE_DIR/names/$target"
+    fi
+  }
+  managed_docker_inspect_identity() {
+    local output_variable="${1:?}" target="${2:?}" id state
+    printf 'inspect:%s:%s\n' "${MANAGED_QB_CHECKPOINT:-none}" "$target" >> "$DOCKER_FAKE_EVENTS"
+    case "$DOCKER_FAKE_INSPECT_MODE" in
+      failure) return 1 ;;
+      malformed)
+        printf -v "$output_variable" '%s' 'malformed'
+        return 0
+        ;;
+    esac
+    id="$(docker_fake_resolve "$target")" || return 1
+    state="$(<"$DOCKER_FAKE_DIR/states/$id")" || return 1
+    printf -v "$output_variable" '%s|%s' "$id" "$state"
+  }
+  managed_docker_stop_target() {
+    local target="${1:?}" id
+    printf 'stop:%s:%s\n' "${MANAGED_QB_CHECKPOINT:-none}" "$target" >> "$DOCKER_FAKE_EVENTS"
+    id="$(docker_fake_resolve "$target")" || return 1
+    printf 'stopped\n' > "$DOCKER_FAKE_DIR/states/$id"
+  }
+  managed_docker_start_target() {
+    local target="${1:?}" id
+    printf 'start:%s:%s\n' "${MANAGED_QB_CHECKPOINT:-none}" "$target" >> "$DOCKER_FAKE_EVENTS"
+    id="$(docker_fake_resolve "$target")" || return 1
+    printf 'running\n' > "$DOCKER_FAKE_DIR/states/$id"
+  }
+  managed_wait_for_qbittorrent() { return 0; }
+  qbittorrent_binding_present() {
+    local current_id expected_id
+    printf 'binding:%s:%s:%s:%s\n' "$QBITTORRENT_CONTAINER" \
+      "$QBITTORRENT_PROCESS_NAME" "$QBITTORRENT_LISTEN_IP" "$QBITTORRENT_LISTEN_PORT" \
+      >> "$DOCKER_FAKE_EVENTS"
+    current_id="$(docker_fake_resolve "$QBITTORRENT_CONTAINER")" || return 1
+    expected_id="${MANAGED_SAFETY_QB_CONTAINER_ID:-${MANAGED_QB_CONTAINER_ID:-$current_id}}"
+    [[ "$current_id" == "$expected_id" &&
+       "$(<"$DOCKER_FAKE_DIR/states/$current_id")" == running ]]
+  }
+}
+
+test_managed_docker_identity_inspect_uses_an_unambiguous_template() {
+  local inspection expected_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  setup_managed_journal_fixture || return 1
+  QBITTORRENT_RESTART_TIMEOUT=10
+  managed_docker_available() { return 0; }
+  timeout() {
+    [[ "$1" == 10 && "$2" == docker && "$3" == container && "$4" == inspect &&
+       "$5" == --format && "$7" == qbittorrent ]] || return 1
+    printf '%s\n' "$6" > "$TEST_TMP/docker-format"
+    printf '%s|true\n' "$expected_id"
+  }
+
+  managed_docker_inspect_identity inspection qbittorrent || return 1
+  assert_eq "$expected_id|true" "$inspection" \
+    "Docker identity inspection must return one strict delimited tuple" || return 1
+  assert_eq '{{.Id}}|{{.State.Running}}' "$(<"$TEST_TMP/docker-format")" \
+    "Docker template must use an unambiguous literal delimiter"
+}
+
+test_managed_qb_immutable_identity_checkpoints_and_exact_restore() {
+  local rc events start_count checkpoint parsed_id=sentinel parsed_state=sentinel inspection
+  setup_managed_journal_fixture || return 1
+  declare -F managed_qb_snapshot >/dev/null ||
+    fail "amended Task 7 immutable qB snapshot owner is missing" || return 1
+  declare -F managed_qb_containment_checkpoint >/dev/null ||
+    fail "amended Task 7 qB containment checkpoint owner is missing" || return 1
+  declare -F managed_qb_restore_recorded_intent >/dev/null ||
+    fail "amended Task 7 exact qB restore owner is missing" || return 1
+  setup_immutable_docker_fake
+  QBITTORRENT_CONTAINER=qbittorrent
+  QBITTORRENT_PROCESS_NAME=qbittorrent-nox
+  QBITTORRENT_LISTEN_IP=192.0.2.2
+  QBITTORRENT_LISTEN_PORT=6881
+  QBITTORRENT_RESTART_DELAY=0
+  QBITTORRENT_RESTART_TIMEOUT=10
+
+  inspection="$DOCKER_ID_A|false"
+  managed_qb_parse_inspection parsed_id parsed_state "$inspection" || return 1
+  assert_eq "$DOCKER_ID_A" "$parsed_id" "inspection parser must replace caller ID output" || return 1
+  assert_eq stopped "$parsed_state" "inspection parser must replace caller state output" || return 1
+  set +e; managed_qb_parse_inspection parsed_id parsed_id "$inspection" >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "inspection parser must reject aliased output variables" || return 1
+  set +e; managed_qb_parse_inspection wgmanaged_id parsed_state "$inspection" >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "inspection parser must reject internal-name collisions" || return 1
+
+  managed_qb_snapshot || return 1
+  assert_eq running "$MANAGED_QB_INTENT" "running intent must be snapshotted" || return 1
+  assert_eq "$DOCKER_ID_A" "$MANAGED_QB_CONTAINER_ID" \
+    "snapshot must capture the immutable container ID" || return 1
+  managed_safety_prepare || return 1
+  managed_safety_clear
+  managed_safety_load || return 1
+  printf 'stopped\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_A"
+  managed_qb_containment_checkpoint after-stop || return 1
+
+  for checkpoint in after-stop before-down after-down before-install after-install \
+      before-up after-up before-network after-network rollback-before-down \
+      rollback-after-down rollback-before-install rollback-after-install rollback-before-up \
+      rollback-after-up rollback-before-network rollback-after-network rollback-pre-cleanup \
+      rollback-post-cleanup; do
+    printf 'running\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_A"
+    set +e; managed_qb_containment_checkpoint "$checkpoint" >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "external restart at $checkpoint must fail" || return 1
+    assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+      "external restart at $checkpoint must be contained" || return 1
+  done
+
+  printf '%s\n' "$DOCKER_ID_B" > "$DOCKER_FAKE_DIR/names/qbittorrent"
+  printf 'running\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_B"
+  set +e; managed_qb_containment_checkpoint after-install >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "same-name container recreation must fail" || return 1
+  assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+    "recorded immutable target must remain stopped" || return 1
+  assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_B")" \
+    "replacement target must be stopped" || return 1
+  events="$(<"$DOCKER_FAKE_EVENTS")"
+  assert_contains "stop:after-install:$DOCKER_ID_A" "$events" \
+    "recreation containment must target the recorded immutable ID" || return 1
+  assert_contains 'stop:after-install:qbittorrent' "$events" \
+    "recreation containment must also target the current configured name" || return 1
+
+  printf '%s\n' "$DOCKER_ID_A" > "$DOCKER_FAKE_DIR/names/qbittorrent"
+  QBITTORRENT_LISTEN_PORT=6999
+  set +e; managed_qb_containment_checkpoint config-drift >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "configured tuple drift must fail closed" || return 1
+  QBITTORRENT_LISTEN_PORT=6881
+
+  DOCKER_FAKE_INSPECT_MODE=malformed
+  set +e; managed_qb_containment_checkpoint malformed-inspect >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "malformed inspect must contain and fail" || return 1
+  DOCKER_FAKE_INSPECT_MODE=failure
+  set +e; managed_qb_containment_checkpoint failed-inspect >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "inspect hard failure must contain and fail" || return 1
+  DOCKER_FAKE_INSPECT_MODE=normal
+  printf 'stopped\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_A"
+  : > "$DOCKER_FAKE_EVENTS"
+  managed_qb_restore_recorded_intent || return 1
+  start_count="$(grep -cFx "start:restore:$DOCKER_ID_A" "$DOCKER_FAKE_EVENTS" || true)"
+  assert_eq 1 "$start_count" "running intent restore must own exactly one immutable-ID start" || return 1
+  assert_eq running "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+    "running intent must finish running" || return 1
+  events="$(<"$DOCKER_FAKE_EVENTS")"
+  assert_contains 'binding:qbittorrent:qbittorrent-nox:192.0.2.2:6881' "$events" \
+    "restore must prove the recorded TCP/UDP tuple" || return 1
+
+  printf 'running\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_A"
+  : > "$DOCKER_FAKE_EVENTS"
+  set +e; managed_qb_restore_recorded_intent >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "already-running restore target must not be accepted" || return 1
+  assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+    "already-running restore target must be contained" || return 1
+  assert_not_contains 'start:' "$(<"$DOCKER_FAKE_EVENTS")" \
+    "already-running target must never receive a transaction start" || return 1
+
+  rm -f -- "$MANAGED_SAFETY"
+  printf 'stopped\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_A"
+  managed_qb_snapshot || return 1
+  assert_eq stopped "$MANAGED_QB_INTENT" "stopped intent must be snapshotted" || return 1
+  managed_safety_prepare || return 1
+  managed_safety_clear
+  managed_safety_load || return 1
+  printf 'running\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_A"
+  : > "$DOCKER_FAKE_EVENTS"
+  set +e; managed_qb_restore_recorded_intent >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "recorded-stopped client must not become running" || return 1
+  assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+    "recorded-stopped external restart must be contained" || return 1
+  assert_not_contains 'start:' "$(<"$DOCKER_FAKE_EVENTS")" \
+    "stopped intent must never receive a transaction start" || return 1
+
+  rm -f -- "$MANAGED_SAFETY"
+  QBITTORRENT_CONTAINER=''
+  managed_qb_snapshot || return 1
+  assert_eq unmanaged "$MANAGED_QB_INTENT" "empty container config must snapshot unmanaged" || return 1
+  managed_safety_prepare || return 1
+  managed_safety_clear
+  managed_safety_load || return 1
+  managed_qb_restore_recorded_intent || return 1
+  QBITTORRENT_CONTAINER=other-client
+  printf 'running\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_B"
+  set +e; managed_qb_restore_recorded_intent >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "unmanaged intent must reject a newly configured target" || return 1
+  assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_B")" \
+    "new target under unmanaged intent must be contained" || return 1
+
+  rm -f -- "$MANAGED_SAFETY"
+  QBITTORRENT_CONTAINER=qbittorrent
+  printf '%s\n' "$DOCKER_ID_A" > "$DOCKER_FAKE_DIR/names/qbittorrent"
+  printf 'running\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_A"
+  managed_qb_snapshot || return 1
+  managed_safety_prepare || return 1
+  managed_safety_clear
+  managed_safety_load || return 1
+  qbittorrent_binding_present() {
+    printf '%s\n' "$DOCKER_ID_B" > "$DOCKER_FAKE_DIR/names/qbittorrent"
+    printf 'running\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_B"
+    return 0
+  }
+  : > "$DOCKER_FAKE_EVENTS"
+  set +e; managed_qb_verify_recorded_intent final-check >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "ID replacement during binding proof must fail final proof" || return 1
+  assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+    "ID replacement must stop the recorded target" || return 1
+  assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_B")" \
+    "ID replacement must stop the current target" || return 1
+  events="$(<"$DOCKER_FAKE_EVENTS")"
+  assert_contains "stop:final-check:$DOCKER_ID_A" "$events" \
+    "final containment must address the immutable ID" || return 1
+  assert_contains 'stop:final-check:qbittorrent' "$events" \
+    "final containment must address the configured name"
 }
 
 test_managed_qbittorrent_state_is_exact_and_fail_closed() {
@@ -2635,13 +3185,17 @@ test_managed_profile_transaction_orders_every_qb_and_tunnel_effect() {
   assert_event_before 'speed:candidate-up' 'qb-start:candidate-up' "qB must start only after all network checks" || return 1
   assert_event_before 'qb-start:candidate-up' 'binding:candidate-up:running:198.51.100.20:1637' "running state must precede TCP/UDP ownership proof" || return 1
   assert_event_before 'binding:candidate-up:running:198.51.100.20:1637' 'journal:verified' "binding proof must precede verified" || return 1
-  assert_event_before 'journal:verified' 'status:verified:recovered:managed_profile_rotation_verified' "status follows verified" || return 1
-  assert_event_before 'status:verified:recovered:managed_profile_rotation_verified' 'stamp:verified' "cooldown follows status" || return 1
-  assert_event_before 'stamp:verified' 'candidate-delete:verified' "candidate cleanup follows success recording" || return 1
-  assert_event_before 'candidate-delete:verified' 'marker-delete:verified' "marker removal must be last transaction effect" || return 1
-  assert_event_before 'marker-delete:verified' 'exclude-remove:Alpha-1:1000' "pre-exclusion clears only after marker commit" || return 1
-  [[ ! -e "$ROTATION_PENDING" && ! -e "$MANAGED_CANDIDATE" ]] ||
-    fail "successful transaction must clean candidate and marker" || return 1
+  assert_event_before 'journal:verified' 'candidate-delete:verified' "verified must precede candidate cleanup" || return 1
+  assert_event_before 'candidate-delete:verified' 'marker-delete:verified' \
+    "journal cleanup must follow candidate cleanup" || return 1
+  assert_event_before 'marker-delete:verified' 'status:none:recovered:managed_profile_rotation_verified' \
+    "success status must follow the safety commit point" || return 1
+  assert_event_before 'status:none:recovered:managed_profile_rotation_verified' 'stamp:none' \
+    "cooldown follows postcommit status" || return 1
+  assert_event_before 'stamp:none' 'exclude-remove:Alpha-1:1000' \
+    "pre-exclusion clears only after candidate commit" || return 1
+  [[ ! -e "$ROTATION_PENDING" && ! -e "$MANAGED_CANDIDATE" && ! -e "$MANAGED_SAFETY" ]] ||
+    fail "successful transaction must clean candidate, marker, and safety owner" || return 1
   managed_verify_profile_binding "$WG_CONF" "$candidate_digest" 198.51.100.20:1637 || return 1
   assert_eq running "$TRANSACTION_QB_STATE" "previously running qB must be restored" || return 1
 
@@ -2660,6 +3214,60 @@ test_managed_profile_transaction_orders_every_qb_and_tunnel_effect() {
   managed_profile_transaction Alpha-1 0 || return 1
   events="$(<"$TRANSACTION_EVENTS")"
   assert_not_contains 'qb-' "$events" "unconfigured qB must have no Docker effects"
+}
+
+test_amended_transaction_keeps_a_durable_owner_through_commit_and_finalization() {
+  local docker_events
+  setup_managed_transaction_fixture || return 1
+  setup_immutable_docker_fake
+  QBITTORRENT_CONTAINER=qbittorrent
+  QBITTORRENT_PROCESS_NAME=qbittorrent-nox
+  QBITTORRENT_LISTEN_IP=192.0.2.2
+  QBITTORRENT_LISTEN_PORT=6881
+  QBITTORRENT_RESTART_DELAY=0
+  QBITTORRENT_RESTART_TIMEOUT=10
+  managed_safety_move() {
+    local state
+    state="$(sed -n 's/^state=//p' "${1:?}")" || return 1
+    transaction_event "safety:$state"
+    command mv -fT -- "$1" "${2:?}"
+  }
+  managed_unlink_path() {
+    local path="${1:?}" safety_state=absent
+    [[ ! -f "$MANAGED_SAFETY" ]] || safety_state="$(sed -n 's/^state=//p' "$MANAGED_SAFETY")"
+    case "$path" in
+      "$MANAGED_CANDIDATE") transaction_event "candidate-delete:safety-$safety_state" ;;
+      "$ROTATION_PENDING") transaction_event "marker-delete:safety-$safety_state" ;;
+      "$MANAGED_SAFETY") transaction_event "safety-delete:$safety_state" ;;
+    esac
+    command rm -f -- "$path"
+  }
+
+  managed_profile_transaction Alpha-1 0 || return 1
+  assert_event_before 'safety:pending' 'journal:prepared' \
+    "pending safety must own the transaction before the journal" || return 1
+  assert_event_before 'journal:verified' 'candidate-delete:safety-pending' \
+    "verified candidate cleanup must remain pending-owned" || return 1
+  assert_event_before 'candidate-delete:safety-pending' 'marker-delete:safety-pending' \
+    "candidate cleanup must precede journal cleanup" || return 1
+  assert_event_before 'marker-delete:safety-pending' 'safety:committed' \
+    "safety commit must follow journal cleanup and post-cleanup proof" || return 1
+  assert_event_before 'safety:committed' 'status:none:recovered:managed_profile_rotation_verified' \
+    "success status must be postcommit bookkeeping" || return 1
+  assert_event_before 'safety:committed' 'stamp:none' \
+    "rotation cooldown must be postcommit bookkeeping" || return 1
+  assert_event_before 'safety:committed' 'safety:finalizing' \
+    "committed safety must transition to finalizing" || return 1
+  assert_event_before 'safety:finalizing' 'safety-delete:finalizing' \
+    "final safety unlink must be the last commit-owner effect" || return 1
+  [[ ! -e "$MANAGED_SAFETY" && ! -e "$ROTATION_PENDING" && ! -e "$MANAGED_CANDIDATE" ]] ||
+    fail "successful finalization must clear every transaction artifact" || return 1
+  docker_events="$(<"$DOCKER_FAKE_EVENTS")"
+  for checkpoint in after-stop before-down after-down before-install after-install \
+      before-up after-up before-network after-network pre-cleanup post-cleanup finalizing; do
+    assert_contains "inspect:$checkpoint:qbittorrent" "$docker_events" \
+      "checkpoint $checkpoint must inspect immutable qB state" || return 1
+  done
 }
 
 test_managed_candidate_exclusion_removal_is_exact_and_durable() {
@@ -2708,8 +3316,8 @@ test_managed_transaction_context_and_preexclusion_fail_before_mutation() {
   set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
   assert_eq 1 "$rc" "pre-exclusion persistence failure must abort" || return 1
   events="$(<"$TRANSACTION_EVENTS")"
-  assert_eq $'exclude-add:Alpha-1:1000\nexclude-write' "$events" \
-    "pre-exclusion failure must be the only attempted effect" || return 1
+  assert_eq $'qb-inspect:none:running\nexclude-add:Alpha-1:1000\nexclude-write' "$events" \
+    "pre-exclusion failure may follow only validation and the immutable read-only snapshot" || return 1
   [[ ! -e "$ROTATION_PENDING" ]] || fail "pre-exclusion failure must not create a journal" || return 1
   assert_eq "$backup_before" "$(sha256sum "${WG_CONF}.bak-healthcheck")" \
     "pre-exclusion failure must not rewrite the backup" || return 1
@@ -2737,7 +3345,7 @@ test_managed_every_phase_failure_rolls_back_exact_old_profile() {
   local -a cases=(
     journal-client-stopped down journal-tunnel-down install journal-candidate-installed
     up journal-candidate-up identity network speed start binding journal-verified
-    status stamp candidate-delete marker-delete
+    candidate-delete marker-delete
   )
   for case_name in "${cases[@]}"; do
     (
@@ -2758,6 +3366,313 @@ test_managed_every_phase_failure_rolls_back_exact_old_profile() {
       events="$(<"$TRANSACTION_EVENTS")"
       assert_not_contains 'exclude-remove:' "$events" \
         "$case_name rollback must retain the failed candidate exclusion" || exit 1
+    ) || return 1
+  done
+}
+
+test_pending_rollback_never_writes_or_removes_rotation_success_stamp() {
+  local rc original_mtime
+  for stamp_shape in absent existing; do
+    (
+      setup_managed_transaction_fixture || exit 1
+      if [[ "$stamp_shape" == existing ]]; then
+        printf 'historic-stamp\n' > "$ROTATE_STAMP"
+        touch -d '@500' "$ROTATE_STAMP"
+        original_mtime="$(stat -c '%Y' "$ROTATE_STAMP")" || exit 1
+      fi
+      TRANSACTION_FAIL_ACTION=marker-delete
+      TRANSACTION_FAIL_REMAINING=1
+      set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+      assert_eq 1 "$rc" "$stamp_shape precommit failure must roll back" || exit 1
+      if [[ "$stamp_shape" == absent ]]; then
+        [[ ! -e "$ROTATE_STAMP" ]] ||
+          fail "rollback must not create a rotation-success stamp" || exit 1
+      else
+        assert_eq historic-stamp "$(<"$ROTATE_STAMP")" \
+          "rollback must preserve existing stamp bytes" || exit 1
+        assert_eq "$original_mtime" "$(stat -c '%Y' "$ROTATE_STAMP")" \
+          "rollback must preserve existing stamp mtime" || exit 1
+      fi
+    ) || return 1
+  done
+}
+
+test_rollback_status_seam_cannot_reopen_qb_before_safety_removal() {
+  local rc
+  setup_amended_recovery_shape pending absent candidate present stopped || return 1
+  write_raw_managed_safety pending "$JOURNAL_TEST_BACKUP_SHA" \
+    "$JOURNAL_TEST_CANDIDATE_SHA" stopped
+  printf 'stopped\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_A"
+  ROLLBACK_STATUS_SAFETY_STATE=''
+  write_status() {
+    if [[ "${1-}" == recovered && "${2-}" == managed_profile_rollback_verified ]]; then
+      ROLLBACK_STATUS_SAFETY_STATE=absent
+      [[ ! -f "$MANAGED_SAFETY" ]] ||
+        ROLLBACK_STATUS_SAFETY_STATE="$(sed -n 's/^state=//p' "$MANAGED_SAFETY")"
+      printf 'running\n' > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_A"
+    fi
+    return 0
+  }
+
+  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "external restart from the rollback status seam must fail contained" || return 1
+  assert_eq pending "$ROLLBACK_STATUS_SAFETY_STATE" \
+    "best-effort rollback status must run while pending safety still owns final proof" || return 1
+  [[ -f "$MANAGED_SAFETY" ]] || fail "failed final qB proof must retain pending safety" || return 1
+  assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+    "status-seam restart must be contained before safety removal" || return 1
+  [[ ! -e "$ROTATE_STAMP" ]] || fail "failed rollback proof must not create a success stamp"
+}
+
+test_pending_safety_creation_barriers_reclassify_the_visible_owner() {
+  local barrier rc
+  for barrier in temp-sync move final-sync parent-sync; do
+    (
+      setup_managed_transaction_fixture || exit 1
+      eval "$(declare -f managed_sync_file | sed '1s/managed_sync_file/transaction_original_sync_file/')"
+      eval "$(declare -f managed_safety_move | sed '1s/managed_safety_move/transaction_original_safety_move/')"
+      eval "$(declare -f managed_sync_safety_parent | sed '1s/managed_sync_safety_parent/transaction_original_sync_safety_parent/')"
+      SAFETY_BARRIER_USED=0
+      managed_sync_file() {
+        local path="${1:?}" state=''
+        [[ ! -f "$path" ]] || state="$(sed -n 's/^state=//p' "$path")"
+        if (( SAFETY_BARRIER_USED == 0 )) && {
+          [[ "$barrier" == temp-sync && "$path" == *'.safety-healthcheck.tmp.'* && "$state" == pending ]] ||
+          [[ "$barrier" == final-sync && "$path" == "$MANAGED_SAFETY" && "$state" == pending ]]
+        }; then
+          SAFETY_BARRIER_USED=1
+          return 1
+        fi
+        transaction_original_sync_file "$path"
+      }
+      managed_safety_move() {
+        local source="${1:?}" destination="${2:?}" state
+        state="$(sed -n 's/^state=//p' "$source")" || return 1
+        if [[ "$barrier" == move && "$state" == pending && "$SAFETY_BARRIER_USED" == 0 ]]; then
+          SAFETY_BARRIER_USED=1
+          return 1
+        fi
+        transaction_original_safety_move "$source" "$destination"
+      }
+      managed_sync_safety_parent() {
+        local parent="${1:?}" state=''
+        [[ ! -f "$MANAGED_SAFETY" ]] || state="$(sed -n 's/^state=//p' "$MANAGED_SAFETY")"
+        if [[ "$barrier" == parent-sync && "$state" == pending && "$SAFETY_BARRIER_USED" == 0 ]]; then
+          SAFETY_BARRIER_USED=1
+          return 1
+        fi
+        transaction_original_sync_safety_parent "$parent"
+      }
+
+      set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+      assert_eq 1 "$rc" "$barrier pending safety barrier must fail the candidate transaction" || exit 1
+      assert_eq 1 "$SAFETY_BARRIER_USED" "$barrier safety barrier must be exercised exactly once" || exit 1
+      assert_eq 192.0.2.10:1637 "$(configured_endpoint "$WG_CONF")" \
+        "$barrier safety failure must retain or restore the old profile" || exit 1
+      [[ ! -e "$ROTATION_PENDING" ]] || fail "$barrier safety failure must not leave an orphan journal" || exit 1
+      [[ ! -e "$ROTATE_STAMP" ]] || fail "$barrier pending failure must not write a success stamp" || exit 1
+      if [[ "$barrier" == temp-sync || "$barrier" == move ]]; then
+        [[ ! -e "$MANAGED_SAFETY" && -f "$MANAGED_CANDIDATE" ]] ||
+          fail "$barrier must fail before exposing a safety owner or consuming the staged candidate" || exit 1
+      else
+        [[ ! -e "$MANAGED_SAFETY" && ! -e "$MANAGED_CANDIDATE" ]] ||
+          fail "$barrier visible pending owner must drive complete rollback cleanup" || exit 1
+      fi
+      assert_eq running "$TRANSACTION_QB_STATE" \
+        "$barrier pre-mutation failure or verified rollback must preserve running intent"
+    ) || return 1
+  done
+}
+
+test_journal_unlink_parent_sync_failure_never_recreates_v2_marker() {
+  local rc verified_writes
+  setup_managed_transaction_fixture || return 1
+  eval "$(declare -f managed_sync_journal_parent | sed '1s/managed_sync_journal_parent/transaction_original_sync_journal_parent/')"
+  JOURNAL_UNLINK_SYNC_FAILED=0
+  managed_sync_journal_parent() {
+    local parent="${1:?}" state=absent
+    [[ ! -f "$MANAGED_SAFETY" ]] || state="$(sed -n 's/^state=//p' "$MANAGED_SAFETY")"
+    if [[ ! -e "$ROTATION_PENDING" && "$JOURNAL_UNLINK_SYNC_FAILED" == 0 ]]; then
+      JOURNAL_UNLINK_SYNC_FAILED=1
+      transaction_event "marker-parent-sync-failed:safety-$state"
+      return 1
+    fi
+    transaction_original_sync_journal_parent "$parent"
+  }
+
+  set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "journal unlink parent-sync failure must fail before candidate commit" || return 1
+  assert_eq 1 "$JOURNAL_UNLINK_SYNC_FAILED" "journal unlink parent-sync failure must be injected" || return 1
+  assert_contains 'marker-parent-sync-failed:safety-pending' "$(<"$TRANSACTION_EVENTS")" \
+    "pending safety must still own a failed journal directory sync" || return 1
+  verified_writes="$(grep -cFx 'journal:verified' "$TRANSACTION_EVENTS" || true)"
+  assert_eq 1 "$verified_writes" "deleted v2 marker must never be reconstructed" || return 1
+  [[ ! -e "$ROTATION_PENDING" && ! -e "$MANAGED_SAFETY" && ! -e "$MANAGED_CANDIDATE" ]] ||
+    fail "safety-owned rollback must finish without recreating the journal" || return 1
+  assert_eq 192.0.2.10:1637 "$(configured_endpoint "$WG_CONF")" \
+    "journal sync failure must roll back the candidate" || return 1
+  assert_eq running "$TRANSACTION_QB_STATE" "verified rollback must restore qB intent" || return 1
+  [[ ! -e "$ROTATE_STAMP" ]] || fail "journal sync rollback must not write a success stamp"
+}
+
+test_commit_transition_durability_reclassifies_pending_vs_committed() {
+  local barrier rc
+  for barrier in temp-sync final-sync parent-sync; do
+    (
+      setup_managed_transaction_fixture || exit 1
+      eval "$(declare -f managed_sync_file | sed '1s/managed_sync_file/transaction_original_sync_file/')"
+      eval "$(declare -f managed_sync_safety_parent | sed '1s/managed_sync_safety_parent/transaction_original_sync_safety_parent/')"
+      COMMIT_BARRIER_USED=0
+      managed_sync_file() {
+        local path="${1:?}" state=''
+        [[ ! -f "$path" ]] || state="$(sed -n 's/^state=//p' "$path")"
+        if (( COMMIT_BARRIER_USED == 0 )) && {
+          [[ "$barrier" == temp-sync && "$path" == *'.safety-healthcheck.tmp.'* && "$state" == committed ]] ||
+          [[ "$barrier" == final-sync && "$path" == "$MANAGED_SAFETY" && "$state" == committed ]]
+        }; then
+          COMMIT_BARRIER_USED=1
+          return 1
+        fi
+        transaction_original_sync_file "$path"
+      }
+      managed_sync_safety_parent() {
+        local parent="${1:?}" state=''
+        [[ ! -f "$MANAGED_SAFETY" ]] || state="$(sed -n 's/^state=//p' "$MANAGED_SAFETY")"
+        if [[ "$barrier" == parent-sync && "$state" == committed && "$COMMIT_BARRIER_USED" == 0 ]]; then
+          COMMIT_BARRIER_USED=1
+          return 1
+        fi
+        transaction_original_sync_safety_parent "$parent"
+      }
+
+      set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+      assert_eq 1 "$COMMIT_BARRIER_USED" "$barrier commit barrier must be exercised" || exit 1
+      [[ ! -e "$ROTATION_PENDING" && ! -e "$MANAGED_SAFETY" && ! -e "$MANAGED_CANDIDATE" ]] ||
+        fail "$barrier visible state must be reconciled to a complete outcome" || exit 1
+      assert_eq running "$TRANSACTION_QB_STATE" "$barrier outcome must restore exact qB intent" || exit 1
+      if [[ "$barrier" == temp-sync ]]; then
+        assert_eq 1 "$rc" "pre-rename commit failure must remain a failed, rolled-back attempt" || exit 1
+        assert_eq 192.0.2.10:1637 "$(configured_endpoint "$WG_CONF")" \
+          "visible pending state must roll back" || exit 1
+        [[ ! -e "$ROTATE_STAMP" ]] || fail "pending rollback must not create a success stamp" || exit 1
+      else
+        assert_eq 0 "$rc" "post-rename $barrier failure must finalize visible committed state" || exit 1
+        assert_eq 198.51.100.20:1637 "$(configured_endpoint "$WG_CONF")" \
+          "visible committed state must never roll back" || exit 1
+        [[ -f "$ROTATE_STAMP" ]] || fail "committed recovery must write best-effort cooldown" || exit 1
+      fi
+    ) || return 1
+  done
+}
+
+test_finalizing_transition_durability_never_rolls_back_committed_candidate() {
+  local barrier rc
+  for barrier in temp-sync final-sync parent-sync; do
+    (
+      setup_managed_transaction_fixture || exit 1
+      eval "$(declare -f managed_sync_file | sed '1s/managed_sync_file/transaction_original_sync_file/')"
+      eval "$(declare -f managed_sync_safety_parent | sed '1s/managed_sync_safety_parent/transaction_original_sync_safety_parent/')"
+      FINALIZING_BARRIER_USED=0
+      managed_sync_file() {
+        local path="${1:?}" state=''
+        [[ ! -f "$path" ]] || state="$(sed -n 's/^state=//p' "$path")"
+        if (( FINALIZING_BARRIER_USED == 0 )) && {
+          [[ "$barrier" == temp-sync && "$path" == *'.safety-healthcheck.tmp.'* && "$state" == finalizing ]] ||
+          [[ "$barrier" == final-sync && "$path" == "$MANAGED_SAFETY" && "$state" == finalizing ]]
+        }; then
+          FINALIZING_BARRIER_USED=1
+          return 1
+        fi
+        transaction_original_sync_file "$path"
+      }
+      managed_sync_safety_parent() {
+        local parent="${1:?}" state=''
+        [[ ! -f "$MANAGED_SAFETY" ]] || state="$(sed -n 's/^state=//p' "$MANAGED_SAFETY")"
+        if [[ "$barrier" == parent-sync && "$state" == finalizing && "$FINALIZING_BARRIER_USED" == 0 ]]; then
+          FINALIZING_BARRIER_USED=1
+          return 1
+        fi
+        transaction_original_sync_safety_parent "$parent"
+      }
+
+      set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+      assert_eq 1 "$FINALIZING_BARRIER_USED" "$barrier finalizing barrier must be exercised" || exit 1
+      assert_eq 198.51.100.20:1637 "$(configured_endpoint "$WG_CONF")" \
+        "$barrier finalizing failure must retain the committed candidate" || exit 1
+      assert_eq running "$TRANSACTION_QB_STATE" "$barrier finalizing outcome must retain qB intent" || exit 1
+      [[ -f "$ROTATE_STAMP" ]] || fail "$barrier finalizing failure occurs after commit bookkeeping" || exit 1
+      [[ ! -e "$ROTATION_PENDING" && ! -e "$MANAGED_CANDIDATE" ]] ||
+        fail "$barrier finalizing failure must not recreate precommit artifacts" || exit 1
+      if [[ "$barrier" == temp-sync ]]; then
+        assert_eq 1 "$rc" "pre-rename finalizing failure must retain committed owner for retry" || exit 1
+        managed_safety_load || exit 1
+        assert_eq committed "$MANAGED_SAFETY_STATE" \
+          "pre-rename finalizing failure must leave visible committed state" || exit 1
+        : > "$TRANSACTION_EVENTS"
+        managed_reconcile_pending || fail "visible committed state must finalize on retry" || exit 1
+        assert_not_contains 'wg-down:' "$(<"$TRANSACTION_EVENTS")" \
+          "committed retry must never enter rollback sequencing" || exit 1
+      else
+        assert_eq 0 "$rc" "post-rename finalizing $barrier failure must complete from visible finalizing" || exit 1
+      fi
+      [[ ! -e "$MANAGED_SAFETY" ]] || fail "$barrier finalizing outcome must eventually clear safety"
+    ) || return 1
+  done
+}
+
+test_final_safety_unlink_and_parent_sync_are_reboot_idempotent() {
+  local failure rc safety_copy
+  for failure in unlink parent-sync; do
+    (
+      setup_managed_transaction_fixture || exit 1
+      eval "$(declare -f managed_unlink_path | sed '1s/managed_unlink_path/transaction_original_unlink_path/')"
+      eval "$(declare -f managed_sync_safety_parent | sed '1s/managed_sync_safety_parent/transaction_original_sync_safety_parent/')"
+      FINAL_SAFETY_FAILURE_USED=0
+      safety_copy="$TEST_TMP/finalizing-safety-copy"
+      managed_unlink_path() {
+        local path="${1:?}"
+        if [[ "$path" == "$MANAGED_SAFETY" ]]; then
+          cp -- "$MANAGED_SAFETY" "$safety_copy" || return 1
+          if [[ "$failure" == unlink && "$FINAL_SAFETY_FAILURE_USED" == 0 ]]; then
+            FINAL_SAFETY_FAILURE_USED=1
+            return 1
+          fi
+        fi
+        transaction_original_unlink_path "$path"
+      }
+      managed_sync_safety_parent() {
+        local parent="${1:?}"
+        if [[ "$failure" == parent-sync && ! -e "$MANAGED_SAFETY" && "$FINAL_SAFETY_FAILURE_USED" == 0 ]]; then
+          FINAL_SAFETY_FAILURE_USED=1
+          return 1
+        fi
+        transaction_original_sync_safety_parent "$parent"
+      }
+
+      set +e; managed_profile_transaction Alpha-1 0 >/dev/null 2>&1; rc=$?; set +e
+      assert_eq 1 "$rc" "final safety $failure failure must report incomplete cleanup" || exit 1
+      assert_eq 1 "$FINAL_SAFETY_FAILURE_USED" "final safety $failure failure must be injected" || exit 1
+      assert_eq 198.51.100.20:1637 "$(configured_endpoint "$WG_CONF")" \
+        "final safety $failure failure must retain the committed candidate" || exit 1
+      assert_eq running "$TRANSACTION_QB_STATE" \
+        "final safety $failure failure must retain verified qB intent" || exit 1
+      [[ -f "$ROTATE_STAMP" ]] || fail "final safety $failure occurs only after commit bookkeeping" || exit 1
+      if [[ "$failure" == unlink ]]; then
+        [[ -f "$MANAGED_SAFETY" ]] || fail "failed unlink must retain finalizing evidence" || exit 1
+      else
+        [[ ! -e "$MANAGED_SAFETY" ]] || fail "post-unlink sync failure exposes the absent outcome" || exit 1
+        managed_reconcile_pending || exit 1
+        cp -- "$safety_copy" "$MANAGED_SAFETY"
+        chmod 600 -- "$MANAGED_SAFETY"
+      fi
+      : > "$TRANSACTION_EVENTS"
+      managed_reconcile_pending || fail "reappeared finalizing owner must be harmlessly repeatable" || exit 1
+      [[ ! -e "$MANAGED_SAFETY" ]] || fail "repeated finalization must clear the safety owner" || exit 1
+      assert_eq 198.51.100.20:1637 "$(configured_endpoint "$WG_CONF")" \
+        "repeated finalization must not roll back the candidate" || exit 1
+      assert_eq running "$TRANSACTION_QB_STATE" "repeated finalization must restore qB intent" || exit 1
+      assert_not_contains 'wg-down:' "$(<"$TRANSACTION_EVENTS")" \
+        "committed finalization must never enter rollback network sequencing"
     ) || return 1
   done
 }
@@ -2836,6 +3751,13 @@ setup_managed_crash_shape() {
   managed_journal_fixture_digests || return 1
   write_raw_managed_journal "$phase" "$JOURNAL_TEST_BACKUP_SHA" \
     "$JOURNAL_TEST_CANDIDATE_SHA" 192.0.2.10:1637 198.51.100.20:1637 "$qb_was_running"
+  if [[ "$qb_was_running" == 1 ]]; then
+    write_raw_managed_safety pending "$JOURNAL_TEST_BACKUP_SHA" \
+      "$JOURNAL_TEST_CANDIDATE_SHA" running
+  else
+    write_raw_managed_safety pending "$JOURNAL_TEST_BACKUP_SHA" \
+      "$JOURNAL_TEST_CANDIDATE_SHA" stopped
+  fi
   case "$active_class" in
     backup) command cp -- "${WG_CONF}.bak-healthcheck" "$WG_CONF" ;;
     candidate) command cp -- "$MANAGED_CANDIDATE" "$WG_CONF" ;;
@@ -2865,8 +3787,227 @@ setup_managed_crash_shape() {
   fi
 }
 
+setup_amended_recovery_shape() {
+  local safety_state="${1:?}" marker_shape="${2:?}" active_class="${3:?}"
+  local candidate_class="${4:?}" qb_state="${5:-stopped}"
+  setup_managed_transaction_fixture || return 1
+  setup_immutable_docker_fake
+  QBITTORRENT_CONTAINER=qbittorrent
+  QBITTORRENT_PROCESS_NAME=qbittorrent-nox
+  QBITTORRENT_LISTEN_IP=192.0.2.2
+  QBITTORRENT_LISTEN_PORT=6881
+  QBITTORRENT_RESTART_DELAY=0
+  QBITTORRENT_RESTART_TIMEOUT=10
+  managed_journal_fixture_digests || return 1
+  write_raw_managed_safety "$safety_state" "$JOURNAL_TEST_BACKUP_SHA" \
+    "$JOURNAL_TEST_CANDIDATE_SHA" running
+  case "$active_class" in
+    backup)
+      cp -- "${WG_CONF}.bak-healthcheck" "$WG_CONF"
+      TRANSACTION_RUNTIME_ENDPOINT=192.0.2.10:1637
+      ;;
+    candidate)
+      cp -- "$MANAGED_CANDIDATE" "$WG_CONF"
+      TRANSACTION_RUNTIME_ENDPOINT=198.51.100.20:1637
+      ;;
+    unknown) printf '# unknown\n' >> "$WG_CONF" ;;
+    *) return 1 ;;
+  esac
+  chmod 600 -- "$WG_CONF"
+  case "$candidate_class" in
+    present) ;;
+    missing) rm -f -- "$MANAGED_CANDIDATE" ;;
+    mismatch) printf '# mismatch\n' >> "$MANAGED_CANDIDATE" ;;
+    *) return 1 ;;
+  esac
+  case "$marker_shape" in
+    absent) rm -f -- "$ROTATION_PENDING" ;;
+    matching)
+      write_raw_managed_journal candidate-up "$JOURNAL_TEST_BACKUP_SHA" \
+        "$JOURNAL_TEST_CANDIDATE_SHA" 192.0.2.10:1637 198.51.100.20:1637 1
+      ;;
+    invalid) printf 'invalid marker\n' > "$ROTATION_PENDING"; chmod 600 -- "$ROTATION_PENDING" ;;
+    mismatched)
+      write_raw_managed_journal candidate-up "$JOURNAL_TEST_CANDIDATE_SHA" \
+        "$JOURNAL_TEST_BACKUP_SHA" 192.0.2.10:1637 198.51.100.20:1637 1
+      ;;
+    *) return 1 ;;
+  esac
+  printf '%s\n' "$qb_state" > "$DOCKER_FAKE_DIR/states/$DOCKER_ID_A"
+}
+
+test_safety_record_drives_the_complete_recovery_classification_matrix() {
+  local rc events
+  setup_amended_recovery_shape pending absent candidate present stopped || return 1
+  managed_reconcile_pending || fail "pending safety without journal must invoke safety-owned rollback" || return 1
+  [[ ! -e "$MANAGED_SAFETY" && ! -e "$ROTATION_PENDING" && ! -e "$MANAGED_CANDIDATE" ]] ||
+    fail "pending safety without journal must complete rollback" || return 1
+  cmp -s -- "${WG_CONF}.bak-healthcheck" "$WG_CONF" ||
+    fail "pending safety without journal must restore exact backup" || return 1
+
+  setup_amended_recovery_shape pending matching candidate present stopped || return 1
+  managed_reconcile_pending || fail "pending safety with matching journal must invoke rollback" || return 1
+  [[ ! -e "$MANAGED_SAFETY" && ! -e "$ROTATION_PENDING" ]] ||
+    fail "pending safety with matching v2 must complete rollback" || return 1
+
+  for marker_shape in invalid mismatched; do
+    setup_amended_recovery_shape pending "$marker_shape" candidate present running || return 1
+    : > "$TRANSACTION_EVENTS"
+    set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "pending safety plus $marker_shape journal must fail contained" || return 1
+    [[ -f "$MANAGED_SAFETY" && -f "$ROTATION_PENDING" ]] ||
+      fail "$marker_shape evidence must be retained" || return 1
+    assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+      "$marker_shape recovery must contain qB" || return 1
+    events="$(<"$TRANSACTION_EVENTS")"
+    assert_not_contains 'wg-down:' "$events" "$marker_shape evidence must block network guessing" || return 1
+  done
+
+  for committed_state in committed finalizing; do
+    setup_amended_recovery_shape "$committed_state" absent candidate missing running || return 1
+    managed_reconcile_pending || return 1
+    [[ ! -e "$MANAGED_SAFETY" ]] ||
+      fail "$committed_state safety must finalize idempotently" || return 1
+    assert_eq 198.51.100.20:1637 "$TRANSACTION_RUNTIME_ENDPOINT" \
+      "$committed_state must retain the committed candidate" || return 1
+
+    setup_amended_recovery_shape "$committed_state" matching candidate missing running || return 1
+    set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$committed_state plus marker must be impossible" || return 1
+    [[ -f "$MANAGED_SAFETY" && -f "$ROTATION_PENDING" ]] ||
+      fail "$committed_state impossible evidence must remain" || return 1
+    assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+      "$committed_state impossible state must contain qB" || return 1
+  done
+
+  setup_amended_recovery_shape pending absent candidate present running || return 1
+  rm -f -- "$MANAGED_SAFETY"
+  write_raw_managed_journal candidate-up "$JOURNAL_TEST_BACKUP_SHA" \
+    "$JOURNAL_TEST_CANDIDATE_SHA" 192.0.2.10:1637 198.51.100.20:1637 1
+  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "orphan v2 without safety must fail" || return 1
+  [[ -f "$ROTATION_PENDING" ]] || fail "orphan v2 evidence must remain" || return 1
+  assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+    "orphan v2 must contain qB"
+
+  setup_amended_recovery_shape pending absent candidate present running || return 1
+  rm -f -- "$MANAGED_SAFETY"
+  printf 'unknown marker bytes\n' > "$ROTATION_PENDING"
+  chmod 600 -- "$ROTATION_PENDING"
+  : > "$TRANSACTION_EVENTS"
+  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "unknown marker without safety must fail contained" || return 1
+  [[ -f "$ROTATION_PENDING" ]] || fail "unknown orphan marker must remain" || return 1
+  assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+    "unknown orphan marker must contain configured qB" || return 1
+  assert_not_contains 'wg-down:' "$(<"$TRANSACTION_EVENTS")" \
+    "unknown orphan marker must not mutate network" || return 1
+
+  for invalid_marker in absent matching; do
+    setup_amended_recovery_shape pending "$invalid_marker" candidate present running || return 1
+    sed -i 's/^record=.*/record=invalid/' "$MANAGED_SAFETY"
+    : > "$TRANSACTION_EVENTS"
+    set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "invalid safety plus $invalid_marker marker must fail" || return 1
+    [[ -f "$MANAGED_SAFETY" ]] || fail "invalid safety evidence must remain" || return 1
+    if [[ "$invalid_marker" == matching ]]; then
+      [[ -f "$ROTATION_PENDING" ]] || fail "marker beside invalid safety must remain" || return 1
+    fi
+    assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+      "invalid safety must contain configured qB" || return 1
+    assert_not_contains 'wg-down:' "$(<"$TRANSACTION_EVENTS")" \
+      "invalid safety must not mutate network" || return 1
+  done
+
+  for impossible_shape in backup-active unknown-active leftover-candidate; do
+    case "$impossible_shape" in
+      backup-active) setup_amended_recovery_shape committed absent backup missing running ;;
+      unknown-active) setup_amended_recovery_shape committed absent unknown missing running ;;
+      leftover-candidate) setup_amended_recovery_shape committed absent candidate present running ;;
+    esac || return 1
+    : > "$TRANSACTION_EVENTS"
+    set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$impossible_shape committed state must fail contained" || return 1
+    [[ -f "$MANAGED_SAFETY" ]] || fail "$impossible_shape safety evidence must remain" || return 1
+    assert_eq stopped "$(<"$DOCKER_FAKE_DIR/states/$DOCKER_ID_A")" \
+      "$impossible_shape must contain qB" || return 1
+    assert_not_contains 'wg-down:' "$(<"$TRANSACTION_EVENTS")" \
+      "$impossible_shape must not roll back or finalize by guessing" || return 1
+  done
+}
+
+run_managed_recovery_in_fresh_process() {
+  local runtime_file="${1:?}"
+  env -u BASH_ENV bash -c '
+    set -u
+    script=${1:?}; module=${2:?}; requested_wg_conf=${3:?}; runtime_file=${4:?}
+    source "$script"
+    source "$module"
+    IFACE=wg0
+    WG_CONF=$requested_wg_conf
+    ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
+    MANAGED_SAFETY="${WG_CONF}.safety-healthcheck"
+    MANAGED_CANDIDATE="${WG_CONF%/*}/.${WG_CONF##*/}.managed-candidate"
+    STATUS_FILE="${WG_CONF%/*}/wg0.status"
+    ROTATE_STAMP="${WG_CONF%/*}/wg0.last_rotate"
+    CONTEXT_LOCKED=1
+    MANAGED_API_LOCK_FD=
+    QBITTORRENT_CONTAINER=
+    QBITTORRENT_PROCESS_NAME=qbittorrent-nox
+    QBITTORRENT_LISTEN_IP=
+    QBITTORRENT_LISTEN_PORT=
+    QBITTORRENT_RESTART_DELAY=0
+    QBITTORRENT_RESTART_TIMEOUT=10
+    owner_mode() { printf "0:%s\n" "$(stat -c %a -- "$1")"; }
+    log() { :; }
+    write_status() { :; }
+    write_stamp() { printf "1000\n" > "${1:?}"; }
+    interface_exists() { [[ -s "$runtime_file" ]]; }
+    run_wg_quick_down() { : > "$runtime_file"; }
+    run_wg_quick_up() { configured_endpoint "$WG_CONF" > "$runtime_file"; }
+    managed_verify_live_profile_identity() {
+      [[ "$(<"$runtime_file")" == "$(configured_endpoint "${1:?}")" ]]
+    }
+    verify_tunnel() { [[ "$(<"$runtime_file")" == "${1:?}" ]]; }
+    verify_post_rotation_speed() { return 0; }
+    managed_reconcile_pending
+  ' fresh-recovery "$SCRIPT" "$MODULE" "$WG_CONF" "$runtime_file"
+}
+
+test_fresh_process_recovery_uses_only_visible_safety_state() {
+  local state runtime_file
+  for state in pending committed finalizing; do
+    setup_managed_journal_fixture || return 1
+    managed_journal_fixture_digests || return 1
+    runtime_file="$TEST_TMP/runtime-endpoint"
+    cp -- "$MANAGED_CANDIDATE" "$WG_CONF"
+    chmod 600 -- "$WG_CONF"
+    printf '198.51.100.20:1637\n' > "$runtime_file"
+    rm -f -- "$ROTATION_PENDING"
+    if [[ "$state" != pending ]]; then
+      rm -f -- "$MANAGED_CANDIDATE"
+    fi
+    write_raw_managed_safety "$state" "$JOURNAL_TEST_BACKUP_SHA" \
+      "$JOURNAL_TEST_CANDIDATE_SHA" unmanaged
+
+    run_managed_recovery_in_fresh_process "$runtime_file" ||
+      fail "$state recovery must succeed after re-sourcing without inherited globals" || return 1
+    [[ ! -e "$MANAGED_SAFETY" && ! -e "$ROTATION_PENDING" ]] ||
+      fail "$state fresh-process recovery must clear its durable owner" || return 1
+    if [[ "$state" == pending ]]; then
+      cmp -s -- "${WG_CONF}.bak-healthcheck" "$WG_CONF" ||
+        fail "fresh pending recovery must restore the exact backup" || return 1
+      assert_eq 192.0.2.10:1637 "$(<"$runtime_file")" \
+        "fresh pending recovery must restore the old tunnel" || return 1
+    else
+      assert_eq 198.51.100.20:1637 "$(<"$runtime_file")" \
+        "fresh $state recovery must retain the committed candidate" || return 1
+    fi
+  done
+}
+
 test_managed_reconciliation_rolls_back_every_factual_crash_shape() {
-  local shape phase active candidate runtime qb rc events
+  local shape phase active candidate runtime qb rc events checkpoint
   local -a shapes=(
     'prepared backup present old 1'
     'client-stopped backup present old 1'
@@ -2904,6 +4045,12 @@ test_managed_reconciliation_rolls_back_every_factual_crash_shape() {
           "$shape must prove old network before qB restore" || exit 1
         assert_event_before 'qb-start:' 'binding:' \
           "$shape must prove TCP/UDP ownership after qB starts" || exit 1
+        for checkpoint in rollback-before-down rollback-after-down rollback-before-install \
+            rollback-after-install rollback-before-up rollback-after-up rollback-before-network \
+            rollback-after-network rollback-pre-cleanup rollback-post-cleanup; do
+          assert_contains "qb-inspect:$checkpoint:" "$events" \
+            "$shape must execute rollback containment checkpoint $checkpoint" || exit 1
+        done
       else
         assert_eq stopped "$TRANSACTION_QB_STATE" "$shape must preserve prior stopped intent" || exit 1
       fi
@@ -2966,9 +4113,16 @@ test_managed_recovery_contains_qb_before_journal_or_digest_reads() {
         assert_eq 1 "$rc" "$case_name marker must fail closed" || exit 1
         [[ -f "$ROTATION_PENDING" ]] || fail "$case_name marker must be retained" || exit 1
       fi
-      assert_event_before 'qb-stop:' 'journal-load' \
-        "$case_name recovery must stop and reinspect qB before parsing" || exit 1
-      if [[ "$case_name" != malformed ]]; then
+      if [[ "$case_name" != digest-mismatch ]]; then
+        assert_event_before 'qb-stop:' 'journal-load' \
+          "$case_name recovery must stop and reinspect qB before parsing" || exit 1
+      else
+        assert_contains 'qb-stop:' "$(<"$TRANSACTION_EVENTS")" \
+          "digest mismatch recovery must contain qB before safety artifact validation" || exit 1
+        assert_not_contains 'journal-load' "$(<"$TRANSACTION_EVENTS")" \
+          "safety artifact mismatch must fail before parsing the secondary journal" || exit 1
+      fi
+      if [[ "$case_name" == valid ]]; then
         assert_event_before 'qb-stop:' 'digest-classify' \
           "$case_name recovery must contain qB before artifact hashing" || exit 1
       fi
@@ -3020,7 +4174,11 @@ test_managed_qb_config_drift_binding_failure_stops_and_retains() {
   set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
   assert_eq 1 "$rc" "changed qB tuple without matching ownership proof must fail" || return 1
   events="$(<"$TRANSACTION_EVENTS")"
-  assert_contains 'binding-drift:' "$events" "current strict qB tuple must be verified" || return 1
+  assert_contains 'qb-stop:' "$events" "tuple drift must contain qB before recovery" || return 1
+  assert_not_contains 'binding-drift:' "$events" \
+    "tuple drift must fail before trusting a listener ownership probe" || return 1
+  assert_not_contains 'wg-down:' "$events" \
+    "tuple drift must fail before any network mutation" || return 1
   assert_eq stopped "$TRANSACTION_QB_STATE" "binding failure must stop qB again" || return 1
   [[ -f "$ROTATION_PENDING" && -f "$MANAGED_CANDIDATE" ]] ||
     fail "binding drift must retain marker and candidate" || return 1
@@ -3129,18 +4287,32 @@ tests=(
   test_managed_journal_classifiers_are_collision_safe_and_failure_atomic
   test_managed_journal_phase_transitions_revalidate_all_digests_and_classify_factually
   test_managed_journal_rejects_digest_bound_false_endpoints_before_transition_or_recovery
+  test_private_identity_comparator_is_status_only_strict_and_secret_safe
+  test_managed_safety_contract_is_strict_and_exact
+  test_managed_docker_identity_inspect_uses_an_unambiguous_template
+  test_managed_qb_immutable_identity_checkpoints_and_exact_restore
   test_managed_qbittorrent_state_is_exact_and_fail_closed
   test_managed_live_identity_requires_exact_address_and_peer_key
   test_managed_atomic_profile_install_is_digest_bound_and_durable
   test_managed_profile_transaction_orders_every_qb_and_tunnel_effect
+  test_amended_transaction_keeps_a_durable_owner_through_commit_and_finalization
   test_managed_candidate_exclusion_removal_is_exact_and_durable
   test_managed_transaction_context_and_preexclusion_fail_before_mutation
   test_managed_stop_failure_aborts_before_tunnel_downtime
   test_managed_every_phase_failure_rolls_back_exact_old_profile
+  test_pending_rollback_never_writes_or_removes_rotation_success_stamp
+  test_rollback_status_seam_cannot_reopen_qb_before_safety_removal
+  test_pending_safety_creation_barriers_reclassify_the_visible_owner
+  test_journal_unlink_parent_sync_failure_never_recreates_v2_marker
+  test_commit_transition_durability_reclassifies_pending_vs_committed
+  test_finalizing_transition_durability_never_rolls_back_committed_candidate
+  test_final_safety_unlink_and_parent_sync_are_reboot_idempotent
   test_managed_staged_digest_mismatch_is_never_installed_or_guessed
   test_managed_rollback_failure_retains_marker_candidate_and_stopped_qb
   test_managed_exclusion_refresh_failure_rolls_back_but_preserves_pending_state
   test_managed_reconciliation_rolls_back_every_factual_crash_shape
+  test_safety_record_drives_the_complete_recovery_classification_matrix
+  test_fresh_process_recovery_uses_only_visible_safety_state
   test_managed_unknown_or_mismatched_recovery_stops_qb_without_network_guessing
   test_managed_recovery_contains_qb_before_journal_or_digest_reads
   test_managed_reconciliation_is_idempotent_across_cleanup_crash

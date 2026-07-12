@@ -307,7 +307,7 @@ test_runtime_defaults_and_fixed_paths_ignore_environment() {
 
   IFACE=wg0
   for key in CFG WG_CONF STATE_DIR LOCK RESTART_STAMP ROTATE_STAMP SPEED_STAMP STATUS_FILE \
-      ROTATION_PENDING AIRVPN_API_HELPER MANAGED_MODULE AIRVPN_API_KEY_FILE \
+      ROTATION_PENDING MANAGED_SAFETY AIRVPN_API_HELPER MANAGED_MODULE AIRVPN_API_KEY_FILE \
       AIRVPN_API_STATE_FILE AIRVPN_API_LOCK MANAGED_CANDIDATE PRE_MANAGED_CONF PATH; do
     printf -v "$key" '%s' "/tmp/hostile-$key"
   done
@@ -321,6 +321,7 @@ test_runtime_defaults_and_fixed_paths_ignore_environment() {
   assert_eq '/run/wg-healthcheck/wg0.last_speedcheck' "$SPEED_STAMP" "speed stamp must be fixed" || return 1
   assert_eq '/run/wg-healthcheck/wg0.status' "$STATUS_FILE" "status path must be fixed" || return 1
   assert_eq '/etc/wireguard/wg0.conf.pending-healthcheck' "$ROTATION_PENDING" "pending marker must be fixed" || return 1
+  assert_eq '/etc/wireguard/wg0.conf.safety-healthcheck' "$MANAGED_SAFETY" "managed safety path must be fixed" || return 1
   assert_eq '/usr/local/libexec/wg-healthcheck/airvpn-api' "$AIRVPN_API_HELPER" "helper path must be fixed" || return 1
   assert_eq '/usr/local/libexec/wg-healthcheck/wg-healthcheck-managed' "$MANAGED_MODULE" "managed module path must be fixed" || return 1
   assert_eq '/etc/wireguard/healthcheck.d/wg0.api-key' "$AIRVPN_API_KEY_FILE" "credential path must be fixed" || return 1
@@ -1385,6 +1386,7 @@ test_pending_marker_classification_loads_only_the_required_owner() {
   IFACE=wg0
   WG_CONF="$TEST_TMP/wg0.conf"
   ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
+  MANAGED_SAFETY="${WG_CONF}.safety-healthcheck"
   COMMAND=check
   validate_secure_file() { return 0; }
   run_healthcheck() { printf 'legacy\n' >> "$TEST_TMP/events"; }
@@ -1397,7 +1399,7 @@ test_pending_marker_classification_loads_only_the_required_owner() {
 
   : > "$TEST_TMP/events"
   AIRVPN_PROFILE_SOURCE=static
-  rm -f -- "$ROTATION_PENDING"
+  rm -f -- "$ROTATION_PENDING" "$MANAGED_SAFETY"
   dispatch_command || return 1
   assert_file_equals legacy "$TEST_TMP/events" "static/no-marker must remain pure legacy code" || return 1
 
@@ -1407,6 +1409,15 @@ test_pending_marker_classification_loads_only_the_required_owner() {
   events="$(<"$TEST_TMP/events")"
   assert_eq $'load-managed\nmanaged-v2' "$events" \
     "static/v2 must load managed code solely for reconciliation" || return 1
+
+  : > "$TEST_TMP/events"
+  rm -f -- "$ROTATION_PENDING"
+  printf 'invalid safety bytes\n' > "$MANAGED_SAFETY"
+  dispatch_command || return 1
+  events="$(<"$TEST_TMP/events")"
+  assert_eq $'load-managed\nmanaged-v2' "$events" \
+    "static/safety must load managed code solely for strict reconciliation" || return 1
+  rm -f -- "$MANAGED_SAFETY"
 
   : > "$TEST_TMP/events"
   AIRVPN_PROFILE_SOURCE=static
@@ -1425,9 +1436,9 @@ test_pending_marker_classification_loads_only_the_required_owner() {
 
   : > "$TEST_TMP/events"
   printf '192.0.2.1:1637\n\n' > "$ROTATION_PENDING"
-  set +e; dispatch_command >/dev/null 2>&1; rc=$?; set +e
-  assert_eq 1 "$rc" "v1 classification must reject more than one newline-terminated record" || return 1
-  assert_file_equals '' "$TEST_TMP/events" "invalid pending data must not reach either reconciliation owner" || return 1
+  dispatch_command || return 1
+  assert_file_equals $'load-managed\nmanaged-v2' "$TEST_TMP/events" \
+    "unknown pending data must reach the managed containment owner" || return 1
 
   : > "$TEST_TMP/events"
   rm -f -- "$ROTATION_PENDING"

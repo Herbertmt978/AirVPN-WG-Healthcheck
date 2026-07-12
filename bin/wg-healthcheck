@@ -11,6 +11,7 @@ ROTATE_STAMP=''
 SPEED_STAMP=''
 STATUS_FILE=''
 ROTATION_PENDING=''
+MANAGED_SAFETY=''
 AIRVPN_API_HELPER=''
 MANAGED_MODULE=''
 AIRVPN_API_KEY_FILE=''
@@ -524,6 +525,7 @@ derive_fixed_runtime_paths() {
   SPEED_STAMP="$STATE_DIR/${IFACE}.last_speedcheck"
   STATUS_FILE="$STATE_DIR/${IFACE}.status"
   ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
+  MANAGED_SAFETY="${WG_CONF}.safety-healthcheck"
   AIRVPN_API_HELPER=/usr/local/libexec/wg-healthcheck/airvpn-api
   MANAGED_MODULE=/usr/local/libexec/wg-healthcheck/wg-healthcheck-managed
   # These fixed paths are consumed by the securely sourced managed module.
@@ -1278,18 +1280,33 @@ classify_pending_marker() {
   local marker size marker_fd
   local LC_ALL=C
   PENDING_KIND=none
-  if [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]]; then return 0; fi
-  validate_secure_file "$ROTATION_PENDING" "pending rotation marker" 600 || return 1
-  size="$(stat -c '%s' -- "$ROTATION_PENDING" 2>/dev/null)" || return 1
-  if [[ ! "$size" =~ ^[0-9]+$ ]] || (( 10#$size < 2 || 10#$size > 4096 )); then
-    log "Pending rotation marker has an invalid size"
-    return 1
+  if [[ -n "${MANAGED_SAFETY:-}" &&
+        ( -e "$MANAGED_SAFETY" || -L "$MANAGED_SAFETY" ) ]]; then
+    PENDING_KIND=v2
+    return 0
   fi
-  exec {marker_fd}<"$ROTATION_PENDING" || return 1
+  if [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]]; then return 0; fi
+  if ! validate_secure_file "$ROTATION_PENDING" "pending rotation marker" 600; then
+    PENDING_KIND=v2
+    return 0
+  fi
+  size="$(stat -c '%s' -- "$ROTATION_PENDING" 2>/dev/null)" || {
+    PENDING_KIND=v2
+    return 0
+  }
+  if [[ ! "$size" =~ ^[0-9]+$ ]] || (( 10#$size < 2 || 10#$size > 4096 )); then
+    PENDING_KIND=v2
+    return 0
+  fi
+  exec {marker_fd}<"$ROTATION_PENDING" || {
+    PENDING_KIND=v2
+    return 0
+  }
   marker=
   IFS= read -r -u "$marker_fd" marker || {
     exec {marker_fd}<&-
-    return 1
+    PENDING_KIND=v2
+    return 0
   }
   exec {marker_fd}<&-
   if [[ "$marker" == version=2 ]]; then
@@ -1300,8 +1317,8 @@ classify_pending_marker() {
   if (( 10#$size != ${#marker} + 1 )) ||
      [[ "$marker" == *$'\r'* || "$marker" == *$'\n'* ]] ||
      [[ "$(canonicalize_endpoint "$marker" 2>/dev/null)" != "$marker" ]]; then
-    log "Pending rotation marker has an unknown format"
-    return 1
+    PENDING_KIND=v2
+    return 0
   fi
   PENDING_KIND=v1
 }
