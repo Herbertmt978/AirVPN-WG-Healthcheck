@@ -1437,6 +1437,30 @@ test_pending_marker_classification_loads_only_the_required_owner() {
     "API/no-marker must dispatch through the securely loaded managed owner"
 }
 
+test_v1_static_dispatch_reconciles_without_loading_managed_runtime() {
+  local rc
+  new_recovery_fixture
+  seed_pending_rotation || return 1
+  COMMAND=check
+  AIRVPN_PROFILE_SOURCE=static
+  validate_secure_file() { return 0; }
+  run_wg_quick_up() { RUNTIME_ENDPOINT="$(configured_endpoint)"; }
+  ensure_qbittorrent_binding() { printf 'qbit\n' >> "$TEST_EVENTS"; }
+  load_managed_module() { printf 'unexpected-managed-load\n' >> "$TEST_EVENTS"; return 1; }
+
+  set +e
+  prepare_command_dispatch
+  rc=$?
+  set +e
+  assert_eq 0 "$rc" "canonical v1 static marker must reconcile through the built-in owner" || return 1
+  assert_eq 1 "$RECONCILED_PENDING" "v1 reconciliation must report completion" || return 1
+  assert_file_absent "$ROTATION_PENDING" "v1 reconciliation must durably clear its marker" || return 1
+  assert_eq 'Endpoint = 192.0.2.10:1637' "$(config_endpoint_line)" \
+    "v1 dispatch must restore the recorded backup endpoint" || return 1
+  [[ "$(<"$TEST_EVENTS")" != *unexpected-managed-load* ]] ||
+    fail "v1 static reconciliation must not load managed code"
+}
+
 test_main_propagates_route_rule_and_qbittorrent_failures() {
   local case_name rc reason
   for case_name in route rule qbit; do
@@ -2071,6 +2095,7 @@ tests=(
   test_static_no_marker_never_touches_credential_provider_or_managed_code
   test_static_selector_validates_provider_only_when_selection_is_needed
   test_pending_marker_classification_loads_only_the_required_owner
+  test_v1_static_dispatch_reconciles_without_loading_managed_runtime
   test_main_propagates_route_rule_and_qbittorrent_failures
   test_main_rejects_invalid_speed_stamp
   test_restart_rejects_invalid_speed_mode_before_commands

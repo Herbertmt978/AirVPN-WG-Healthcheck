@@ -1821,6 +1821,484 @@ test_linux_api_state_parent_file_owner_mode_and_symlink_semantics() {
   assert_eq 1 "$rc" "symlink state parent must fail"
 }
 
+require_task6_contract() {
+  local function_name
+  for function_name in \
+      managed_sha256_is_valid managed_sha256_file \
+      managed_journal_load managed_journal_prepare managed_journal_transition \
+      managed_classify_active_profile managed_classify_candidate_profile \
+      managed_verify_journal_phase managed_reconcile_pending; do
+    declare -F "$function_name" >/dev/null ||
+      fail "managed module must export Task 6 function $function_name" || return 1
+  done
+}
+
+write_managed_candidate_fixture() {
+  local endpoint="${1:-198.51.100.20:1637}"
+  printf '%s\n' \
+    '[Interface]' \
+    'Address = 192.0.2.2/32' \
+    'PrivateKey = fixture-old-interface-value' \
+    '[Peer]' \
+    'PublicKey = fixture-new-peer-value' \
+    'PresharedKey = fixture-new-preshared-value' \
+    "Endpoint = $endpoint" \
+    'AllowedIPs = 0.0.0.0/0' > "$MANAGED_CANDIDATE"
+  chmod 600 -- "$MANAGED_CANDIDATE"
+}
+
+setup_managed_journal_fixture() {
+  source_managed_contract || return 1
+  require_task6_contract || return 1
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  IFACE=wg0
+  WG_CONF="$TEST_TMP/etc/wireguard/wg0.conf"
+  ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
+  MANAGED_CANDIDATE="${WG_CONF%/*}/.${WG_CONF##*/}.managed-candidate"
+  STATUS_FILE="$TEST_TMP/run/wg-healthcheck/wg0.status"
+  mkdir -p -- "${WG_CONF%/*}" "${STATUS_FILE%/*}"
+  chmod 700 -- "${WG_CONF%/*}" "${STATUS_FILE%/*}"
+  printf '%s\n' \
+    '[Interface]' \
+    'Address = 192.0.2.2/32' \
+    'PrivateKey = fixture-old-interface-value' \
+    '[Peer]' \
+    'PublicKey = fixture-old-peer-value' \
+    'PresharedKey = fixture-old-preshared-value' \
+    'Endpoint = 192.0.2.10:1637' \
+    'AllowedIPs = 0.0.0.0/0' > "$WG_CONF"
+  cp -- "$WG_CONF" "${WG_CONF}.bak-healthcheck"
+  write_managed_candidate_fixture
+  chmod 600 -- "$WG_CONF" "${WG_CONF}.bak-healthcheck"
+  CONTEXT_LOCKED=1
+  JOURNAL_TEST_FORCED_OWNER=''
+  owner_mode() {
+    local mode
+    mode="$(stat -c '%a' -- "$1" 2>/dev/null)" || return 1
+    if [[ -n "$JOURNAL_TEST_FORCED_OWNER" && "$1" == "$ROTATION_PENDING" ]]; then
+      printf '%s:%s\n' "$JOURNAL_TEST_FORCED_OWNER" "$mode"
+    else
+      printf '0:%s\n' "$mode"
+    fi
+  }
+  log() { printf 'log:%s\n' "$*" >> "$TEST_TMP/journal-events"; }
+  write_status() { printf '%s:%s\n' "$1" "$2" >> "$TEST_TMP/journal-events"; }
+  : > "$TEST_TMP/journal-events"
+}
+
+managed_journal_fixture_digests() {
+  managed_sha256_file JOURNAL_TEST_BACKUP_SHA "${WG_CONF}.bak-healthcheck" || return 1
+  managed_sha256_file JOURNAL_TEST_CANDIDATE_SHA "$MANAGED_CANDIDATE"
+}
+
+write_raw_managed_journal() {
+  local phase="${1:?}" backup_sha="${2:?}" candidate_sha="${3:?}"
+  local old_endpoint="${4:-192.0.2.10:1637}"
+  local candidate_endpoint="${5:-198.51.100.20:1637}" qb_was_running="${6:-1}"
+  printf '%s\n' \
+    'version=2' \
+    'transaction=managed-profile' \
+    "phase=$phase" \
+    "backup_sha256=$backup_sha" \
+    "candidate_sha256=$candidate_sha" \
+    "old_endpoint=$old_endpoint" \
+    "candidate_endpoint=$candidate_endpoint" \
+    "qb_was_running=$qb_was_running" > "$ROTATION_PENDING"
+  chmod 600 -- "$ROTATION_PENDING"
+}
+
+test_managed_journal_round_trip_is_exact_and_rejects_noop_transactions() {
+  local expected rc
+  setup_managed_journal_fixture || return 1
+  managed_journal_fixture_digests || return 1
+
+  managed_journal_prepare 1 || return 1
+  expected="$(printf '%s\n' \
+    'version=2' \
+    'transaction=managed-profile' \
+    'phase=prepared' \
+    "backup_sha256=$JOURNAL_TEST_BACKUP_SHA" \
+    "candidate_sha256=$JOURNAL_TEST_CANDIDATE_SHA" \
+    'old_endpoint=192.0.2.10:1637' \
+    'candidate_endpoint=198.51.100.20:1637' \
+    'qb_was_running=1')"
+  assert_eq "$expected" "$(<"$ROTATION_PENDING")" \
+    "v2 journal bytes must use the exact canonical field order" || return 1
+  managed_journal_load || return 1
+  assert_eq prepared "$MANAGED_JOURNAL_PHASE" "journal phase must round-trip" || return 1
+  assert_eq 1 "$MANAGED_JOURNAL_QB_WAS_RUNNING" "qB mode must round-trip" || return 1
+
+  rm -f -- "$ROTATION_PENDING"
+  cp -- "${WG_CONF}.bak-healthcheck" "$MANAGED_CANDIDATE"
+  chmod 600 -- "$MANAGED_CANDIDATE"
+  set +e
+  managed_journal_prepare 0 >/dev/null 2>&1
+  rc=$?
+  set +e
+  assert_eq 1 "$rc" "equal profile digests must be rejected as ambiguous" || return 1
+  [[ ! -e "$ROTATION_PENDING" ]] || fail "ambiguous prepare must not create a marker" || return 1
+
+  write_managed_candidate_fixture '192.0.2.10:1637'
+  set +e
+  managed_journal_prepare 0 >/dev/null 2>&1
+  rc=$?
+  set +e
+  assert_eq 1 "$rc" "equal endpoints must be rejected as a no-op transaction" || return 1
+  [[ ! -e "$ROTATION_PENDING" ]] || fail "no-op prepare must not create a marker" || return 1
+
+  write_managed_candidate_fixture
+  eval "$(declare -f managed_sha256_file | sed '1s/managed_sha256_file/managed_sha256_file_before_stability_probe/')"
+  JOURNAL_TEST_CANDIDATE_READS=0
+  managed_sha256_file() {
+    managed_sha256_file_before_stability_probe "$@" || return 1
+    if [[ "$2" == "$MANAGED_CANDIDATE" ]]; then
+      JOURNAL_TEST_CANDIDATE_READS=$((JOURNAL_TEST_CANDIDATE_READS + 1))
+      if (( JOURNAL_TEST_CANDIDATE_READS == 1 )); then
+        printf '# changed after first digest\n' >> "$MANAGED_CANDIDATE"
+      fi
+    fi
+  }
+  set +e; managed_journal_prepare 0 >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "prepare must reject artifacts that change between digest reads" || return 1
+  (( JOURNAL_TEST_CANDIDATE_READS >= 2 )) ||
+    fail "prepare must double-read the staged candidate" || return 1
+  [[ ! -e "$ROTATION_PENDING" ]] || fail "unstable prepare must not create a marker"
+}
+
+test_managed_journal_rejects_noncanonical_bytes_fields_and_security_shapes() {
+  local case_name rc parent canonical
+  local -a lines=()
+  setup_managed_journal_fixture || return 1
+  managed_journal_fixture_digests || return 1
+  write_raw_managed_journal prepared "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA"
+  canonical="$(<"$ROTATION_PENDING")"
+
+  for case_name in duplicate unknown missing out_of_order bad_version bad_transaction \
+      bad_phase uppercase_digest short_digest equal_digest noncanonical_old equal_endpoint bad_qb \
+      control_byte missing_newline oversized; do
+    printf '%s\n' "$canonical" > "$ROTATION_PENDING"
+    chmod 600 -- "$ROTATION_PENDING"
+    mapfile -t lines < "$ROTATION_PENDING"
+    case "$case_name" in
+      duplicate) printf '%s\n' "${lines[@]:0:3}" "${lines[2]}" "${lines[@]:3}" > "$ROTATION_PENDING" ;;
+      unknown) lines[2]='unknown=value'; printf '%s\n' "${lines[@]}" > "$ROTATION_PENDING" ;;
+      missing) printf '%s\n' "${lines[@]:0:7}" > "$ROTATION_PENDING" ;;
+      out_of_order)
+        local swap="${lines[3]}"; lines[3]="${lines[4]}"; lines[4]="$swap"
+        printf '%s\n' "${lines[@]}" > "$ROTATION_PENDING"
+        ;;
+      bad_version) lines[0]='version=02'; printf '%s\n' "${lines[@]}" > "$ROTATION_PENDING" ;;
+      bad_transaction) lines[1]='transaction=endpoint'; printf '%s\n' "${lines[@]}" > "$ROTATION_PENDING" ;;
+      bad_phase) lines[2]='phase=rollback'; printf '%s\n' "${lines[@]}" > "$ROTATION_PENDING" ;;
+      uppercase_digest) lines[3]="backup_sha256=${JOURNAL_TEST_BACKUP_SHA^^}"; printf '%s\n' "${lines[@]}" > "$ROTATION_PENDING" ;;
+      short_digest) lines[4]="candidate_sha256=${JOURNAL_TEST_CANDIDATE_SHA:0:63}"; printf '%s\n' "${lines[@]}" > "$ROTATION_PENDING" ;;
+      equal_digest) lines[4]="candidate_sha256=$JOURNAL_TEST_BACKUP_SHA"; printf '%s\n' "${lines[@]}" > "$ROTATION_PENDING" ;;
+      noncanonical_old) lines[5]='old_endpoint=192.0.2.010:1637'; printf '%s\n' "${lines[@]}" > "$ROTATION_PENDING" ;;
+      equal_endpoint) lines[6]='candidate_endpoint=192.0.2.10:1637'; printf '%s\n' "${lines[@]}" > "$ROTATION_PENDING" ;;
+      bad_qb) lines[7]='qb_was_running=true'; printf '%s\n' "${lines[@]}" > "$ROTATION_PENDING" ;;
+      control_byte) printf '\001' >> "$ROTATION_PENDING" ;;
+      missing_newline) printf '%s' "$canonical" > "$ROTATION_PENDING" ;;
+      oversized) printf '%4097s' '' | tr ' ' x >> "$ROTATION_PENDING" ;;
+    esac
+    MANAGED_JOURNAL_PHASE=stale
+    MANAGED_JOURNAL_BACKUP_SHA256=stale
+    set +e; managed_journal_load >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$case_name journal shape must fail closed" || return 1
+    assert_eq '' "${MANAGED_JOURNAL_PHASE-}" "$case_name parse failure must clear prior phase globals" || return 1
+    assert_eq '' "${MANAGED_JOURNAL_BACKUP_SHA256-}" "$case_name parse failure must clear prior digest globals" || return 1
+  done
+
+  printf '%s\n' "$canonical" > "$ROTATION_PENDING"
+  chmod 640 -- "$ROTATION_PENDING"
+  set +e; managed_journal_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "non-0600 journal must fail" || return 1
+  chmod 600 -- "$ROTATION_PENDING"
+  JOURNAL_TEST_FORCED_OWNER=1
+  set +e; managed_journal_load >/dev/null 2>&1; rc=$?; set +e
+  JOURNAL_TEST_FORCED_OWNER=''
+  assert_eq 1 "$rc" "non-root journal must fail" || return 1
+
+  parent="${ROTATION_PENDING%/*}"
+  chmod 750 -- "$parent"
+  set +e; managed_journal_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "non-0700 journal parent must fail" || return 1
+  chmod 700 -- "$parent"
+  rm -f -- "$ROTATION_PENDING"
+  ln -s -- "$WG_CONF" "$ROTATION_PENDING"
+  set +e; managed_journal_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "symlink journal must fail" || return 1
+  rm -f -- "$ROTATION_PENDING"
+  printf '%s\n' "$canonical" > "$ROTATION_PENDING"
+  chmod 600 -- "$ROTATION_PENDING"
+  mv -- "$parent" "$parent.real"
+  ln -s -- "$parent.real" "$parent"
+  set +e; managed_journal_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "symlink journal parent must fail"
+}
+
+test_managed_journal_write_is_same_directory_atomic_and_fully_durable() {
+  local parent temporary tab marker_before rc leftovers
+  local -a events=()
+  setup_managed_journal_fixture || return 1
+  managed_journal_fixture_digests || return 1
+  parent="${ROTATION_PENDING%/*}"
+  : > "$TEST_TMP/sync-events"
+  managed_sync_file() {
+    printf 'file\t%s\t%s\n' "$1" "$(stat -c '%a' -- "$1")" >> "$TEST_TMP/sync-events"
+  }
+  managed_journal_move() {
+    printf 'move\t%s\t%s\n' "$1" "$2" >> "$TEST_TMP/sync-events"
+    command mv -fT -- "$1" "$2"
+  }
+  managed_sync_directory() {
+    printf 'directory\t%s\t%s\n' "$1" "$(stat -c '%a' -- "$1")" >> "$TEST_TMP/sync-events"
+  }
+
+  managed_journal_prepare 0 || return 1
+  mapfile -t events < "$TEST_TMP/sync-events"
+  assert_eq 4 "${#events[@]}" "journal commit must expose four ordered durability steps" || return 1
+  IFS=$'\t' read -r _ temporary _ <<< "${events[0]}"
+  tab=$'\t'
+  [[ "${temporary%/*}" == "$parent" && "$temporary" == "$parent/.${ROTATION_PENDING##*/}.tmp."* ]] ||
+    fail "journal temporary must be created beside the target" || return 1
+  assert_eq "file${tab}${temporary}${tab}600" "${events[0]}" "temporary must be 0600 and synced first" || return 1
+  assert_eq "move${tab}${temporary}${tab}${ROTATION_PENDING}" "${events[1]}" "rename must follow temporary sync" || return 1
+  assert_eq "file${tab}${ROTATION_PENDING}${tab}600" "${events[2]}" "renamed journal must be synced" || return 1
+  assert_eq "directory${tab}${parent}${tab}700" "${events[3]}" "parent directory must be synced last" || return 1
+
+  marker_before="$(<"$ROTATION_PENDING")"
+  managed_sync_file() { return 1; }
+  managed_journal_move() { command mv -fT -- "$1" "$2"; }
+  managed_sync_directory() { return 0; }
+  set +e; managed_journal_transition client-stopped >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "pre-rename sync failure must fail the transition" || return 1
+  assert_eq "$marker_before" "$(<"$ROTATION_PENDING")" "pre-rename failure must preserve prior journal bytes" || return 1
+  leftovers="$(find "$parent" -maxdepth 1 -name ".${ROTATION_PENDING##*/}.tmp.*" -print -quit)"
+  assert_eq '' "$leftovers" "pre-rename failure must remove its private temporary" || return 1
+
+  managed_sync_file() { [[ "$1" != "$ROTATION_PENDING" ]]; }
+  set +e; managed_journal_transition client-stopped >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "post-rename final-file sync failure must surface" || return 1
+  managed_journal_load || return 1
+  assert_eq client-stopped "$MANAGED_JOURNAL_PHASE" \
+    "post-rename failure must leave the new canonical marker available for recovery"
+}
+
+test_managed_journal_phase_transitions_revalidate_all_digests_and_classify_factually() {
+  local active_class candidate_class rc marker_before
+  setup_managed_journal_fixture || return 1
+  managed_journal_fixture_digests || return 1
+  managed_sha256_is_valid "$JOURNAL_TEST_BACKUP_SHA" || return 1
+  set +e; managed_sha256_is_valid "${JOURNAL_TEST_BACKUP_SHA^^}"; rc=$?; set +e
+  assert_eq 1 "$rc" "SHA-256 grammar must accept lowercase only" || return 1
+
+  managed_journal_prepare 1 || return 1
+  managed_classify_active_profile active_class "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA" || return 1
+  managed_classify_candidate_profile candidate_class "$JOURNAL_TEST_CANDIDATE_SHA" || return 1
+  assert_eq backup "$active_class" "prepared active file must classify as backup" || return 1
+  assert_eq present "$candidate_class" "staged candidate must classify as present" || return 1
+  managed_journal_transition client-stopped || return 1
+  managed_journal_transition tunnel-down || return 1
+  cp -- "$MANAGED_CANDIDATE" "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+  managed_classify_active_profile active_class "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA" || return 1
+  assert_eq candidate "$active_class" "installed active file must classify as candidate" || return 1
+  managed_journal_transition candidate-installed || return 1
+  managed_journal_transition candidate-up || return 1
+  managed_journal_transition verified || return 1
+  managed_journal_load || return 1
+  assert_eq verified "$MANAGED_JOURNAL_PHASE" "exact legal chain must reach verified" || return 1
+
+  rm -f -- "$ROTATION_PENDING"
+  cp -- "${WG_CONF}.bak-healthcheck" "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+  managed_journal_prepare 0 || return 1
+  marker_before="$(<"$ROTATION_PENDING")"
+  set +e; managed_journal_transition tunnel-down >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "phase jumps must be rejected" || return 1
+  assert_eq "$marker_before" "$(<"$ROTATION_PENDING")" "illegal transition must not rewrite journal" || return 1
+
+  printf 'tamper\n' >> "$MANAGED_CANDIDATE"
+  set +e; managed_journal_transition client-stopped >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "candidate digest mismatch must block every forward transition" || return 1
+  assert_eq "$marker_before" "$(<"$ROTATION_PENDING")" "candidate mismatch must retain exact marker" || return 1
+  write_managed_candidate_fixture
+  printf 'tamper\n' >> "${WG_CONF}.bak-healthcheck"
+  set +e; managed_journal_transition client-stopped >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "backup digest mismatch must block every forward transition" || return 1
+
+  cp -- "$WG_CONF" "${WG_CONF}.bak-healthcheck"
+  chmod 600 -- "${WG_CONF}.bak-healthcheck"
+  printf 'unknown-active\n' > "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+  set +e; managed_journal_transition client-stopped >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "unknown active digest must block a phase transition" || return 1
+
+  cp -- "${WG_CONF}.bak-healthcheck" "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+  managed_classify_active_profile active_class "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_BACKUP_SHA" || return 1
+  assert_eq ambiguous "$active_class" "equal recorded digests must classify factually as ambiguous"
+}
+
+test_managed_journal_rejects_digest_bound_false_endpoints_before_transition_or_recovery() {
+  local case_name wrong_old wrong_candidate rc marker_before events
+  setup_managed_journal_fixture || return 1
+  managed_journal_fixture_digests || return 1
+
+  for case_name in backup candidate; do
+    wrong_old='192.0.2.10:1637'
+    wrong_candidate='198.51.100.20:1637'
+    if [[ "$case_name" == backup ]]; then
+      wrong_old='203.0.113.50:1637'
+    else
+      wrong_candidate='203.0.113.51:1637'
+    fi
+    write_raw_managed_journal prepared "$JOURNAL_TEST_BACKUP_SHA" \
+      "$JOURNAL_TEST_CANDIDATE_SHA" "$wrong_old" "$wrong_candidate" 1
+    marker_before="$(<"$ROTATION_PENDING")"
+    managed_journal_load || fail "$case_name forged journal remains syntactically canonical" || return 1
+
+    set +e; managed_verify_journal_phase prepared >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$case_name recorded endpoint must be bound to its digest artifact" || return 1
+    set +e; managed_journal_transition client-stopped >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$case_name endpoint disagreement must block transition" || return 1
+    assert_eq "$marker_before" "$(<"$ROTATION_PENDING")" \
+      "$case_name endpoint disagreement must retain exact journal bytes" || return 1
+
+    : > "$TEST_TMP/journal-events"
+    set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+    events="$(<"$TEST_TMP/journal-events")"
+    assert_eq 1 "$rc" "$case_name endpoint disagreement must fail reconciliation" || return 1
+    assert_contains managed_rotation_digest_or_artifact_mismatch "$events" \
+      "$case_name endpoint disagreement must surface as an artifact mismatch" || return 1
+    [[ -f "$ROTATION_PENDING" && -f "$MANAGED_CANDIDATE" ]] ||
+      fail "$case_name endpoint mismatch must retain marker and candidate" || return 1
+  done
+}
+
+test_managed_reconciliation_retains_every_unresolved_v2_shape_for_task7() {
+  local rc active_before candidate_before
+  setup_managed_journal_fixture || return 1
+  managed_journal_fixture_digests || return 1
+  managed_journal_prepare 1 || return 1
+  active_before="$(<"$WG_CONF")"
+  candidate_before="$(<"$MANAGED_CANDIDATE")"
+  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "Task 6 must fail closed until Task 7 owns verified rollback" || return 1
+  [[ -f "$ROTATION_PENDING" && -f "$MANAGED_CANDIDATE" ]] ||
+    fail "unresolved reconciliation must retain marker and candidate" || return 1
+  assert_eq "$active_before" "$(<"$WG_CONF")" "reconciliation seam must not guess or restore active bytes" || return 1
+  assert_eq "$candidate_before" "$(<"$MANAGED_CANDIDATE")" "reconciliation seam must not delete candidate bytes" || return 1
+  assert_contains 'failed:' "$(<"$TEST_TMP/journal-events")" "fail-closed reconciliation must publish redacted status" || return 1
+
+  cp -- "$MANAGED_CANDIDATE" "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+  managed_journal_load || return 1
+  MANAGED_JOURNAL_PHASE=tunnel-down
+  write_raw_managed_journal tunnel-down "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA"
+  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "phase lag with candidate active must remain factual and unresolved" || return 1
+  assert_eq candidate "$MANAGED_JOURNAL_ACTIVE_CLASS" \
+    "recovery classifier must report candidate-active despite a lagging phase" || return 1
+  [[ -f "$ROTATION_PENDING" ]] || fail "phase-lag marker must remain" || return 1
+
+  cp -- "${WG_CONF}.bak-healthcheck" "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+  write_raw_managed_journal candidate-up "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA"
+  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "later phase with rollback-started backup active must stay unresolved" || return 1
+  assert_eq backup "$MANAGED_JOURNAL_ACTIVE_CLASS" \
+    "recovery classifier must report backup-active despite an advanced phase" || return 1
+
+  write_raw_managed_journal tunnel-down "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA"
+  rm -f -- "$MANAGED_CANDIDATE"
+  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "candidate may not be missing before verified" || return 1
+  [[ -f "$ROTATION_PENDING" ]] || fail "early missing-candidate marker must remain" || return 1
+
+  write_raw_managed_journal verified "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA"
+  write_managed_candidate_fixture
+  cp -- "$MANAGED_CANDIDATE" "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+  rm -f -- "$MANAGED_CANDIDATE"
+  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "verified candidate cleanup crash still requires Task 7 finalization" || return 1
+  [[ -f "$ROTATION_PENDING" ]] || fail "verified cleanup marker must remain" || return 1
+
+  cp -- "${WG_CONF}.bak-healthcheck" "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+  write_raw_managed_journal candidate-up "$JOURNAL_TEST_BACKUP_SHA" "$JOURNAL_TEST_CANDIDATE_SHA"
+  : > "$TEST_TMP/journal-events"
+  set +e; managed_reconcile_pending >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "missing candidate with backup active must not be falsely finalized" || return 1
+  assert_eq backup "$MANAGED_JOURNAL_ACTIVE_CLASS" \
+    "rollback-cleanup crash must classify its active backup factually" || return 1
+  assert_eq missing "$MANAGED_JOURNAL_CANDIDATE_CLASS" \
+    "rollback-cleanup crash must classify its removed candidate factually" || return 1
+  assert_contains managed_rotation_requires_verified_rollback "$(<"$TEST_TMP/journal-events")" \
+    "backup-active cleanup crash must remain a safe Task 7 recovery seam" || return 1
+  [[ -f "$ROTATION_PENDING" ]] || fail "ambiguous rollback-cleanup marker must remain"
+}
+
+test_linux_managed_journal_real_owner_mode_and_symlink_semantics() {
+  local rc parent active_real candidate_real
+  if [[ "$(uname -s)" != Linux || "$(id -u)" != 0 ]]; then return 77; fi
+  setup_managed_journal_fixture || return 1
+  owner_mode() { stat -c '%u:%a' -- "$1" 2>/dev/null; }
+  managed_journal_prepare 0 || return 1
+  managed_journal_load || fail "real root-owned 0600 journal under 0700 parent must load" || return 1
+
+  chmod 640 -- "$ROTATION_PENDING"
+  set +e; managed_journal_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "real wrong-mode journal must fail" || return 1
+  chmod 600 -- "$ROTATION_PENDING"
+  chown 1 -- "$ROTATION_PENDING"
+  set +e; managed_journal_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "real non-root journal must fail" || return 1
+  chown 0 -- "$ROTATION_PENDING"
+
+  chmod 640 -- "$MANAGED_CANDIDATE"
+  set +e; managed_journal_transition client-stopped >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "real wrong-mode candidate must block phase advance" || return 1
+  chmod 600 -- "$MANAGED_CANDIDATE"
+  chown 1 -- "${WG_CONF}.bak-healthcheck"
+  set +e; managed_journal_transition client-stopped >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "real non-root backup must block phase advance" || return 1
+  chown 0 -- "${WG_CONF}.bak-healthcheck"
+
+  active_real="${WG_CONF}.real"
+  mv -- "$WG_CONF" "$active_real"
+  ln -s -- "$active_real" "$WG_CONF"
+  set +e; managed_journal_transition client-stopped >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "active profile symlink must block phase advance" || return 1
+  rm -f -- "$WG_CONF"
+  mv -- "$active_real" "$WG_CONF"
+
+  candidate_real="${MANAGED_CANDIDATE}.real"
+  mv -- "$MANAGED_CANDIDATE" "$candidate_real"
+  ln -s -- "$candidate_real" "$MANAGED_CANDIDATE"
+  set +e; managed_journal_transition client-stopped >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "candidate profile symlink must block phase advance" || return 1
+  rm -f -- "$MANAGED_CANDIDATE"
+  mv -- "$candidate_real" "$MANAGED_CANDIDATE"
+
+  parent="${ROTATION_PENDING%/*}"
+  chmod 750 -- "$parent"
+  set +e; managed_journal_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "real non-0700 journal parent must fail" || return 1
+  chmod 700 -- "$parent"
+  chown 1 -- "$parent"
+  set +e; managed_journal_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "real non-root journal parent must fail" || return 1
+  chown 0 -- "$parent"
+
+  rm -f -- "$ROTATION_PENDING"
+  ln -s -- "$WG_CONF" "$ROTATION_PENDING"
+  set +e; managed_journal_load >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "real journal symlink must fail"
+}
+
 tests=(
   test_managed_module_exports_minimal_task4_contract
   test_managed_module_validation_requires_root_owned_0644_trusted_source
@@ -1857,6 +2335,13 @@ tests=(
   test_linux_module_owner_and_mode_semantics
   test_linux_installed_key_owner_and_mode_semantics
   test_linux_api_state_parent_file_owner_mode_and_symlink_semantics
+  test_managed_journal_round_trip_is_exact_and_rejects_noop_transactions
+  test_managed_journal_rejects_noncanonical_bytes_fields_and_security_shapes
+  test_managed_journal_write_is_same_directory_atomic_and_fully_durable
+  test_managed_journal_phase_transitions_revalidate_all_digests_and_classify_factually
+  test_managed_journal_rejects_digest_bound_false_endpoints_before_transition_or_recovery
+  test_managed_reconciliation_retains_every_unresolved_v2_shape_for_task7
+  test_linux_managed_journal_real_owner_mode_and_symlink_semantics
 )
 
 if [[ -n "${WG_MANAGED_TEST_ONLY:-}" ]]; then
