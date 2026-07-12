@@ -4,17 +4,20 @@ Updated: 2026-07-12
 
 ## TodoCheckpointDraft
 
-- **Current todo:** establish a green isolated baseline, then execute Task 1 strict
-  generated-profile parser with RED first.
+- **Current todo:** execute Task 1 strict generated-profile parser with RED first.
 - **Completed:** repository/API reconnaissance; approved design; approved MIT choice;
   reviewed 16-task implementation plan; country-selection amendment; recovery edge-case
   amendment; isolated worktree creation.
-- **Active slice:** baseline verification before production-code edits.
+- **Completed evidence slice:** green Windows-compatible checks plus a complete Ubuntu
+  24.04 container baseline, including POSIX modes and ShellCheck.
+- **Active slice:** Task 1 generated-profile parser.
 - **Pending:** implementation Tasks 1–16 from the approved plan.
-- **Evidence refs:** commits `b5b79b0`, `884bbe3`, `7eb4357`, and `316e427`; approved spec
-  and plan in `docs/aegis/`.
+- **Evidence refs:** commits `b5b79b0`, `884bbe3`, `7eb4357`, `316e427`, and `0dc73aa`;
+  Python 29/29, healthcheck 59/59, Linux installer 30 passed/1 root-only skip, release
+  package checks, Bash syntax, ShellCheck, systemd verification, and actionlint all passed.
 - **Blocked on:** nothing at this checkpoint.
-- **Next step:** run the complete current deterministic baseline in the isolated worktree.
+- **Next step:** dispatch the fresh Task 1 implementer with the exact plan slice and require
+  observed RED before production code.
 
 ## ResumeStateHint
 
@@ -35,4 +38,5 @@ Updated: 2026-07-12
 - **New owners:** managed Bash module and setup Python tool are explicit and bounded.
 - **Fallbacks:** static mode is an explicit product choice, not a managed-error fallback.
 - **Retirement:** only obsolete “no credentials anywhere” assertions retire in v1.1.
-- **Evidence decision:** `continue` to baseline verification; no completion claim exists.
+- **Evidence decision:** `continue` to Task 1; baseline is sufficient and no completion
+  claim exists.
