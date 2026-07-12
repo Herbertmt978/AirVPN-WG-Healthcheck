@@ -338,7 +338,7 @@ contract and credential isolation remain intact.
 
 **Verification:** focused Bash runners, then both Bash test files.
 
-- [ ] **Write RED tests.** In the existing suite cover legacy/version dispatch, strict
+- [x] **Write RED tests.** In the existing suite cover legacy/version dispatch, strict
   mutating flags, provision-only missing-profile allowance, new config keys, API device/
   port grammar, country normalization (unique uppercase two-letter codes, maximum 32,
   empty meaning explicit all), fixed paths, and static mode never stat/open/source
@@ -349,10 +349,10 @@ contract and credential isolation remain intact.
   symlink/writable source or parent. Add pre-mode pending classification tests proving
   static/no-marker does not source the module, static/v2 loads it only for reconciliation,
   and API/v1 runs the built-in endpoint reconciler before managed dispatch.
-- [ ] **Verify RED.** Run
+- [x] **Verify RED.** Run
   `bash tests/test_wg_healthcheck.sh` and
   `bash tests/test_wg_managed_profiles.sh`; require only the named new contracts to fail.
-- [ ] **Implement minimal dispatch.** Add `parse_cli`, `load_command_context`, and
+- [x] **Implement minimal dispatch.** Add `parse_cli`, `load_command_context`, and
   `dispatch_command`; new defaults `AIRVPN_PROFILE_SOURCE=static`, `AIRVPN_DEVICE=`; fixed
   key/state/lock/candidate/pre-managed paths; and `load_managed_module` that validates
   root owner, mode 0644, regular non-symlink file, and non-writable parent. Source the
@@ -361,9 +361,9 @@ contract and credential isolation remain intact.
   bounded, one-record file before opening a private descriptor; the provider independently
   validates record bytes. Classify a pending marker before mode dispatch and load only the
   owner required by its version.
-- [ ] **Verify GREEN.** Run both suites, Bash syntax, and ShellCheck on the two runtime
+- [x] **Verify GREEN.** Run both suites, Bash syntax, and ShellCheck on the two runtime
   files. Confirm current static tests remain byte-for-byte behavior compatible.
-- [ ] **Commit.** `git commit -m "Add dual-mode runtime dispatch"`.
+- [x] **Commit.** `git commit -m "Add dual-mode runtime dispatch"`.
 
 ## Task 5: Persistent API state and lock discipline
 

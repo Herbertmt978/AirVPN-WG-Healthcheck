@@ -82,6 +82,32 @@
 - Scope remained the two authorised provider files; no live credential or planning file
   entered implementation commits.
 
+### Task 4: dual-mode runtime and secure module boundary
+
+- Accepted commits: `27ea770a1372fcefc958a2078744cdb25e570197` and
+  `5a6cee1721ff7731ec74491cd873bcadb0f41d79`.
+- Baseline: existing healthcheck suite 59/59 passed.
+- RED evidence:
+  - ten runtime and four managed contracts failed only for missing Task 4 owners;
+  - review regressions reproduced noncanonical credential FDs, malformed v1 marker shape,
+    JIT helper/order gaps, false-success admin lock contention, and credential-FD
+    inheritance into pre-provider children.
+- Final GREEN:
+  - runtime suite: 67/67 passed;
+  - managed Linux/root suite: 8/8 passed with no skips;
+  - Bash syntax and ShellCheck style passed;
+  - static/no-marker runs avoid credential/provider/managed paths until a credential-free
+    helper is actually needed;
+  - root/mode/symlink/parent checks protect module and installed-key boundaries;
+  - v1/v2 pre-mode classification and API/v1 reconciliation order are verified;
+  - Linux `/proc` tests prove pre-provider children cannot see/read a caller FD, the exact
+    managed owner receives the unconsumed record, and logging/returns leave it closed;
+  - explicit commands return 75 on lock contention while legacy timer checks return 0.
+- Both independent specification and code-quality/security re-reviews approved the final
+  tree with no residual findings.
+- Scope was exactly the five authorised Task 4 files; no live key or key-like literal was
+  introduced.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.

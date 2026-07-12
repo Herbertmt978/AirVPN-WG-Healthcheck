@@ -4,28 +4,29 @@ Updated: 2026-07-12
 
 ## TodoCheckpointDraft
 
-- **Current todo:** execute Task 4 runtime CLI, configuration, and secure module boundary with
+- **Current todo:** execute Task 5 persistent API state and lock discipline with
   RED first.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
   canonical rendering, identity pinning, and forged-object redaction; Task 3 fixed-origin
-  authenticated generation with descriptor-only secret/profile transport.
+  authenticated generation with descriptor-only secret/profile transport; Task 4 dual-mode
+  CLI/config dispatch, trusted managed-module loading, and installed-key/FD isolation.
 - **Completed evidence slice:** green Windows-compatible checks plus a complete Ubuntu
   24.04 container baseline, including POSIX modes and ShellCheck. Task 1 independently
   cleared specification and code-quality/security review. Task 2 cleared both reviews
   after two review-found boundary fixes. Task 3 cleared both reviews after four
-  review-found generator boundary fixes.
-- **Active slice:** Task 4 dual-mode Bash dispatch and secure managed-module/key boundary.
-- **Pending:** implementation Tasks 4-16 from the approved plan.
-- **Evidence refs:** Task 3 commits `7936bce` and `b2fc23f`; generator boundary 16/16 and
-  complete helper suite 61/61 passed on Python 3.10/Linux, including the `/proc` sentinel
-  proof. Python compile/grammar, healthcheck 59/59, installer regression, exact request,
-  exception-graph redaction, and FD staging probes are green. Earlier baseline evidence
-  remains green.
+  review-found generator boundary fixes. Task 4 cleared both reviews after descriptor and
+  lock-contention corrections.
+- **Active slice:** Task 5 persistent API backoff/exclusion state and lock discipline.
+- **Pending:** implementation Tasks 5-16 from the approved plan.
+- **Evidence refs:** Task 4 commits `27ea770` and `5a6cee1`; runtime 67/67 and Linux managed
+  8/8 passed, including root owner/mode and `/proc` credential-FD isolation. Bash syntax,
+  ShellCheck, static compatibility, marker ordering, explicit rc75 contention, and exact
+  managed-owner delivery/closure are green. Earlier baseline evidence remains green.
 - **Blocked on:** nothing at this checkpoint.
-- **Next step:** dispatch a fresh Task 4 implementer with the exact plan slice and require
-  observed RED before runtime dispatch or managed-module/key code.
+- **Next step:** dispatch a fresh Task 5 implementer with the exact plan slice and require
+  observed RED before persistent state, exclusions, or global API locking.
 
 ## ResumeStateHint
 
@@ -33,7 +34,7 @@ Updated: 2026-07-12
 - Implementation worktree:
   `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `b2fc23f85b1cd7f787e0856b6d0f62f396b8ff70`.
+- Last accepted implementation commit: `5a6cee1721ff7731ec74491cd873bcadb0f41d79`.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -47,8 +48,8 @@ Updated: 2026-07-12
 - **Fallbacks:** static mode is an explicit product choice, not a managed-error fallback.
 - **Retirement:** only obsolete "no credentials anywhere" assertions retire in v1.1.
 - **Complexity:** `libexec/airvpn-api` is 1,549 lines and `tests/test_airvpn_api.py` is
-  2,118 lines, above the plan's 800-line review threshold. This did not block cohesive
-  Task 3 acceptance, but the Task 14 split decision remains mandatory and cannot be waived
-  before release.
-- **Evidence decision:** `continue` to Task 4; Tasks 1-3 are accepted and no release or live
+  2,118 lines; `bin/wg-healthcheck` is 1,481 lines. These exceed the plan's review
+  threshold, while managed logic remains isolated in a 70-line module. Task 14's split
+  decision remains mandatory and cannot be waived before release.
+- **Evidence decision:** `continue` to Task 5; Tasks 1-4 are accepted and no release or live
   completion claim exists.
