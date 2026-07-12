@@ -310,21 +310,21 @@ status and egress paths remain credential-free.
 
 **Verification:** `python3 -m unittest tests.test_airvpn_api.GeneratorBoundaryTests -v`.
 
-- [ ] **Write RED tests.** Cover exact fixed URL/query/header, allowed ports, server/device
+- [x] **Write RED tests.** Cover exact fixed URL/query/header, allowed ports, server/device
   grammar, no redirects, only `text/plain` or `application/octet-stream` identity-encoded
   bodies, JSON error on HTTP 200, 401/403/429/5xx/timeout classification, bounded
   `Retry-After`, FD 3/4/5 behavior, closed descriptors, no partial candidate, and a sentinel
   key absent from URL/argv/env/stdout/stderr/exception text.
-- [ ] **Verify RED.** Require the new CLI/function tests to fail because the generator
+- [x] **Verify RED.** Require the new CLI/function tests to fail because the generator
   command is absent while all old tests pass.
-- [ ] **Implement minimal client.** Add a generator-only no-redirect opener, exact GET
+- [x] **Implement minimal client.** Add a generator-only no-redirect opener, exact GET
   parameters from the approved spec, a 64-KiB response cap, exact 64-lowercase-hex key
   validation, canonical render after full validation, atomic full write to FD 4, optional
   identity read from FD 5, and one redacted TSV manifest. Close private descriptors in
   `finally` and never include remote bodies or headers in errors.
-- [ ] **Verify GREEN.** Run focused/full Python tests and compile check; inspect a spawned
+- [x] **Verify GREEN.** Run focused/full Python tests and compile check; inspect a spawned
   process test proving the sentinel is absent from `/proc/<pid>/cmdline` and `environ`.
-- [ ] **Commit.** `git commit -m "Add authenticated AirVPN profile generation"`.
+- [x] **Commit.** `git commit -m "Add authenticated AirVPN profile generation"`.
 
 ## Task 4: Runtime CLI, configuration, and secure module boundary
 

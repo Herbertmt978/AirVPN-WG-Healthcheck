@@ -57,6 +57,31 @@
 - Scope remained limited to `libexec/airvpn-api` and `tests/test_airvpn_api.py`; the
   worktree and dynamic-key fixture scan were clean.
 
+### Task 3: fixed-origin authenticated generation
+
+- Accepted commits: `7936bce159662f4c4c4eab843c03f55012e9a023` and
+  `b2fc23f85b1cd7f787e0856b6d0f62f396b8ff70`.
+- Initial RED: 11 generator tests produced 56 expected errors because the
+  `generate-profile` command was absent; no fixture/import failures occurred.
+- Review RED: 16 focused tests reproduced secret-retaining FD5/request tracebacks,
+  escaped HTTP/deep-JSON failures, unbounded `Retry-After`, partial FD4 output, and HTTP
+  408 misclassification.
+- Final GREEN:
+  - generator boundary: 16/16 passed on Python 3.10/Linux, including `/proc` cmdline and
+    environment sentinel proof;
+  - complete helper suite: 61/61 passed on Python 3.10/Linux and Python 3.14;
+  - Python compile/3.10 grammar, healthcheck 59/59, and installer regression passed;
+  - exact fixed URL/query/header, no redirects, strict MIME/encoding/body bounds, stable
+    exit classes, identity pinning, canonical FD4 output, and exact redacted manifest were
+    verified;
+  - short-write/flush failures leave FD4 at zero bytes;
+  - API keys, private profiles, request headers, caught exceptions, and payload markers
+    are unreachable from public error cause/context/traceback locals.
+- Independent specification and final code-quality/security reviews approved the repaired
+  tree with no residual findings.
+- Scope remained the two authorised provider files; no live credential or planning file
+  entered implementation commits.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.
