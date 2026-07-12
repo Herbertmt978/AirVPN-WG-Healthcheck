@@ -170,7 +170,7 @@
   install effect and treat any transition-write failure as rollback-required. No live API key
   was used; Task 14's mandatory split/ownership gate remains open.
 
-### Task 7: provisional implementation review (not accepted)
+### Task 7: qBittorrent-safe managed transition (accepted)
 
 - Provisional commit `f9231ef` passed its original focused 16/16 transaction groups,
   complete managed root 60/60 and normal-user 56/56 plus four ownership skips, static
@@ -189,8 +189,32 @@
 - An independent amendment review approved the final schema, exact recovery table,
   post-cleanup commit proof, transition-error reclassification, static/v1 compatibility,
   and all five review-blocker closures.
-- Task 7 remains `needs-verification`; the prior GREEN evidence is retained only as a
-  regression baseline, not acceptance evidence.
+- Follow-up commits `89bb3cf` and `80356d8` added strict active/backup identity pinning,
+  immutable Docker-ID ownership, exact Docker response parsing, managed-only rejection of
+  ambiguous 64-hex container names, durable safety ownership, drift-tolerant network
+  rollback, and post-status final proof.
+- A final adversarial reproduction on `80356d8` found that a persistent pending-safety
+  re-barrier failure returned before qB containment. RED proved qB remained running while
+  the candidate tunnel was active. Commit `d5b435b` now contains the recorded/current qB
+  targets immediately after strict safety load, then retries the barrier; a failure keeps
+  safety, journal, and candidate evidence, leaves the candidate profile/tunnel untouched,
+  and performs no WireGuard-down or profile-move effect.
+- Final GREEN evidence on exact clean commit
+  `d5b435b37e6a60c109401f6564dcf09225337b88`:
+  - managed Ubuntu 24.04 root suite: 81/81 passed;
+  - managed normal-user suite: 77/77 passed with four expected root-only skips;
+  - static/runtime suite: 69/69 passed;
+  - implementer focused recovery/barrier gates: 3/3 passed;
+  - adversarial focused parser, identity, re-barrier, drift, classifier, and fresh-process
+    gates: 9/9 passed;
+  - final specification focused gates: 7/7 passed;
+  - Bash syntax, ShellCheck 0.11.0 at style severity, diff integrity, and Gitleaks over the
+    exact tree and 42-commit history passed with no leak.
+- Independent adversarial/security and final specification reviewers both approved the
+  immutable commit. No remaining Task 7 contradiction, crash-owner gap, wrong-target
+  recovery path, or static compatibility regression was found.
+- No live API credential was used. Task 14 must still resolve the now 2,916-line managed
+  module and 4,588-line managed test owner before release.
 
 ### Isolated baseline
 

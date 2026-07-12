@@ -443,7 +443,7 @@ remain unchanged.
 
 **Verification:** focused managed transaction tests, then all Bash tests.
 
-- [ ] **Write RED tests.** Cover running/stopped/unmanaged container detection,
+- [x] **Write RED tests.** Cover running/stopped/unmanaged container detection,
   stop-before-down, stop failure abort, old-config down ordering, staged digest check,
   candidate install/up, start-after-network-verification, TCP/UDP proof, previously
   stopped preservation, failure rollback, rollback failure leaving the client stopped,
@@ -458,9 +458,9 @@ remain unchanged.
   journal parent sync, safety transition, final unlink, and final parent sync. Prove every
   path retains a rollback owner or a committed candidate owner and that rolled-back
   candidates never leave a success rotation stamp.
-- [ ] **Verify RED.** Require ordering assertions to fail before any implementation and
+- [x] **Verify RED.** Require ordering assertions to fail before any implementation and
   confirm no static regression.
-- [ ] **Implement minimal transaction.** Add a status-only secret-safe identity comparator;
+- [x] **Implement minimal transaction.** Add a status-only secret-safe identity comparator;
   strict durable `pending|committed|finalizing` safety-record owner; immutable Docker-ID/
   configuration tuple capture; containment checkpoints; and exact stop/restore/final-state
   proofs. Keep the v2 journal as phase evidence. Down uses the old installed profile and
@@ -472,9 +472,9 @@ remain unchanged.
   Pending reconciliation restores exact backup bytes/mode/owner, verifies the old tunnel,
   restores qBittorrent only when the recorded immutable identity and current tuple still
   match, and retains the safety record on every incomplete postcondition.
-- [ ] **Verify GREEN.** Run focused/full managed tests, full static tests, syntax, and
+- [x] **Verify GREEN.** Run focused/full managed tests, full static tests, syntax, and
   ShellCheck.
-- [ ] **Commit follow-up without amending the provisional commit.**
+- [x] **Commit follow-up without amending the provisional commit.**
   `git commit -m "Harden managed profile recovery ownership"`.
 
 ## Task 8: Provision, adopt, rotate, restore, and status commands
