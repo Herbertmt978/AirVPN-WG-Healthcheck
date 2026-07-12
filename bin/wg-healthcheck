@@ -1,0 +1,1109 @@
+#!/bin/bash -p
+
+WG_HEALTHCHECK_VERSION='1.0.0'
+IFACE=''
+CFG=''
+WG_CONF=''
+STATE_DIR=''
+LOCK=''
+RESTART_STAMP=''
+ROTATE_STAMP=''
+SPEED_STAMP=''
+STATUS_FILE=''
+ROTATION_PENDING=''
+AIRVPN_API_HELPER=''
+
+reset_configurable_defaults() {
+  MAX_AGE=180
+  PING_TARGET=''
+  PING_COUNT=1
+  PING_TIMEOUT=2
+  REQUIRED_ROUTE=''
+  REQUIRED_RULE=''
+  COOLDOWN=300
+  RESTART_DELAY=5
+  WG_DOWN_TIMEOUT=20
+  WG_UP_TIMEOUT=30
+  SPEED_CHECK_ENABLED=0
+  SPEED_CHECK_INTERVAL=900
+  SPEED_CHECK_URL='https://speed.cloudflare.com/__down?bytes=10000000'
+  SPEED_MIN_BPS=2500000
+  SPEED_TIMEOUT=25
+  SPEED_RETRY_DELAY=5
+  AIRVPN_ROTATE_ENABLED=0
+  AIRVPN_COUNTRIES='GB NL BE DE FR IE'
+  AIRVPN_WG_PORT=1637
+  AIRVPN_ROTATE_COOLDOWN=1800
+  AIRVPN_STATUS_URL='https://airvpn.org/api/status/?format=json'
+  AIRVPN_WHATISMYIP_URL='https://airvpn.org/api/whatismyip/?format=json'
+  AIRVPN_API_TIMEOUT=20
+  QBITTORRENT_CONTAINER=''
+  QBITTORRENT_LISTEN_IP=''
+  QBITTORRENT_LISTEN_PORT=''
+  QBITTORRENT_PROCESS_NAME=qbittorrent-nox
+  QBITTORRENT_RESTART_DELAY=5
+  QBITTORRENT_RESTART_TIMEOUT=60
+}
+
+reset_configurable_defaults
+
+log() {
+  local message="${*//$'\r'/ }"
+  message="${message//$'\n'/ }"
+  if ! logger -t wg-healthcheck -- "[${IFACE:-unknown}] $message" 2>/dev/null; then
+    printf 'wg-healthcheck[%s]: %s\n' "${IFACE:-unknown}" "$message" >&2
+  fi
+  return 0
+}
+truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+validate_bool() { case "${1:-}" in 0|1|true|TRUE|false|FALSE|yes|YES|no|NO|on|ON) return 0;; *) return 1;; esac; }
+current_epoch() { date +%s; }
+validate_interface_name() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_=+.-]{0,14}$ ]]; }
+
+validate_uint() {
+  local name="${1:?}" value="${2-}" minimum="${3:?}" maximum="${4:?}" number
+  if [[ ! "$value" =~ ^[0-9]+$ || ${#value} -gt 10 ]]; then
+    log "$name must be an unsigned decimal integer"
+    return 1
+  fi
+  number=$((10#$value))
+  if (( number < minimum || number > maximum )); then
+    log "$name must be between $minimum and $maximum"
+    return 1
+  fi
+}
+validate_url() {
+  local name="${1:?}" value="${2-}"
+  if [[ ! "$value" =~ ^https://[^[:space:]]+$ || "$value" == *$'\r'* || "$value" == *$'\n'* ]]; then
+    log "$name must be an HTTPS URL without whitespace"
+    return 1
+  fi
+}
+validate_single_line() {
+  local name="${1:?}" value="${2-}"
+  if [[ "$value" == *$'\r'* || "$value" == *$'\n'* ]]; then
+    log "$name must be a single line"
+    return 1
+  fi
+}
+validate_container_name() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; }
+validate_process_name() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}$ ]]; }
+
+validate_ip_address() {
+  local address="${1:-}" octet
+  local -a octets
+  if [[ "$address" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+    IFS=. read -r -a octets <<< "$address"
+    [[ ${#octets[@]} -eq 4 ]] || return 1
+    for octet in "${octets[@]}"; do
+      [[ "$octet" =~ ^[0-9]+$ && ${#octet} -le 3 ]] || return 1
+      [[ "$octet" == 0 || "$octet" != 0* ]] || return 1
+      (( 10#$octet <= 255 )) || return 1
+    done
+    return 0
+  fi
+  [[ "$address" == *:* ]] || return 1
+  python3 -c 'import ipaddress,sys; ipaddress.IPv6Address(sys.argv[1])' "$address" >/dev/null 2>&1
+}
+
+canonicalize_endpoint() {
+  local endpoint="${1:-}" host port canonical
+  if [[ "$endpoint" =~ ^([0-9.]+):([0-9]+)$ ]]; then
+    host="${BASH_REMATCH[1]}"; port="${BASH_REMATCH[2]}"
+  elif [[ "$endpoint" =~ ^\[([^][]+)\]:([0-9]+)$ && "${BASH_REMATCH[1]}" == *:* ]]; then
+    host="${BASH_REMATCH[1]}"; port="${BASH_REMATCH[2]}"
+  else return 1
+  fi
+  validate_ip_address "$host" || return 1
+
+  [[ "$port" =~ ^[0-9]+$ && ${#port} -le 5 ]] || return 1
+  (( 10#$port >= 1 && 10#$port <= 65535 )) || return 1
+  port=$((10#$port))
+  if [[ "$host" == *:* ]]; then
+    canonical="$(python3 -c 'import ipaddress,sys; print(ipaddress.IPv6Address(sys.argv[1]).compressed)' "$host" 2>/dev/null)" || return 1
+    printf '[%s]:%s\n' "$canonical" "$port"
+  else
+    printf '%s:%s\n' "$host" "$port"
+  fi
+}
+validate_endpoint() { canonicalize_endpoint "${1:-}" >/dev/null; }
+
+parse_healthcheck_config() {
+  local file="${1:?}" size line read_rc line_number=0 observed_size=0 config_fd
+  local key raw value quoted=0 backslash=$'\\'
+  local LC_ALL=C
+  local -A seen=() parsed=()
+
+  [[ -f "$file" && ! -L "$file" ]] || return 1
+  size="$(stat -c '%s' -- "$file" 2>/dev/null)" || return 1
+  if [[ ! "$size" =~ ^[0-9]+$ ]] || (( 10#$size > 65536 )); then
+    log "Health-check configuration exceeds 65536 bytes"
+    return 1
+  fi
+  exec {config_fd}<"$file" || return 1
+  while :; do
+    line=
+    if IFS= read -r -u "$config_fd" line; then read_rc=0; else read_rc=$?; fi
+    if (( read_rc != 0 )) && [[ -z "$line" ]]; then break; fi
+    line_number=$((line_number + 1))
+    observed_size=$((observed_size + ${#line} + (read_rc == 0 ? 1 : 0)))
+    if (( ${#line} > 4096 )) || [[ "$line" =~ [[:cntrl:]] ]]; then
+      log "Invalid health-check configuration line $line_number"
+      exec {config_fd}<&-
+      return 1
+    fi
+    if [[ -z "$line" || "$line" == \#* ]]; then
+      (( read_rc == 0 )) || break
+      continue
+    fi
+    if [[ ! "$line" =~ ^([A-Z][A-Z0-9_]*)=(.*)$ ]]; then
+      log "Malformed health-check configuration line $line_number"
+      exec {config_fd}<&-
+      return 1
+    fi
+    key="${BASH_REMATCH[1]}"
+    raw="${BASH_REMATCH[2]}"
+    case "$key" in
+      MAX_AGE|PING_TARGET|PING_COUNT|PING_TIMEOUT|REQUIRED_ROUTE|REQUIRED_RULE|\
+      COOLDOWN|RESTART_DELAY|WG_DOWN_TIMEOUT|WG_UP_TIMEOUT|\
+      SPEED_CHECK_ENABLED|SPEED_CHECK_INTERVAL|SPEED_CHECK_URL|SPEED_MIN_BPS|SPEED_TIMEOUT|SPEED_RETRY_DELAY|\
+      AIRVPN_ROTATE_ENABLED|AIRVPN_COUNTRIES|AIRVPN_WG_PORT|AIRVPN_ROTATE_COOLDOWN|\
+      AIRVPN_STATUS_URL|AIRVPN_WHATISMYIP_URL|AIRVPN_API_TIMEOUT|\
+      QBITTORRENT_CONTAINER|QBITTORRENT_LISTEN_IP|QBITTORRENT_LISTEN_PORT|\
+      QBITTORRENT_PROCESS_NAME|QBITTORRENT_RESTART_DELAY|QBITTORRENT_RESTART_TIMEOUT) ;;
+      *)
+        log "Unknown health-check configuration key at line $line_number"
+        exec {config_fd}<&-
+        return 1
+        ;;
+    esac
+    if [[ -n "${seen[$key]+present}" ]]; then
+      log "Duplicate health-check configuration key $key"
+      exec {config_fd}<&-
+      return 1
+    fi
+
+    quoted=0
+    if [[ "$raw" == \"* ]]; then
+      if (( ${#raw} < 2 )) || [[ "${raw: -1}" != '"' ]]; then
+        log "Ambiguous quoted value at line $line_number"
+        exec {config_fd}<&-
+        return 1
+      fi
+      value="${raw:1:${#raw}-2}"
+      quoted=1
+    elif [[ "$raw" == \'* ]]; then
+      if (( ${#raw} < 2 )) || [[ "${raw: -1}" != "'" ]]; then
+        log "Ambiguous quoted value at line $line_number"
+        exec {config_fd}<&-
+        return 1
+      fi
+      value="${raw:1:${#raw}-2}"
+      quoted=1
+    else
+      value="$raw"
+    fi
+    if [[ "$value" == *"$backslash"* || "$value" == *'$'* || "$value" == *'`'* ||
+          "$value" == *'"'* || "$value" == *"'"* ]] ||
+       { (( ! quoted )) && [[ "$value" == *[[:space:]]* ]]; }; then
+      log "Ambiguous health-check configuration value at line $line_number"
+      exec {config_fd}<&-
+      return 1
+    fi
+    seen["$key"]=1
+    parsed["$key"]="$value"
+    (( read_rc == 0 )) || break
+  done
+  exec {config_fd}<&-
+  if (( observed_size != 10#$size )); then
+    log "Health-check configuration contains unsupported control bytes"
+    return 1
+  fi
+  for key in "${!parsed[@]}"; do
+    printf -v "$key" '%s' "${parsed[$key]}"
+  done
+}
+
+validate_settings() {
+  if ! validate_bool "$SPEED_CHECK_ENABLED" || ! validate_bool "$AIRVPN_ROTATE_ENABLED"; then
+    log "SPEED_CHECK_ENABLED and AIRVPN_ROTATE_ENABLED must be booleans"
+    return 1
+  fi
+  validate_uint MAX_AGE "$MAX_AGE" 0 86400 || return 1
+  validate_uint PING_COUNT "$PING_COUNT" 1 100 || return 1
+  validate_uint PING_TIMEOUT "$PING_TIMEOUT" 1 300 || return 1
+  validate_uint COOLDOWN "$COOLDOWN" 0 86400 || return 1
+  validate_uint RESTART_DELAY "$RESTART_DELAY" 0 300 || return 1
+  validate_uint WG_DOWN_TIMEOUT "$WG_DOWN_TIMEOUT" 1 300 || return 1
+  validate_uint WG_UP_TIMEOUT "$WG_UP_TIMEOUT" 1 300 || return 1
+  validate_uint SPEED_CHECK_INTERVAL "$SPEED_CHECK_INTERVAL" 0 604800 || return 1
+  validate_uint SPEED_MIN_BPS "$SPEED_MIN_BPS" 0 1000000000 || return 1
+  validate_uint SPEED_TIMEOUT "$SPEED_TIMEOUT" 1 300 || return 1
+  validate_uint SPEED_RETRY_DELAY "$SPEED_RETRY_DELAY" 0 300 || return 1
+  validate_uint AIRVPN_WG_PORT "$AIRVPN_WG_PORT" 1 65535 || return 1
+  validate_uint AIRVPN_ROTATE_COOLDOWN "$AIRVPN_ROTATE_COOLDOWN" 0 604800 || return 1
+  validate_uint AIRVPN_API_TIMEOUT "$AIRVPN_API_TIMEOUT" 1 60 || return 1
+  validate_uint QBITTORRENT_RESTART_DELAY "$QBITTORRENT_RESTART_DELAY" 0 300 || return 1
+  validate_uint QBITTORRENT_RESTART_TIMEOUT "$QBITTORRENT_RESTART_TIMEOUT" 1 300 || return 1
+
+  validate_url SPEED_CHECK_URL "$SPEED_CHECK_URL" || return 1
+  validate_url AIRVPN_STATUS_URL "$AIRVPN_STATUS_URL" || return 1
+  validate_url AIRVPN_WHATISMYIP_URL "$AIRVPN_WHATISMYIP_URL" || return 1
+  validate_single_line REQUIRED_ROUTE "$REQUIRED_ROUTE" || return 1
+  validate_single_line REQUIRED_RULE "$REQUIRED_RULE" || return 1
+  validate_single_line AIRVPN_COUNTRIES "$AIRVPN_COUNTRIES" || return 1
+
+  if [[ -n "$PING_TARGET" && ! "$PING_TARGET" =~ ^[A-Za-z0-9:.%_-]+$ ]]; then
+    log "PING_TARGET contains unsupported characters"
+    return 1
+  fi
+
+  if [[ -n "$QBITTORRENT_LISTEN_IP" || -n "$QBITTORRENT_LISTEN_PORT" ]]; then
+    if [[ -z "$QBITTORRENT_LISTEN_IP" || -z "$QBITTORRENT_LISTEN_PORT" ]]; then
+      log "QBITTORRENT_LISTEN_IP and QBITTORRENT_LISTEN_PORT must be configured together"
+      return 1
+    fi
+    if ! validate_ip_address "$QBITTORRENT_LISTEN_IP"; then
+      log "QBITTORRENT_LISTEN_IP is invalid"
+      return 1
+    fi
+    validate_uint QBITTORRENT_LISTEN_PORT "$QBITTORRENT_LISTEN_PORT" 1 65535 || return 1
+  fi
+  if [[ -n "$QBITTORRENT_CONTAINER" ]] && ! validate_container_name "$QBITTORRENT_CONTAINER"; then
+    log "QBITTORRENT_CONTAINER is invalid"
+    return 1
+  fi
+  if ! validate_process_name "$QBITTORRENT_PROCESS_NAME"; then
+    log "QBITTORRENT_PROCESS_NAME is invalid"
+    return 1
+  fi
+  if ! validate_secure_executable "$AIRVPN_API_HELPER"; then
+    log "AirVPN helper is not executable"
+    return 1
+  fi
+}
+
+path_is_symlink() { [[ -L "$1" ]]; }
+path_is_regular() { [[ -f "$1" ]]; }
+path_is_directory() { [[ -d "$1" ]]; }
+owner_mode() { stat -c '%u:%a' -- "$1" 2>/dev/null; }
+validate_secure_executable() {
+  local path="${1:?}" parent file_meta parent_meta parent_mode
+  parent="${path%/*}"; [[ "$parent" != "$path" ]] || parent=.
+  path_is_regular "$path" && ! path_is_symlink "$path" || return 1
+  file_meta="$(owner_mode "$path")" || return 1
+  [[ "$file_meta" == 0:755 ]] || return 1
+  path_is_directory "$parent" && ! path_is_symlink "$parent" || return 1
+  parent_meta="$(owner_mode "$parent")" || return 1
+  [[ "$parent_meta" =~ ^0:([0-7]{3,4})$ ]] || return 1
+  parent_mode="${BASH_REMATCH[1]}"
+  (( (8#$parent_mode & 8#022) == 0 ))
+}
+validate_secure_file() {
+  local path="${1:?}" label="${2:?}" mode uid actual_mode
+  mode="${3:-600}"
+  if [[ -L "$path" || ! -f "$path" ]]; then
+    log "$label must be a regular non-symlink file"
+    return 1
+  fi
+  uid="$(stat -c '%u' -- "$path" 2>/dev/null)" || return 1
+  actual_mode="$(stat -c '%a' -- "$path" 2>/dev/null)" || return 1
+  if [[ "$uid" != 0 || "$actual_mode" != "$mode" ]]; then
+    log "$label must be root-owned with mode $mode"
+    return 1
+  fi
+}
+derive_fixed_runtime_paths() {
+  CFG="/etc/wireguard/healthcheck.d/${IFACE}.conf"
+  WG_CONF="/etc/wireguard/${IFACE}.conf"
+  STATE_DIR=/run/wg-healthcheck
+  LOCK="$STATE_DIR/${IFACE}.lock"
+  RESTART_STAMP="$STATE_DIR/${IFACE}.last_restart"
+  ROTATE_STAMP="$STATE_DIR/${IFACE}.last_rotate"
+  SPEED_STAMP="$STATE_DIR/${IFACE}.last_speedcheck"
+  STATUS_FILE="$STATE_DIR/${IFACE}.status"
+  ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
+  AIRVPN_API_HELPER=/usr/local/libexec/wg-healthcheck/airvpn-api
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+}
+
+sanitize_process_environment() {
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  LC_ALL=C
+  export PATH LC_ALL
+  unset BASH_ENV ENV CDPATH GLOBIGNORE IFS PS4 PROMPT_COMMAND
+  unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHONPATH PYTHONHOME
+  export -n SHELLOPTS BASHOPTS 2>/dev/null || true
+}
+
+prepare_state_dir() {
+  local uid mode
+  if [[ -L "$STATE_DIR" ]]; then
+    log "State directory must not be a symlink"
+    return 1
+  fi
+  mkdir -p -- "$STATE_DIR" || return 1
+  chmod 700 -- "$STATE_DIR" || return 1
+  [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || return 1
+  uid="$(stat -c '%u' -- "$STATE_DIR" 2>/dev/null)" || return 1
+  mode="$(stat -c '%a' -- "$STATE_DIR" 2>/dev/null)" || return 1
+  [[ "$uid" == 0 && "$mode" == 700 ]]
+}
+sanitize_status_value() {
+  local value="${1-}"
+  value="${value//$'\r'/ }"
+  value="${value//$'\n'/ }"
+  value="${value//$'\t'/ }"
+  printf '%.240s' "$value"
+}
+
+atomic_write() {
+  local target="${1:?}" reference="${2:-}" directory base tmp
+  directory="${target%/*}"
+  base="${target##*/}"
+  [[ "$directory" != "$target" ]] || directory=.
+  [[ -d "$directory" && ! -L "$target" ]] || return 1
+  [[ ! -e "$target" || -f "$target" ]] || return 1
+  (
+    umask 077
+    tmp="$(mktemp "$directory/.${base}.XXXXXX")" || exit 1
+    trap 'rm -f -- "$tmp"' EXIT HUP INT TERM
+    cat > "$tmp" || exit 1
+    chmod 600 -- "$tmp" || exit 1
+    if (( EUID == 0 )) && [[ -n "$reference" ]]; then
+      chown --reference="$reference" -- "$tmp" || exit 1
+    fi
+    mv -f -- "$tmp" "$target" || exit 1
+    tmp=
+  )
+}
+durability_barrier() {
+  local target="${1:?}" parent
+  parent="${target%/*}"; [[ "$parent" != "$target" ]] || parent=.
+  sync -f -- "$target" >/dev/null 2>&1 || return 1
+  sync -f -- "$parent" >/dev/null 2>&1
+}
+
+removal_durability_barrier() {
+  local target="${1:?}" parent
+  parent="${target%/*}"; [[ "$parent" != "$target" ]] || parent=.
+  sync -f -- "$parent" >/dev/null 2>&1
+}
+write_status() {
+  local outcome="${1:?}" reason now safe_reason
+  reason="${2-}"
+  case "$outcome" in
+    healthy|recovered|suppressed|degraded|failed) ;;
+    *) return 1 ;;
+  esac
+  now="$(current_epoch)" || return 1
+  [[ "$now" =~ ^[0-9]+$ ]] || return 1
+  safe_reason="$(sanitize_status_value "$reason")"
+  printf 'outcome=%s\nreason=%s\ntimestamp=%s\n' "$outcome" "$safe_reason" "$now" |
+    atomic_write "${STATUS_FILE:?}"
+}
+write_stamp() {
+  local target="${1:?}" now
+  now="$(current_epoch)" || return 1
+  [[ "$now" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$now" | atomic_write "$target"
+}
+read_stamp() {
+  local path="${1:?}" value extra
+  if [[ ! -e "$path" ]]; then
+    printf '0\n'
+    return 0
+  fi
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  { IFS= read -r value && ! IFS= read -r extra; } < "$path" || return 1
+  [[ "$value" =~ ^[0-9]+$ && ${#value} -le 10 ]] || return 1
+  printf '%s\n' "$value"
+}
+cooldown_allows() {
+  local stamp_file="${1:?}" cooldown="${2:?}" now last
+  [[ "$cooldown" =~ ^[0-9]+$ && ${#cooldown} -le 10 ]] || return 1
+  now="$(current_epoch)" || return 1
+  [[ "$now" =~ ^[0-9]+$ && ${#now} -le 10 ]] || return 1
+  last="$(read_stamp "$stamp_file")" || return 1
+  (( 10#$last <= 10#$now )) || return 1
+  (( 10#$now - 10#$last >= 10#$cooldown )) && return 0
+  return 75
+}
+config_metadata() {
+  local config="${1:-$WG_CONF}"
+  awk '
+    /^[[:space:]]*\[[^]]+\]/ {
+      in_peer=($0 ~ /^[[:space:]]*\[Peer\][[:space:]]*(#.*)?$/)
+      if (in_peer) peers++
+    }
+    /^[[:space:]]*Endpoint[[:space:]]*=/ {
+      endpoints++
+      if (in_peer) {
+        peer_endpoints++
+        endpoint=$0
+        sub(/^[^=]*=/, "", endpoint)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", endpoint)
+      }
+    }
+    END { printf "%d|%d|%d|%s\n", peers+0, endpoints+0, peer_endpoints+0, endpoint }
+  ' "$config" 2>/dev/null
+}
+single_peer_config() {
+  local config="$WG_CONF" peers endpoints peer_endpoints endpoint
+  IFS='|' read -r peers endpoints peer_endpoints endpoint < <(config_metadata "$config") || return 1
+  [[ "$peers" == 1 && "$endpoints" == 1 && "$peer_endpoints" == 1 ]]
+}
+configured_endpoint() {
+  local config="${1:-$WG_CONF}" peers endpoints peer_endpoints endpoint
+  [[ -f "$config" && ! -L "$config" ]] || return 1
+  IFS='|' read -r peers endpoints peer_endpoints endpoint < <(config_metadata "$config") || return 1
+  [[ "$peers" == 1 && "$endpoints" == 1 && "$peer_endpoints" == 1 ]] || return 1
+  canonicalize_endpoint "$endpoint"
+}
+set_config_endpoint() {
+  local endpoint directory base tmp
+  endpoint="$(canonicalize_endpoint "${1:?}")" || return 1
+  [[ -f "$WG_CONF" && ! -L "$WG_CONF" ]] || return 1
+  single_peer_config || return 1
+  directory="${WG_CONF%/*}"
+  base="${WG_CONF##*/}"
+  [[ "$directory" != "$WG_CONF" ]] || directory=.
+
+  (
+    umask 077
+    tmp="$(mktemp "$directory/.${base}.endpoint.XXXXXX")" || exit 1
+    trap 'rm -f -- "$tmp"' EXIT HUP INT TERM
+    awk -v endpoint="$endpoint" '
+      /^[[:space:]]*Endpoint[[:space:]]*=/ {
+        match($0, /^[[:space:]]*/)
+        indent=substr($0, 1, RLENGTH)
+        print indent "Endpoint = " endpoint
+        next
+      }
+      { print }
+    ' "$WG_CONF" > "$tmp" || exit 1
+    chmod 600 -- "$tmp" || exit 1
+    if (( EUID == 0 )); then
+      chown --reference="$WG_CONF" -- "$tmp" || exit 1
+    fi
+    mv -f -- "$tmp" "$WG_CONF" || exit 1
+    tmp=
+  ) && durability_barrier "$WG_CONF"
+}
+backup_config() {
+  local backup="${WG_CONF}.bak-healthcheck"
+  if [[ -n "${ROTATION_PENDING:-}" && ( -e "$ROTATION_PENDING" || -L "$ROTATION_PENDING" ) ]]; then return 1; fi
+  configured_endpoint >/dev/null || return 1
+  # atomic_write writes a separate temporary file before renaming it over the target.
+  # shellcheck disable=SC2094
+  atomic_write "$backup" "$WG_CONF" < "$WG_CONF" && durability_barrier "$backup"
+}
+
+restore_backup() {
+  local backup="${WG_CONF}.bak-healthcheck"
+  [[ -f "$backup" && ! -L "$backup" && ! -L "$WG_CONF" ]] || return 1
+  # atomic_write writes a separate temporary file before renaming it over the target.
+  # shellcheck disable=SC2094
+  atomic_write "$WG_CONF" "$backup" < "$backup" && durability_barrier "$WG_CONF"
+}
+
+write_rotation_pending() {
+  local old_endpoint
+  old_endpoint="$(canonicalize_endpoint "${1:?}")" || return 1
+  [[ -n "$ROTATION_PENDING" && ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]] || return 1
+  printf '%s\n' "$old_endpoint" | atomic_write "$ROTATION_PENDING" || return 1
+  durability_barrier "$ROTATION_PENDING"
+}
+
+read_rotation_pending() {
+  local value extra canonical backup_endpoint backup="${WG_CONF}.bak-healthcheck"
+  [[ -f "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]] || return 1
+  { IFS= read -r value && ! IFS= read -r extra; } < "$ROTATION_PENDING" || return 1
+  canonical="$(canonicalize_endpoint "$value")" || return 1
+  [[ "$value" == "$canonical" ]] || return 1
+  backup_endpoint="$(configured_endpoint "$backup")" || return 1
+  [[ "$backup_endpoint" == "$canonical" ]] || return 1
+  printf '%s\n' "$canonical"
+}
+
+remove_rotation_pending() {
+  local old_endpoint
+  [[ -f "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]] || return 1
+  old_endpoint="$(read_rotation_pending)" || return 1
+  rm -f -- "$ROTATION_PENDING" || return 1
+  if ! removal_durability_barrier "$ROTATION_PENDING"; then
+    write_rotation_pending "$old_endpoint" || true
+    return 1
+  fi
+}
+
+begin_rotation_transaction() {
+  [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]] || return 1
+  backup_config && write_rotation_pending "${1:?}"
+}
+
+interface_exists() { ip link show "$IFACE" >/dev/null 2>&1; }
+wireguard_responds() { wg show "$IFACE" >/dev/null 2>&1; }
+
+runtime_endpoint() {
+  local output peer endpoint extra
+  output="$(wg show "$IFACE" endpoints 2>/dev/null)" || return 1
+  [[ -n "$output" && "$output" != *$'\n'* ]] || return 1
+  read -r peer endpoint extra <<< "$output"
+  [[ -n "$peer" && -n "$endpoint" && -z "${extra:-}" ]] || return 1
+  canonicalize_endpoint "$endpoint"
+}
+
+handshake_age() {
+  local output now peer timestamp extra second
+  output="$(wg show "$IFACE" latest-handshakes 2>/dev/null)" || return 1
+  [[ -n "$output" ]] || return 1
+  now="$(current_epoch)" || return 1
+  [[ "$now" =~ ^[0-9]+$ && ${#now} -le 10 ]] || return 1
+  { IFS=$' \t' read -r peer timestamp extra && ! IFS= read -r second; } <<< "$output" || return 1
+  [[ -n "$peer" && "$timestamp" =~ ^[0-9]+$ && ${#timestamp} -le 10 && -z "${extra:-}" ]] || return 1
+  if [[ "$timestamp" == 0 ]]; then
+    printf '999999\n'
+    return 0
+  fi
+  (( 10#$timestamp <= 10#$now )) || return 1
+  printf '%s\n' "$((10#$now - 10#$timestamp))"
+}
+
+required_route_present() { local output; [[ -z "$REQUIRED_ROUTE" ]] || { output="$(ip route show table all 2>/dev/null)" && [[ "$output" == *"$REQUIRED_ROUTE"* ]]; }; }
+required_rule_present() { local output; [[ -z "$REQUIRED_RULE" ]] || { output="$(ip rule show 2>/dev/null)" && [[ "$output" == *"$REQUIRED_RULE"* ]]; }; }
+
+curl_egress() {
+  curl --disable --interface "$IFACE" -L --proto '=https' --proto-redir '=https' --max-redirs 3 \
+    --fail --silent --show-error --max-time "$AIRVPN_API_TIMEOUT" --max-filesize 4194304 \
+    --output "$1" "$AIRVPN_WHATISMYIP_URL"
+}
+
+verify_airvpn_egress() (
+  local directory tmp display server country extra
+  directory="${STATE_DIR:?}"
+  [[ -d "$directory" ]] || exit 1
+  tmp="$(mktemp "$directory/.egress.XXXXXX")" || exit 1
+  trap 'rm -f -- "$tmp"' EXIT
+  trap 'exit 143' HUP INT TERM
+  chmod 600 -- "$tmp" || exit 1
+  if ! curl_egress "$tmp"; then
+    log "AirVPN egress request failed"
+    exit 1
+  fi
+  if ! display="$("$AIRVPN_API_HELPER" verify-egress < "$tmp" 2>/dev/null)"; then
+    log "AirVPN egress validation failed"
+    exit 1
+  fi
+  [[ "$display" != *$'\n'* ]] || exit 1
+  IFS=$'\t' read -r server country extra <<< "$display"
+  [[ -n "$server" && -n "$country" && -z "${extra:-}" ]] || exit 1
+  log "AirVPN egress verified: $server / $country"
+)
+
+CORE_REASON=
+check_tunnel_core() {
+  local expected actual age
+  CORE_REASON=
+  expected="$(canonicalize_endpoint "${1:?}")" || { CORE_REASON=invalid_expected_endpoint; return 1; }
+  interface_exists || { CORE_REASON=interface_missing; return 1; }
+  wireguard_responds || { CORE_REASON=wireguard_unresponsive; return 1; }
+  actual="$(runtime_endpoint)" || { CORE_REASON=runtime_endpoint_unavailable; return 1; }
+  actual="$(canonicalize_endpoint "$actual")" || { CORE_REASON=runtime_endpoint_unavailable; return 1; }
+  [[ "$actual" == "$expected" ]] || { CORE_REASON=runtime_endpoint_mismatch; return 1; }
+  age="$(handshake_age)" || { CORE_REASON=handshake_unavailable; return 1; }
+  if [[ ! "$age" =~ ^[0-9]+$ ]] || (( 10#$age > 10#$MAX_AGE )); then
+    CORE_REASON=stale_handshake
+    return 1
+  fi
+  required_route_present || { CORE_REASON=required_route_missing; return 1; }
+  required_rule_present || { CORE_REASON=required_rule_missing; return 1; }
+}
+
+verify_tunnel() {
+  check_tunnel_core "${1:?}" || { log "Tunnel verification failed: $CORE_REASON"; return 1; }
+  verify_airvpn_egress
+}
+
+list_container_pids() {
+  local output
+  output="$(timeout "$QBITTORRENT_RESTART_TIMEOUT" docker top "$QBITTORRENT_CONTAINER" -eo pid,comm 2>/dev/null)" || return 1
+  awk -v name="$QBITTORRENT_PROCESS_NAME" '$1 ~ /^[0-9]+$/ && $2 == name {print $1}' <<< "$output"
+}
+
+qbittorrent_binding_present() {
+  local expected="${QBITTORRENT_LISTEN_IP}%${IFACE}:${QBITTORRENT_LISTEN_PORT}" output line protocol pid owners needle container_pids=
+  local -A tcp_pids=() udp_pids=()
+  needle="\"${QBITTORRENT_PROCESS_NAME}\",pid="
+  output="$(ss -H -lntup 2>/dev/null)" || return 1
+  if [[ -n "$QBITTORRENT_CONTAINER" ]]; then
+    container_pids="$(list_container_pids)" || return 1
+    [[ -n "$container_pids" ]] || return 1
+  fi
+  while IFS= read -r line; do
+    protocol="${line%% *}"
+    [[ "$protocol" == tcp || "$protocol" == udp ]] || continue
+    [[ " $line " == *" $expected "* ]] || continue
+    owners="$line"
+    while [[ "$owners" == *"$needle"* ]]; do
+      owners="${owners#*"$needle"}"
+      pid="${owners%%[!0-9]*}"
+      [[ "$pid" =~ ^[0-9]+$ ]] || continue
+      if [[ -n "$QBITTORRENT_CONTAINER" && $'\n'"$container_pids"$'\n' != *$'\n'"$pid"$'\n'* ]]; then continue; fi
+      if [[ "$protocol" == tcp ]]; then tcp_pids["$pid"]=1; else udp_pids["$pid"]=1; fi
+    done
+  done <<< "$output"
+  for pid in "${!tcp_pids[@]}"; do [[ -n "${udp_pids[$pid]:-}" ]] && return 0; done
+  return 1
+}
+
+restart_qbittorrent_container() { timeout "$QBITTORRENT_RESTART_TIMEOUT" docker restart "$QBITTORRENT_CONTAINER" >/dev/null 2>&1; }
+
+ensure_qbittorrent_binding() {
+  local pattern
+  if [[ -z "$QBITTORRENT_LISTEN_IP" && -z "$QBITTORRENT_LISTEN_PORT" ]]; then
+    return 0
+  fi
+  if [[ -z "$QBITTORRENT_LISTEN_IP" || -z "$QBITTORRENT_LISTEN_PORT" ]]; then
+    log "qBittorrent binding configuration is incomplete"
+    return 1
+  fi
+  pattern="${QBITTORRENT_LISTEN_IP}%${IFACE}:${QBITTORRENT_LISTEN_PORT}"
+  if qbittorrent_binding_present; then
+    return 0
+  fi
+  if [[ -z "$QBITTORRENT_CONTAINER" ]] || ! validate_container_name "$QBITTORRENT_CONTAINER"; then
+    log "qBittorrent binding $pattern is missing and no valid repair container is configured"
+    return 1
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    log "qBittorrent binding $pattern is missing and Docker is unavailable"
+    return 1
+  fi
+  log "qBittorrent binding $pattern is missing; restarting $QBITTORRENT_CONTAINER"
+  if ! restart_qbittorrent_container; then
+    log "qBittorrent container restart failed"
+    return 1
+  fi
+  sleep "$QBITTORRENT_RESTART_DELAY"
+  if ! qbittorrent_binding_present; then
+    log "qBittorrent binding $pattern is still missing after restart"
+    return 1
+  fi
+}
+
+run_wg_quick_down() {
+  local error
+  if ! error="$(timeout "$WG_DOWN_TIMEOUT" wg-quick down "$IFACE" 2>&1)"; then
+    error="$(sanitize_status_value "$error")"
+    log "wg-quick down failed: ${error:-no detail}"
+    return 1
+  fi
+}
+
+run_wg_quick_up() {
+  local error
+  if ! error="$(timeout "$WG_UP_TIMEOUT" wg-quick up "$IFACE" 2>&1)"; then
+    error="$(sanitize_status_value "$error")"
+    log "wg-quick up failed: ${error:-no detail}"
+    return 1
+  fi
+}
+
+LAST_RESTART_REASON=
+restart_iface() {
+  local policy="${1:-respect-cooldown}" expected="${2:-}" verify_speed="${3:-false}" down_failed=0 cooldown_rc
+  LAST_RESTART_REASON=
+  validate_endpoint "$expected" && validate_bool "$verify_speed" || return 1
+  case "$policy" in
+    respect-cooldown)
+      if cooldown_allows "$RESTART_STAMP" "$COOLDOWN"; then
+        :
+      else
+        cooldown_rc=$?
+        if [[ "$cooldown_rc" == 75 ]]; then
+          log "Restart suppressed by cooldown"
+          write_status suppressed restart_cooldown || true
+          return 75
+        fi
+        LAST_RESTART_REASON=invalid_restart_stamp
+        log "Restart state is invalid"
+        write_status failed "$LAST_RESTART_REASON" || true
+        return 1
+      fi
+      ;;
+    forced) ;;
+    *) return 1 ;;
+  esac
+
+  if ! write_stamp "$RESTART_STAMP"; then
+    LAST_RESTART_REASON=restart_stamp_failed
+    log "Unable to record restart attempt"
+    return 1
+  fi
+  log "Restarting tunnel"
+  if ! run_wg_quick_down; then
+    down_failed=1
+  fi
+  if ! run_wg_quick_up; then
+    LAST_RESTART_REASON=tunnel_start_failed
+    log "Tunnel start failed"
+    return 1
+  fi
+  if (( down_failed )); then
+    log "Tunnel down reported an error; validating the recovered interface"
+  fi
+  sleep "$RESTART_DELAY"
+  verify_tunnel "$expected" || { LAST_RESTART_REASON=tunnel_verification_failed; return 1; }
+  if truthy "$verify_speed"; then
+    verify_post_rotation_speed || { LAST_RESTART_REASON=post_rotation_speed_failed; return 1; }
+  fi
+  ensure_qbittorrent_binding || { LAST_RESTART_REASON=qbittorrent_verification_failed; return 1; }
+  log "Restart complete"
+}
+
+select_airvpn_candidate() {
+  local current
+  current="$(runtime_endpoint)" || current="$(configured_endpoint)" || return 1
+  "$AIRVPN_API_HELPER" select \
+    --url "$AIRVPN_STATUS_URL" \
+    --countries "$AIRVPN_COUNTRIES" \
+    --port "$AIRVPN_WG_PORT" \
+    --current-endpoint "$current" \
+    --timeout "$AIRVPN_API_TIMEOUT"
+}
+
+CANDIDATE_NAME=
+CANDIDATE_ENDPOINT=
+CANDIDATE_COUNTRY=
+CANDIDATE_LOCATION=
+CANDIDATE_BW=
+CANDIDATE_LOAD=
+CANDIDATE_USERS=
+
+parse_candidate() {
+  local selection="${1-}" separator=$'\x1f' encoded sentinel
+  [[ -n "$selection" && "$selection" != *$'\r'* && "$selection" != *$'\n'* && "$selection" != *"$separator"* ]] || return 1
+  encoded="${selection//$'\t'/$separator}"
+  IFS="$separator" read -r CANDIDATE_NAME CANDIDATE_ENDPOINT CANDIDATE_COUNTRY \
+    CANDIDATE_LOCATION CANDIDATE_BW CANDIDATE_LOAD CANDIDATE_USERS sentinel \
+    <<< "${encoded}${separator}END"
+  [[ "$sentinel" == END ]] || return 1
+  [[ -n "$CANDIDATE_NAME" && -n "$CANDIDATE_ENDPOINT" && -n "$CANDIDATE_COUNTRY" ]] || return 1
+  CANDIDATE_ENDPOINT="$(canonicalize_endpoint "$CANDIDATE_ENDPOINT")" || return 1
+  [[ "$CANDIDATE_BW" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  [[ "$CANDIDATE_LOAD" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  [[ "$CANDIDATE_USERS" =~ ^[0-9]+$ ]] || return 1
+}
+
+rollback_rotation() {
+  local old_endpoint="${1:?}" reason="${2:-rotation_failed}"
+  log "Rolling back endpoint after $reason"
+  if ! restore_backup; then
+    log "Rollback restore failed"
+    write_status failed rollback_restore_failed || true
+    return 1
+  fi
+  if ! restart_iface forced "$old_endpoint" false; then
+    log "Rollback restart or verification failed"
+    write_status failed rollback_restart_failed || true
+    return 1
+  fi
+  if ! rm -f -- "$ROTATE_STAMP"; then
+    log "Rollback could not remove the rotation stamp"
+    write_status failed rollback_rotation_stamp_cleanup_failed || true
+    return 1
+  fi
+  write_status failed "${reason}_rolled_back" || return 1
+  if ! remove_rotation_pending; then
+    write_status failed rollback_marker_cleanup_failed || true
+    return 1
+  fi
+  log "Rollback verified at $old_endpoint"
+}
+
+RECONCILED_PENDING=0
+reconcile_pending_rotation() {
+  local old_endpoint
+  RECONCILED_PENDING=0
+  if [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]]; then return 0; fi
+  old_endpoint="$(read_rotation_pending)" || {
+    write_status failed invalid_rotation_pending_or_backup || true
+    return 1
+  }
+  restore_backup || { write_status failed pending_rotation_restore_failed || true; return 1; }
+  restart_iface forced "$old_endpoint" false || {
+    write_status failed pending_rotation_restart_failed || true
+    return 1
+  }
+  if ! rm -f -- "$ROTATE_STAMP"; then
+    log "Pending-rotation reconciliation could not remove the rotation stamp"
+    write_status failed pending_rotation_stamp_cleanup_failed || true
+    return 1
+  fi
+  write_status recovered pending_rotation_reconciled || return 1
+  remove_rotation_pending || {
+    write_status failed pending_rotation_marker_cleanup_failed || true
+    return 1
+  }
+  RECONCILED_PENDING=1
+}
+
+record_rotation_interruption() {
+  local signal="${1:?}"
+  if [[ -e "${ROTATION_PENDING:-}" || -L "${ROTATION_PENDING:-}" ]]; then
+    write_status failed "rotation_interrupted_${signal}" || true
+  fi
+}
+
+install_signal_handlers() {
+  trap 'record_rotation_interruption HUP; exit 129' HUP
+  trap 'record_rotation_interruption INT; exit 130' INT
+  trap 'record_rotation_interruption TERM; exit 143' TERM
+}
+
+measure_speed() {
+  local result http_code speed speed_int
+  if ! result="$(curl --disable --interface "$IFACE" -L --proto '=https' --proto-redir '=https' --max-redirs 3 --fail --silent --show-error \
+      --max-time "$SPEED_TIMEOUT" --output /dev/null \
+      --write-out $'%{http_code}\t%{speed_download}' "$SPEED_CHECK_URL" 2>/dev/null)"; then
+    return 1
+  fi
+  [[ "$result" != *$'\n'* ]] || return 1
+  IFS=$'\t' read -r http_code speed <<< "$result"
+  [[ "$http_code" == 200 && "$speed" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  speed_int="${speed%%.*}"
+  [[ "$speed_int" =~ ^[0-9]+$ && ${#speed_int} -le 10 ]] || return 1
+  printf '%s\n' "$speed_int"
+}
+
+verify_post_rotation_speed() {
+  local speed
+  if ! speed="$(measure_speed)"; then
+    log "Post-rotation speed verification failed"
+    return 1
+  fi
+  if (( 10#$speed < 10#$SPEED_MIN_BPS )); then
+    log "Post-rotation speed remains below threshold"
+    return 1
+  fi
+  log "Post-rotation speed verified (${speed} B/s)"
+}
+
+protective_restart_degraded() {
+  local reason="${1:?}" old_endpoint="${2:?}" restart_rc
+  if restart_iface respect-cooldown "$old_endpoint" false; then
+    write_status degraded "$reason" || true
+    return 2
+  else
+    restart_rc=$?
+    write_status failed "${reason}_restart_failed" || true
+    return "$restart_rc"
+  fi
+}
+
+rotate_airvpn() {
+  local reason="${1:-health_check_failed}" require_speed="${2:-0}"
+  local old_endpoint selection restart_rc cooldown_rc verify_speed=false
+  [[ "$require_speed" == 0 || "$require_speed" == 1 ]] || return 1
+  [[ "$require_speed" == 1 ]] && verify_speed=true
+
+  old_endpoint="$(configured_endpoint)" || {
+    log "WireGuard configuration must contain exactly one valid endpoint"
+    write_status failed invalid_wireguard_config || true
+    return 1
+  }
+
+  if ! truthy "$AIRVPN_ROTATE_ENABLED"; then
+    LAST_RESTART_REASON=
+    if restart_iface respect-cooldown "$old_endpoint" "$verify_speed"; then
+      write_status recovered "$(sanitize_status_value "$reason")" || return 1
+      return 0
+    else
+      restart_rc=$?
+      if [[ "$restart_rc" != 75 ]]; then
+        write_status failed "${LAST_RESTART_REASON:-restart_failed}" || true
+      fi
+      return "$restart_rc"
+    fi
+  fi
+
+  if cooldown_allows "$RESTART_STAMP" "$COOLDOWN"; then :; else
+    cooldown_rc=$?
+    if [[ "$cooldown_rc" == 75 ]]; then
+      log "Recovery suppressed by restart cooldown"
+      write_status suppressed restart_cooldown || true
+      return 75
+    fi
+    write_status failed invalid_restart_stamp || true
+    return 1
+  fi
+  if cooldown_allows "$ROTATE_STAMP" "$AIRVPN_ROTATE_COOLDOWN"; then :; else
+    cooldown_rc=$?
+    if [[ "$cooldown_rc" == 75 ]]; then
+      log "Recovery suppressed by rotation cooldown"
+      write_status suppressed rotation_cooldown || true
+      return 75
+    fi
+    write_status failed invalid_rotation_stamp || true
+    return 1
+  fi
+
+  if ! selection="$(select_airvpn_candidate)"; then
+    log "AirVPN candidate selection failed; restarting current endpoint"
+    protective_restart_degraded selector_failed "$old_endpoint"
+    return $?
+  fi
+  if ! parse_candidate "$selection"; then
+    log "AirVPN candidate output violated the seven-field contract; restarting current endpoint"
+    protective_restart_degraded selector_contract_failed "$old_endpoint"
+    return $?
+  fi
+
+  if ! begin_rotation_transaction "$old_endpoint"; then
+    log "Unable to durably begin the rotation transaction"
+    write_status failed rotation_transaction_prepare_failed || true
+    return 1
+  fi
+  if ! set_config_endpoint "$CANDIDATE_ENDPOINT"; then
+    log "Unable to atomically update the WireGuard endpoint"
+    rollback_rotation "$old_endpoint" config_update_failed || true
+    return 1
+  fi
+
+  log "Rotating AirVPN endpoint because $reason: $CANDIDATE_NAME $CANDIDATE_COUNTRY/$CANDIDATE_LOCATION, load=$CANDIDATE_LOAD, users=$CANDIDATE_USERS, bw_max=$CANDIDATE_BW, endpoint=$CANDIDATE_ENDPOINT"
+  if ! restart_iface respect-cooldown "$CANDIDATE_ENDPOINT" "$verify_speed"; then
+    rollback_rotation "$old_endpoint" rotation_restart_failed || true
+    return 1
+  fi
+  if ! write_stamp "$ROTATE_STAMP"; then
+    rollback_rotation "$old_endpoint" rotation_stamp_failed || true
+    return 1
+  fi
+  if ! write_status recovered "$(sanitize_status_value "$reason")"; then
+    rollback_rotation "$old_endpoint" status_write_failed || true
+    return 1
+  fi
+  if ! remove_rotation_pending; then
+    write_status failed rotation_marker_cleanup_failed || true
+    return 1
+  fi
+  log "AirVPN rotation complete"
+}
+
+SPEED_RECOVERY_PERFORMED=0
+
+speed_check() {
+  local first second reason first_measured=0 second_measured=0
+  SPEED_RECOVERY_PERFORMED=0
+  if first="$(measure_speed)"; then
+    first_measured=1
+    if (( 10#$first >= 10#$SPEED_MIN_BPS )); then
+      log "Speed check ok (${first} B/s)"
+      return 0
+    fi
+  fi
+  log "First speed sample failed or was below threshold; confirming"
+  sleep "$SPEED_RETRY_DELAY"
+  if second="$(measure_speed)"; then
+    second_measured=1
+    if (( 10#$second >= 10#$SPEED_MIN_BPS )); then
+      log "Speed check recovered on confirmation (${second} B/s)"
+      return 0
+    fi
+  fi
+  if (( first_measured && second_measured )); then reason="confirmed_speed_below_${SPEED_MIN_BPS}_Bps"; else reason=confirmed_speed_unhealthy; fi
+  SPEED_RECOVERY_PERFORMED=1
+  rotate_airvpn "$reason" 1
+}
+
+fast_tunnel_health() {
+  local configured
+  configured="$(configured_endpoint)" || { HEALTH_REASON=invalid_wireguard_config; return 1; }
+  check_tunnel_core "$configured" || { HEALTH_REASON="$CORE_REASON"; return 1; }
+  if [[ -n "$PING_TARGET" ]] && ! ping -I "$IFACE" -c "$PING_COUNT" -W "$PING_TIMEOUT" -- "$PING_TARGET" >/dev/null 2>&1; then
+    HEALTH_REASON=ping_failed
+    return 1
+  fi
+}
+is_root() { (( EUID == 0 )); }
+main() {
+  local lock_fd recovery_rc speed_rc cooldown_rc
+  if [[ $# -eq 1 && "$1" == --version ]]; then
+    printf 'wg-healthcheck %s\n' "$WG_HEALTHCHECK_VERSION"
+    return 0
+  fi
+  if [[ $# -ne 1 ]] || ! validate_interface_name "$1"; then
+    printf 'usage: wg-healthcheck <iface>\n' >&2
+    return 64
+  fi
+  IFACE="$1"
+  reset_configurable_defaults
+  derive_fixed_runtime_paths
+  sanitize_process_environment
+
+  if ! is_root; then
+    log "wg-healthcheck must run as root"
+    return 1
+  fi
+  validate_secure_file "$CFG" "health-check configuration" 600 || return 1
+  validate_secure_file "$WG_CONF" "WireGuard configuration" 600 || return 1
+  parse_healthcheck_config "$CFG" || return 1
+  validate_settings || return 1
+  prepare_state_dir || return 1
+
+  exec {lock_fd}>"$LOCK" || return 1
+  if ! flock -n "$lock_fd"; then
+    return 0
+  fi
+  reconcile_pending_rotation || return 1
+  (( RECONCILED_PENDING )) && return 0
+  configured_endpoint >/dev/null || {
+    log "WireGuard configuration must contain exactly one numeric endpoint"
+    return 1
+  }
+
+  if ! fast_tunnel_health; then
+    if rotate_airvpn "$HEALTH_REASON"; then
+      return 0
+    else
+      recovery_rc=$?
+      return "$recovery_rc"
+    fi
+  fi
+
+  if truthy "$SPEED_CHECK_ENABLED"; then
+    if cooldown_allows "$SPEED_STAMP" "$SPEED_CHECK_INTERVAL"; then
+      write_stamp "$SPEED_STAMP" || { write_status failed speed_stamp_failed || true; return 1; }
+      if speed_check; then speed_rc=0; else speed_rc=$?; fi
+      (( SPEED_RECOVERY_PERFORMED )) && return "$speed_rc"
+    else
+      cooldown_rc=$?
+      if [[ "$cooldown_rc" != 75 ]]; then
+        write_status failed invalid_speed_stamp || true
+        return 1
+      fi
+    fi
+  fi
+
+  if ! ensure_qbittorrent_binding; then
+    if rotate_airvpn qbittorrent_binding_failed; then
+      return 0
+    else
+      recovery_rc=$?
+      return "$recovery_rc"
+    fi
+  fi
+  write_status healthy all_checks_passed
+}
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  umask 077
+  set -euo pipefail
+  install_signal_handlers
+  main "$@"
+fi

@@ -1,0 +1,46 @@
+# WireGuard health-check settings. This file is validated and parsed as data by wg-healthcheck.
+# New installations leave speed recovery and endpoint rotation disabled until explicitly configured.
+
+# Tunnel health and restart timing.
+MAX_AGE=180
+COOLDOWN=300
+RESTART_DELAY=5
+WG_DOWN_TIMEOUT=20
+WG_UP_TIMEOUT=30
+
+# Optional ICMP check. Leave empty when the provider does not reliably answer ICMP.
+PING_TARGET=
+PING_COUNT=2
+PING_TIMEOUT=10
+
+# Optional policy-routing invariants. Leave empty to disable each check.
+# Documentation-only policy-routing examples:
+# REQUIRED_ROUTE="default dev wg0 table 100"
+# REQUIRED_RULE="from 192.0.2.2 lookup 100"
+REQUIRED_ROUTE=
+REQUIRED_RULE=
+
+# Optional qBittorrent binding proof and Docker restart. Configure all listen fields together.
+QBITTORRENT_CONTAINER=
+QBITTORRENT_LISTEN_IP=
+QBITTORRENT_LISTEN_PORT=
+QBITTORRENT_PROCESS_NAME=qbittorrent-nox
+QBITTORRENT_RESTART_DELAY=5
+QBITTORRENT_RESTART_TIMEOUT=60
+
+# Throttled speed recovery. 2,500,000 B/s is about 20 Mbit/s.
+SPEED_CHECK_ENABLED=0
+SPEED_CHECK_INTERVAL=900
+SPEED_CHECK_URL=https://speed.cloudflare.com/__down?bytes=10000000
+SPEED_MIN_BPS=2500000
+SPEED_TIMEOUT=25
+SPEED_RETRY_DELAY=5
+
+# Public, credential-free AirVPN endpoint rotation and exit verification.
+AIRVPN_ROTATE_ENABLED=0
+AIRVPN_COUNTRIES="GB NL BE DE FR IE"
+AIRVPN_WG_PORT=1637
+AIRVPN_ROTATE_COOLDOWN=1800
+AIRVPN_STATUS_URL=https://airvpn.org/api/status/?format=json
+AIRVPN_WHATISMYIP_URL=https://airvpn.org/api/whatismyip/?format=json
+AIRVPN_API_TIMEOUT=20

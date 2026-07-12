@@ -1,0 +1,11 @@
+[Unit]
+Description=Run WireGuard health check for %i every minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=wg-healthcheck@%i.service
+
+[Install]
+WantedBy=timers.target

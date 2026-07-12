@@ -1,0 +1,2 @@
+# Keep repository text byte-identical on Linux and Windows checkouts.
+* text=auto eol=lf
