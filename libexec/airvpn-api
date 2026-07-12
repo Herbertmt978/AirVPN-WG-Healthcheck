@@ -347,9 +347,93 @@ def parse_wireguard_profile(
     )
 
 
+_INVALID_PROFILE_OBJECT = object()
+
+
+def _try_normalize_wireguard_profile(profile):
+    try:
+        if type(profile) is not WireGuardProfile:
+            return _INVALID_PROFILE_OBJECT
+
+        if type(profile.address) is not ipaddress.IPv4Interface:
+            return _INVALID_PROFILE_OBJECT
+        address = _profile_address(str(profile.address))
+
+        if type(profile.private_key) is not str or len(profile.private_key) != 44:
+            return _INVALID_PROFILE_OBJECT
+        private_key = _wireguard_key(profile.private_key, "PrivateKey")
+
+        if type(profile.mtu) is not int or profile.mtu != 1320:
+            return _INVALID_PROFILE_OBJECT
+
+        if type(profile.dns) is not tuple or any(
+            type(address_text) is not str for address_text in profile.dns
+        ):
+            return _INVALID_PROFILE_OBJECT
+        if profile.dns:
+            dns_text = ", ".join(profile.dns)
+            dns = _profile_dns(dns_text)
+            if len(f"DNS = {dns_text}".encode("ascii")) > MAX_PROFILE_LINE_BYTES:
+                return _INVALID_PROFILE_OBJECT
+        else:
+            dns = ()
+
+        if profile.table is None:
+            table = None
+        elif type(profile.table) is str:
+            table = _profile_table(profile.table)
+        else:
+            return _INVALID_PROFILE_OBJECT
+
+        if type(profile.public_key) is not str or len(profile.public_key) != 44:
+            return _INVALID_PROFILE_OBJECT
+        public_key = _wireguard_key(profile.public_key, "PublicKey")
+
+        if type(profile.preshared_key) is not str or len(profile.preshared_key) != 44:
+            return _INVALID_PROFILE_OBJECT
+        preshared_key = _wireguard_key(profile.preshared_key, "PresharedKey")
+
+        if type(profile.endpoint) is not str:
+            return _INVALID_PROFILE_OBJECT
+        endpoint = _profile_endpoint(profile.endpoint)
+
+        if type(profile.allowed_ips) is not str or profile.allowed_ips != "0.0.0.0/0":
+            return _INVALID_PROFILE_OBJECT
+        if (
+            type(profile.persistent_keepalive) is not int
+            or profile.persistent_keepalive != 15
+        ):
+            return _INVALID_PROFILE_OBJECT
+
+        return WireGuardProfile(
+            address=address,
+            private_key=private_key,
+            mtu=1320,
+            dns=dns,
+            table=table,
+            public_key=public_key,
+            preshared_key=preshared_key,
+            endpoint=endpoint,
+            allowed_ips="0.0.0.0/0",
+            persistent_keepalive=15,
+        )
+    except Exception:
+        return _INVALID_PROFILE_OBJECT
+
+
+def _normalize_wireguard_profile(profile: WireGuardProfile) -> WireGuardProfile:
+    """Validate model fields without retaining secret-bearing failure details."""
+
+    normalized = _try_normalize_wireguard_profile(profile)
+    if normalized is _INVALID_PROFILE_OBJECT:
+        raise AirVPNAPIError("WireGuard profile object is invalid")
+    return normalized
+
+
 def render_wireguard_profile(profile: WireGuardProfile) -> bytes:
     """Render validated profile data in the canonical managed-profile format."""
 
+    profile = _normalize_wireguard_profile(profile)
     lines = [
         _GENERATED_PROFILE_HEADER,
         "[Interface]",
@@ -372,9 +456,7 @@ def render_wireguard_profile(profile: WireGuardProfile) -> bytes:
             f"PersistentKeepalive = {profile.persistent_keepalive}",
         )
     )
-    rendered = ("\n".join(lines) + "\n").encode("utf-8")
-    parse_wireguard_profile(rendered)
-    return rendered
+    return ("\n".join(lines) + "\n").encode("utf-8")
 
 
 def profiles_have_same_identity(
@@ -394,20 +476,23 @@ def _compose_pinned_profile(
 ) -> WireGuardProfile:
     """Pin current identity and local Table around newly generated profile data."""
 
+    current = _normalize_wireguard_profile(current)
+    generated = _normalize_wireguard_profile(generated)
     if not profiles_have_same_identity(current, generated):
         raise AirVPNAPIError("generated WireGuard profile identity does not match")
-    table = _profile_table(current.table) if current.table is not None else None
-    return WireGuardProfile(
-        address=current.address,
-        private_key=current.private_key,
-        mtu=generated.mtu,
-        dns=generated.dns,
-        table=table,
-        public_key=generated.public_key,
-        preshared_key=generated.preshared_key,
-        endpoint=generated.endpoint,
-        allowed_ips=generated.allowed_ips,
-        persistent_keepalive=generated.persistent_keepalive,
+    return _normalize_wireguard_profile(
+        WireGuardProfile(
+            address=current.address,
+            private_key=current.private_key,
+            mtu=generated.mtu,
+            dns=generated.dns,
+            table=current.table,
+            public_key=generated.public_key,
+            preshared_key=generated.preshared_key,
+            endpoint=generated.endpoint,
+            allowed_ips=generated.allowed_ips,
+            persistent_keepalive=generated.persistent_keepalive,
+        )
     )
 
 

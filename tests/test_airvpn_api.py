@@ -260,6 +260,51 @@ class ProfileRenderingTests(unittest.TestCase):
     def _parse(self, payload):
         return airvpn_api.parse_wireguard_profile(payload)
 
+    def _exception_chain_text(self, error):
+        text = []
+        seen = set()
+        pending = [error]
+        while pending:
+            current = pending.pop()
+            if current is None or id(current) in seen:
+                continue
+            seen.add(id(current))
+            text.extend((repr(current), str(current)))
+            pending.extend((current.__cause__, current.__context__))
+        return "\n".join(text)
+
+    def _assert_redacted_profile_error(self, operation, *profiles):
+        caught = None
+        try:
+            operation()
+        except Exception as error:
+            caught = error
+        if caught is None:
+            self.fail("forged WireGuard profile was accepted")
+
+        chain_text = self._exception_chain_text(caught)
+        keys = {
+            key
+            for profile in profiles
+            for key in (
+                profile.private_key,
+                profile.public_key,
+                profile.preshared_key,
+            )
+            if type(key) is str and key
+        }
+        self.assertFalse(
+            any(key in chain_text for key in keys),
+            "profile key material was retained by the exception chain",
+        )
+        self.assertTrue(
+            isinstance(caught, airvpn_api.AirVPNAPIError),
+            f"expected redacted AirVPNAPIError, got {type(caught).__name__}",
+        )
+        self.assertIsNone(caught.__cause__, "profile validation exposed a cause")
+        self.assertIsNone(caught.__context__, "profile validation exposed context")
+        return caught
+
     def _render(self, profile):
         self.assertTrue(
             hasattr(airvpn_api, "render_wireguard_profile"),
@@ -297,15 +342,32 @@ class ProfileRenderingTests(unittest.TestCase):
             ).encode("utf-8"),
         )
 
-        with self.assertRaises(airvpn_api.AirVPNAPIError) as caught:
-            self._render(
-                replace(
+        forged_profiles = {
+            "Address type": replace(profile, address=str(profile.address)),
+            "MTU type": replace(profile, mtu="1320"),
+            "DNS type": replace(profile, dns=list(profile.dns)),
+            "DNS value": replace(profile, dns=("vpn.example.test",)),
+            "Table type": replace(profile, table=123),
+            "private key": replace(profile, private_key="not-a-key"),
+            "public key": replace(profile, public_key="not-a-key"),
+            "preshared key": replace(profile, preshared_key="not-a-key"),
+            "Endpoint value": replace(
+                profile,
+                endpoint="198.51.100.10:1637\nPostUp = /usr/bin/id",
+            ),
+            "AllowedIPs type": replace(
+                profile,
+                allowed_ips=ipaddress.ip_network("0.0.0.0/0"),
+            ),
+            "keepalive type": replace(profile, persistent_keepalive="15"),
+        }
+        for label, forged in forged_profiles.items():
+            with self.subTest(label=label):
+                self._assert_redacted_profile_error(
+                    lambda forged=forged: self._render(forged),
                     profile,
-                    endpoint="198.51.100.10:1637\nPostUp = /usr/bin/id",
+                    forged,
                 )
-            )
-        for secret in (profile.private_key, profile.preshared_key):
-            self.assertNotIn(secret, str(caught.exception))
 
     def test_parse_render_parse_is_stable(self):
         profile = self._parse(
@@ -405,23 +467,86 @@ class ProfileRenderingTests(unittest.TestCase):
             generated.persistent_keepalive,
         )
 
-        with self.assertRaises(airvpn_api.AirVPNAPIError):
-            self._compose(replace(current, table="$(invalid)"), generated)
-        with self.assertRaises(airvpn_api.AirVPNAPIError):
-            self._compose(
+        invalid_current_profiles = {
+            "current Address type": replace(current, address=str(current.address)),
+            "current private key": replace(current, private_key="not-a-key"),
+            "current MTU type": replace(current, mtu="1320"),
+            "current DNS type": replace(current, dns=list(current.dns)),
+            "current Table value": replace(current, table="$(invalid)"),
+            "current Table type": replace(current, table=123),
+            "current public key": replace(current, public_key="not-a-key"),
+            "current preshared key": replace(current, preshared_key="not-a-key"),
+            "current Endpoint": replace(current, endpoint="vpn.example.test:1637"),
+            "current AllowedIPs type": replace(
                 current,
-                replace(generated, private_key=_dummy_wireguard_key(8)),
-            )
+                allowed_ips=ipaddress.ip_network("0.0.0.0/0"),
+            ),
+            "current keepalive type": replace(
+                current,
+                persistent_keepalive="15",
+            ),
+        }
+        for label, forged in invalid_current_profiles.items():
+            with self.subTest(label=label):
+                self._assert_redacted_profile_error(
+                    lambda forged=forged: self._compose(forged, generated),
+                    current,
+                    generated,
+                    forged,
+                )
+
+        invalid_generated_profiles = {
+            "generated Address type": replace(
+                generated,
+                address=str(generated.address),
+            ),
+            "generated private key": replace(
+                generated,
+                private_key="not-a-key",
+            ),
+            "generated MTU type": replace(generated, mtu="1320"),
+            "generated DNS type": replace(generated, dns=list(generated.dns)),
+            "generated Table type": replace(generated, table=123),
+            "generated public key": replace(generated, public_key="not-a-key"),
+            "generated preshared key": replace(
+                generated,
+                preshared_key="not-a-key",
+            ),
+            "generated Endpoint": replace(
+                generated,
+                endpoint="vpn.example.test:47107",
+            ),
+            "generated AllowedIPs type": replace(
+                generated,
+                allowed_ips=ipaddress.ip_network("0.0.0.0/0"),
+            ),
+            "generated keepalive type": replace(
+                generated,
+                persistent_keepalive="15",
+            ),
+        }
+        for label, forged in invalid_generated_profiles.items():
+            with self.subTest(label=label):
+                self._assert_redacted_profile_error(
+                    lambda forged=forged: self._compose(current, forged),
+                    current,
+                    generated,
+                    forged,
+                )
 
     def test_profile_and_manifest_repr_are_redacted(self):
         profile = self._parse(_wireguard_profile())
         safe_preview = {"status": "validated", "profile": profile}
 
-        with self.assertRaises(airvpn_api.AirVPNAPIError) as caught:
-            self._compose(
-                profile,
-                replace(profile, private_key=_dummy_wireguard_key(4)),
-            )
+        changed_identity = replace(
+            profile,
+            private_key=_dummy_wireguard_key(4),
+        )
+        caught = self._assert_redacted_profile_error(
+            lambda: self._compose(profile, changed_identity),
+            profile,
+            changed_identity,
+        )
 
         for secret in (
             profile.private_key,
@@ -430,8 +555,18 @@ class ProfileRenderingTests(unittest.TestCase):
         ):
             self.assertNotIn(secret, repr(profile))
             self.assertNotIn(secret, repr(safe_preview))
-            self.assertNotIn(secret, repr(caught.exception))
-            self.assertNotIn(secret, str(caught.exception))
+            self.assertNotIn(secret, repr(caught))
+            self.assertNotIn(secret, str(caught))
+
+        surrogate_profile = replace(
+            profile,
+            endpoint=f"{profile.endpoint}\ud800",
+        )
+        self._assert_redacted_profile_error(
+            lambda: self._render(surrogate_profile),
+            profile,
+            surrogate_profile,
+        )
 
 
 class CountryListingTests(unittest.TestCase):
