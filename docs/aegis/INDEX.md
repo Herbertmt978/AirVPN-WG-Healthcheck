@@ -15,3 +15,7 @@
 ## Architecture decisions
 
 No ADRs have been accepted yet.
+
+## Work records
+
+- [AirVPN API-managed profiles execution](work/2026-07-12-airvpn-api-managed-profiles/10-intent.md)
