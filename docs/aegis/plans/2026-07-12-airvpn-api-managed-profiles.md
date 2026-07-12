@@ -379,7 +379,7 @@ authenticated mutation.
 **Verification:** `bash tests/test_wg_managed_profiles.sh api_state` through the suite's
 name filter.
 
-- [ ] **Write RED tests.** Add strict round-trip/security, rolling six-attempt cap,
+- [x] **Write RED tests.** Add strict round-trip/security, rolling six-attempt cap,
   five-minute-to-six-hour backoff, 24-hour `Retry-After` ceiling, 16-entry/six-hour
   exclusion set, credential-stat/device reset, clock regression, corrupt-state blocking,
   interface-before-global lock order, and a two-process/two-interface blocking-provider
@@ -390,9 +390,9 @@ name filter.
   Add explicit administrative dry-run coverage proving auth/device suppression bypass,
   attempt accounting, daily/rate/transient limits retained, success clearing suppression,
   failure reclassification, and timer runs remaining suppressed.
-- [ ] **Verify RED.** Require missing state functions to fail without touching candidate,
+- [x] **Verify RED.** Require missing state functions to fail without touching candidate,
   Docker, or tunnel doubles.
-- [ ] **Implement minimal state owner.** Add strict versioned read/write/prune functions,
+- [x] **Implement minimal state owner.** Add strict versioned read/write/prune functions,
   atomic mode-0600 writes under root mode-0700 `/var/lib/wg-healthcheck`, credential
   device/inode/mtime/size metadata, fixed lock order, and release of the global API lock
   immediately after response/outcome persistence. Extend `select_candidate` with an empty-
@@ -400,8 +400,8 @@ name filter.
   failed managed candidate before rollback and supply only unexpired entries on the next
   API selection. Add an explicit-admin-dry-run flag that bypasses only auth/device
   suppression and clears it only after a successful validation.
-- [ ] **Verify GREEN.** Run focused/full managed tests, syntax, and ShellCheck.
-- [ ] **Commit.** `git commit -m "Persist managed API backoff state"`.
+- [x] **Verify GREEN.** Run focused/full managed tests, syntax, and ShellCheck.
+- [x] **Commit.** `git commit -m "Persist managed API backoff state"`.
 
 ## Task 6: Versioned managed journal and v1 compatibility
 

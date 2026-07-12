@@ -108,6 +108,39 @@
 - Scope was exactly the five authorised Task 4 files; no live key or key-like literal was
   introduced.
 
+### Task 5: persistent API state and lock discipline
+
+- Accepted commits: `2afabadef34265e2c931db2f5d6d6b0510291185`,
+  `6cd933b7abb1f5b6dff08540f9a2796d32d98534`, and
+  `af6a6b3d8970fb86fd1adc3e04015c57a71b0d0f`.
+- Initial RED: managed state functions and selector exclusions were absent; focused
+  managed and provider tests failed without touching candidate, Docker, or tunnel paths.
+- Review RED evidence reproduced and then fixed:
+  - a fixed daily bucket admitted eleven attempts inside one trailing 24-hour window;
+  - clock rollback and implausible credential metadata were accepted;
+  - managed exclusions reached only a test adapter, not the production selector;
+  - temporary credential-FD closure let Bash reuse the number for the global lock;
+  - credential identity came from a reopened path rather than the provider's exact FD;
+  - natural output names silently collided with Bash locals and could leak an opened key FD;
+  - failed exclusion persistence skipped rollback;
+  - pre-lock/pre-provider time shortened backoff, `Retry-After`, and exclusions;
+  - suppressed runs failed to durably advance their clock high-water mark.
+- Final GREEN evidence:
+  - managed Linux/root suite: 35/35 passed;
+  - managed normal-user suite: 32/32 passed with three deliberate real root-ownership
+    checks skipped; direct non-root production entry remained rejected;
+  - complete provider suite: 65/65 passed;
+  - complete static/runtime suite: 67/67 passed;
+  - exact rolling attempt epochs, strict canonical state, fresh post-lock/post-provider
+    clocks, durable backoff/exclusions, production selector trust, private-FD isolation,
+    exact-FD identity, two-interface serialization, and rollback ordering were verified;
+  - Bash syntax, expanded ShellCheck, Python compile, diff/whitespace checks, and gitleaks
+    current-tree scan passed.
+- Independent specification, shell/API, and final code-quality/security re-reviews all
+  approved the final tree with no residual Task 5 finding.
+- No live API key was used. Module/test size now requires the already-planned Task 14
+  split and ownership decision before release.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.
