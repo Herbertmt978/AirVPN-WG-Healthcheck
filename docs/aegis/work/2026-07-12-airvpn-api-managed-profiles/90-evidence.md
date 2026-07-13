@@ -531,13 +531,24 @@ the actual release contract successfully.
   `managed_generate_candidate_provider` is 42 lines, and the existing 132-line authenticated
   attempt ceiling is unchanged. Refactoring exposed and fixed a close-failure precedence
   regression before acceptance.
-- Fresh current-tree Linux checks passed Python discovery 203/203, the complete managed
-  recovery suite 125/125, architecture 11/11, generated-module equivalence, Bash syntax,
-  and public documentation 16/16. Pinned Gitleaks 8.30.1 found no current-tree leak. Two
-  independent Terra integration/architecture reviews and a Luna documentation/API-scope
-  review returned READY. A Windows-mounted staged-installer run was rejected only by the
-  expected lack of native POSIX ownership/mode semantics and is not counted as release
-  evidence; the fresh native-Linux exact-commit gate remains pending.
+- Exact commit `47e75114bb18b67a34d54214a292a4ce08460923` was cloned from a complete
+  Git bundle into separate native-Linux root-owned and ordinary-user worktrees. Python
+  discovery passed 203/203; healthcheck passed 89/89 as root and 89/89 non-root; managed
+  recovery passed 125/125 as root and 120 with five intentional ownership skips non-root;
+  installer passed 58 with one intentional root-only skip and 59/59 non-root. Architecture
+  11/11, generated-module equivalence, Bash syntax, ShellCheck 0.9.0, systemd 255.4
+  verification, and actionlint also passed.
+- The exact release check verified 27 files. Two independent builds produced byte-identical
+  tar, ZIP, and `SHA256SUMS` artifacts. Their SHA-256 values are
+  `b51557be42032af357cc1e974b91944876ec8eba77d2b1e05159d94e1abed29c`,
+  `bd1d819feb3e34a022a71cfb0110804b0f03693f926186aed4c08394057a7fc8`, and
+  `635ecf701ea422381b91f480a305b476cc2207ba0629b275035d31b44883e315`.
+  Pinned Gitleaks 8.30.1 found no leak in the 59 reachable commits, exact tree, or either
+  extracted 27-file archive. Two independent Terra integration/architecture reviews and a
+  Luna documentation/API-scope review returned READY.
+- A Windows-mounted staged-installer run was rejected only by the expected lack of native
+  POSIX ownership/mode semantics and is not counted as release evidence; the corresponding
+  fresh native-Linux root and non-root installer gates above passed.
 
 Authenticated raw-profile success, API apply, live rollback/rotation, release, tag, and
 publication remain unclaimed. The six-attempt rolling cap does not naturally reopen until

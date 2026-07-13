@@ -89,9 +89,9 @@ Updated: 2026-07-13
 - Implementation worktree:
   `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `85abcdd`; its exact root/non-root Linux and release
-  gates passed. The VM still runs the byte-identical `4acdf43` runtime installed before the
-  documentation-only checkpoint.
+- Last accepted implementation commit: `47e7511`; its exact root/non-root Linux, release,
+  reproducibility, workflow, and secret gates passed. The VM still runs the byte-identical
+  `4acdf43` runtime pending a quiesced diagnostic-build update.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -116,9 +116,12 @@ Updated: 2026-07-13
   failure-containment, key-removal, and static-routing evidence is accepted, while
   authenticated raw-profile success, live rollback/rotation, release, and API-mode VM
   migration remain unclaimed.
-- **Current diagnostic candidate:** `phase=response` may add only one local value from
+- **Accepted diagnostic candidate:** exact commit `47e7511`; `phase=response` may add only
+  one local value from
   `status`, `encoding`, `media`, `read`, `size`, `json`, or `protocol`. Current-tree Linux
-  verification passed Python 203/203, managed recovery 125/125, architecture 11/11,
-  generated-source drift, Bash syntax, public-doc contracts, and a redacted Gitleaks tree
-  scan. Two independent Terra reviews and one Luna documentation/API-scope review returned
-  READY. Exact-commit root/non-root and release verification remains the next gate.
+  and exact-commit verification passed Python 203/203, root/non-root health 89/89 each,
+  managed root 125/125 and non-root 120 with five intentional skips, installer root 58 with
+  one intentional skip and non-root 59/59, architecture 11/11, generated-source drift,
+  Bash syntax, ShellCheck, systemd, workflow, 27-file reproducible release, and redacted
+  Gitleaks history/tree/archive scans. Two independent Terra reviews and one Luna
+  documentation/API-scope review returned READY.
