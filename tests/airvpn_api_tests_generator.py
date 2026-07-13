@@ -354,7 +354,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
             with self.subTest(headers=response.headers, status=response.status):
                 result = self._run_generator(response=response)
                 self.assertEqual(result.return_code, 6)
-                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stdout, "failure\ttransient\tphase=response\n")
                 self.assertEqual(result.output_stream.write_calls, [])
                 self.assertTrue(response.closed)
 
@@ -396,7 +396,12 @@ class GeneratorBoundaryTests(unittest.TestCase):
             with self.subTest(status=status):
                 result = self._run_generator(opener_error=error)
                 self.assertEqual(result.return_code, expected_exit)
-                self.assertEqual(result.stdout, "")
+                expected_stdout = (
+                    "failure\ttransient\tphase=transport\n"
+                    if expected_exit == 6
+                    else ""
+                )
+                self.assertEqual(result.stdout, expected_stdout)
                 self.assertNotIn("remote", result.stderr)
                 self.assertEqual(result.output_stream.write_calls, [])
                 self.assertTrue(body.closed)
@@ -409,6 +414,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
             with self.subTest(error=type(error).__name__):
                 result = self._run_generator(opener_error=error)
                 self.assertEqual(result.return_code, 6)
+                self.assertEqual(result.stdout, "failure\ttransient\tphase=transport\n")
                 self.assertNotIn("sentinel", result.stderr)
                 self.assertEqual(result.output_stream.write_calls, [])
 
@@ -429,7 +435,11 @@ class GeneratorBoundaryTests(unittest.TestCase):
             with self.subTest(case=tuple(case)):
                 result = self._run_generator(**case)
                 self.assertEqual(result.return_code, 6)
-                self.assertEqual(result.stdout, "")
+                phase = "transport" if "opener_error" in case else "response"
+                self.assertEqual(
+                    result.stdout,
+                    f"failure\ttransient\tphase={phase}\n",
+                )
                 self.assertNotIn(marker.decode("ascii"), result.stderr)
                 self.assertEqual(result.output_stream.write_calls, [])
 
@@ -571,7 +581,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
         result = self._run_generator(response=_Response(profile))
 
         self.assertEqual(result.return_code, 6)
-        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stdout, "failure\ttransient\tphase=profile\n")
         self.assertEqual(result.output_stream.write_calls, [])
         self.assertEqual(result.output_stream.snapshot, b"")
         self.assertNotIn(sentinel, result.stderr)
@@ -581,6 +591,65 @@ class GeneratorBoundaryTests(unittest.TestCase):
             airvpn_api.parse_wireguard_profile(profile).preshared_key,
         ):
             self.assertNotIn(secret, result.stderr)
+
+    def test_transient_phase_manifest_is_allowlisted_and_secret_free(self):
+        marker = "raw-provider-detail-should-never-cross"
+        cases = (
+            (
+                "transport",
+                dict(opener_error=urllib.error.URLError(marker)),
+            ),
+            (
+                "response",
+                dict(
+                    response=_Response(
+                        b"{" + marker.encode("ascii"),
+                        content_type="application/json",
+                    )
+                ),
+            ),
+            (
+                "profile",
+                dict(response=_Response(b"not-a-wireguard-profile-" + marker.encode("ascii"))),
+            ),
+        )
+        for phase, kwargs in cases:
+            with self.subTest(phase=phase):
+                result = self._run_generator(**kwargs)
+                self.assertEqual(result.return_code, 6)
+                self.assertEqual(
+                    result.stdout,
+                    f"failure\ttransient\tphase={phase}\n",
+                )
+                self.assertEqual(
+                    result.stderr,
+                    "ERROR: authenticated provider request failed\n",
+                )
+                self.assertNotIn(marker, result.stdout)
+                self.assertNotIn(marker, result.stderr)
+
+        with mock.patch.object(
+            airvpn_api,
+            "_generate_profile_secret_body",
+            side_effect=RuntimeError(marker),
+        ):
+            result = self._run_generator()
+        self.assertEqual(result.return_code, 6)
+        self.assertEqual(result.stdout, "failure\ttransient\tphase=internal\n")
+        self.assertEqual(
+            result.stderr,
+            "ERROR: authenticated provider request failed\n",
+        )
+        self.assertNotIn(marker, result.stdout)
+        self.assertNotIn(marker, result.stderr)
+
+        error, _opener, _streams = self._direct_generator_error(
+            opener_error=urllib.error.URLError(marker)
+        )
+        self.assertEqual(error.phase, airvpn_api.GeneratorTransientPhase.TRANSPORT)
+        self.assertNotIn(marker, repr(error))
+        self.assertNotIn(marker, str(error))
+        self.assertNotIn(marker, repr(vars(error)))
 
     def test_secret_failures_raise_only_from_secret_free_module_frames(self):
         payload_marker = b"fd5-invalid-payload-marker"
