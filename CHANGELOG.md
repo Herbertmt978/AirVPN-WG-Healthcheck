@@ -28,7 +28,8 @@ All notable changes to this project are documented here. Release numbers follow
   soft preference, and explicit `ALL` permits every currently eligible country.
 - Setup and upgrades preserve operator files, require explicit apply and timer decisions,
   leave quiesced timers disabled for manual verification, and install every managed/setup
-  runtime owner through inert upgrade guards.
+  runtime owner through inert upgrade guards. Quiesced v1.0 upgrades narrowly migrate an
+  unlocked, empty, root-owned selected-interface legacy lock from `0644` to `0600`.
 - Release archives and CI now cover the complete v1.1 runtime on Ubuntu 22.04 and 24.04,
   with reproducible tar/ZIP assets and exact installed-layout checks.
 - Managed recovery now has bounded canonical source fragments and split regression suites,

@@ -744,9 +744,26 @@ create_upgrade_lock_file() {
   ( set -o noclobber; umask 077; : >"$path" ) 2>/dev/null
 }
 
+migrate_legacy_upgrade_lock() {
+  local path="$1" lock_fd="$2" identity="$3"
+  local descriptor="/proc/$BASHPID/fd/$lock_fd"
+
+  [[ ! -L "$path" && -f "$path" &&
+     "$(stat -Lc '%d:%i:%u:%h:%s' -- "$descriptor")" == "$identity" &&
+     "$(stat -c '%d:%i:%u:%h:%s' -- "$path")" == "$identity" &&
+     "$(stat -Lc '%a' -- "$descriptor")" == 644 &&
+     "$(stat -c '%a' -- "$path")" == 644 ]] &&
+    chmod 0600 -- "$descriptor" &&
+    [[ ! -L "$path" && -f "$path" &&
+       "$(stat -Lc '%d:%i:%u:%h:%s' -- "$descriptor")" == "$identity" &&
+       "$(stat -c '%d:%i:%u:%h:%s' -- "$path")" == "$identity" &&
+       "$(stat -Lc '%a' -- "$descriptor")" == 600 &&
+       "$(stat -c '%a' -- "$path")" == 600 ]]
+}
+
 acquire_upgrade_lock_file() {
-  local path="$1" create_missing="$2"
-  local owner mode links before opened lock_fd=''
+  local path="$1" create_missing="$2" allow_legacy="${3:-0}"
+  local owner mode links size identity opened lock_fd='' migrate_legacy=0
 
   if [[ ! -e "$path" && ! -L "$path" ]]; then
     if (( ! create_missing )); then
@@ -767,11 +784,26 @@ acquire_upgrade_lock_file() {
   owner="$(stat -c '%u' -- "$path")" || return 1
   mode="$(stat -c '%a' -- "$path")" || return 1
   links="$(stat -c '%h' -- "$path")" || return 1
-  if [[ "$owner" != "$EUID" || "$mode" != 600 || "$links" != 1 ]]; then
+  size="$(stat -c '%s' -- "$path")" || return 1
+  if [[ "$owner" != "$EUID" || "$links" != 1 ]]; then
     error "upgrade lock has unsafe metadata: $path"
     return 1
   fi
-  before="$(stat -c '%d:%i:%u:%a:%h' -- "$path")" || return 1
+  case "$mode:$size" in
+    600:*) ;;
+    644:0)
+      if [[ "$allow_legacy" != 1 ]]; then
+        error "upgrade lock has unsafe metadata: $path"
+        return 1
+      fi
+      migrate_legacy=1
+      ;;
+    *)
+      error "upgrade lock has unsafe metadata: $path"
+      return 1
+      ;;
+  esac
+  identity="$(stat -c '%d:%i:%u:%h:%s' -- "$path")" || return 1
   if ! exec {lock_fd}<>"$path"; then
     error "upgrade lock could not be opened safely: $path"
     return 1
@@ -781,12 +813,14 @@ acquire_upgrade_lock_file() {
     error "upgrade lock changed while it was opened: $path"
     return 1
   fi
-  opened="$(stat -Lc '%d:%i:%u:%a:%h' -- "/proc/$BASHPID/fd/$lock_fd")" || {
+  opened="$(stat -Lc '%d:%i:%u:%h:%s' -- "/proc/$BASHPID/fd/$lock_fd")" || {
     exec {lock_fd}>&-
     return 1
   }
-  if [[ "$opened" != "$before" ||
-        "$(stat -c '%d:%i:%u:%a:%h' -- "$path")" != "$before" ]]; then
+  if [[ "$opened" != "$identity" ||
+        "$(stat -c '%d:%i:%u:%h:%s' -- "$path")" != "$identity" ||
+        "$(stat -Lc '%a' -- "/proc/$BASHPID/fd/$lock_fd")" != "$mode" ||
+        "$(stat -c '%a' -- "$path")" != "$mode" ]]; then
     exec {lock_fd}>&-
     error "upgrade lock changed while it was opened: $path"
     return 1
@@ -794,6 +828,13 @@ acquire_upgrade_lock_file() {
   if ! flock_exec -n -x "$lock_fd"; then
     exec {lock_fd}>&-
     error "refusing to install while an upgrade lock is held: $path"
+    return 1
+  fi
+  if (( migrate_legacy )) &&
+     ! migrate_legacy_upgrade_lock "$path" "$lock_fd" "$identity"; then
+    flock_exec -u "$lock_fd" >/dev/null 2>&1 || :
+    exec {lock_fd}>&-
+    error "legacy upgrade lock could not be migrated safely: $path"
     return 1
   fi
   UPGRADE_LOCK_FDS+=("$lock_fd")
@@ -813,8 +854,10 @@ release_upgrade_locks() {
 }
 
 acquire_upgrade_locks() {
-  local path nullglob_was_set=0
+  local allow_selected_legacy="${1:-0}" path nullglob_was_set=0
   local -a setup_guards=() interface_locks=()
+
+  [[ "$allow_selected_legacy" == 0 || "$allow_selected_legacy" == 1 ]] || return 1
 
   if (( ${#UPGRADE_LOCK_FDS[@]} != 0 || ${#UPGRADE_LOCK_PATHS[@]} != 0 )); then
     error 'upgrade locks are already retained by this installer process'
@@ -839,7 +882,7 @@ acquire_upgrade_locks() {
       return 1
     }
   done
-  acquire_upgrade_lock_file "$LIVE_INTERFACE_LOCK" 1 || {
+  acquire_upgrade_lock_file "$LIVE_INTERFACE_LOCK" 1 "$allow_selected_legacy" || {
     release_upgrade_locks >/dev/null 2>&1 || :
     return 1
   }
@@ -909,7 +952,7 @@ stabilize_live_upgrade_after_guards() {
 # Retained for source-compatible installer tests and operator tooling. The probe now
 # acquires and retains both administrative and worker locks through publication.
 probe_existing_interface_lock() {
-  acquire_upgrade_locks
+  acquire_upgrade_locks "${1:-0}"
 }
 
 refuse_recovery_artifacts() {
@@ -990,7 +1033,7 @@ prepare_live_upgrade() {
     if ! systemctl_exec stop "$service" ||
        ! wait_for_instance_inactive "$iface" ||
        ! refuse_active_shared_instances ||
-       ! probe_existing_interface_lock ||
+       ! probe_existing_interface_lock 1 ||
        ! refuse_active_instance "$iface" ||
        ! refuse_active_shared_instances ||
        ! refuse_recovery_artifacts; then

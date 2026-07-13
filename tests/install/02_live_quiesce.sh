@@ -546,6 +546,164 @@ test_upgrade_locks_are_retained_and_released_for_the_selected_interface() (
     fail 'wg1 lock remained held after release'
 )
 
+test_upgrade_locks_migrate_only_safe_empty_legacy_mode() (
+  local stage runtime rc holder ready attempt
+
+  require_posix_modes || return $?
+  stage="$(new_stage)" || return 1
+  runtime="$stage/run/wg-healthcheck"
+  mkdir -p -- "$runtime"
+  chmod 0700 -- "$runtime"
+  : >"$runtime/wg1.lock"
+  chmod 0644 -- "$runtime/wg1.lock"
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  IFACE=wg1
+  DESTDIR="$stage"
+  LIVE_INSTALL=1
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  systemctl_exec() {
+    case "$1" in
+      is-enabled) printf 'enabled\n'; return 0 ;;
+      is-active) return 3 ;;
+      list-units) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+
+  prepare_live_upgrade 0 wg1 >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || {
+    release_upgrade_locks >/dev/null 2>&1 || true
+    fail 'ordinary upgrade migrated a legacy lock'
+    return 1
+  }
+  assert_mode 644 "$LIVE_INTERFACE_LOCK" || return 1
+
+  prepare_live_upgrade 1 wg1 || {
+    fail 'safe empty root-owned legacy lock was not migrated'
+    return 1
+  }
+  assert_mode 600 "$LIVE_INTERFACE_LOCK" || return 1
+  release_upgrade_locks || return 1
+
+  printf 'nonempty\n' >"$LIVE_INTERFACE_LOCK"
+  chmod 0644 -- "$LIVE_INTERFACE_LOCK"
+  acquire_upgrade_locks 1 >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || {
+    release_upgrade_locks >/dev/null 2>&1 || true
+    fail 'nonempty legacy lock was migrated'
+    return 1
+  }
+
+  : >"$LIVE_INTERFACE_LOCK"
+  chmod 0664 -- "$LIVE_INTERFACE_LOCK"
+  acquire_upgrade_locks 1 >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || {
+    release_upgrade_locks >/dev/null 2>&1 || true
+    fail 'legacy lock with an unapproved mode was migrated'
+    return 1
+  }
+
+  : >"$LIVE_INTERFACE_LOCK"
+  chmod 0644 -- "$LIVE_INTERFACE_LOCK"
+  ready="$runtime/legacy-holder-ready"
+  (
+    exec 7<>"$LIVE_INTERFACE_LOCK"
+    command flock -x 7
+    : >"$ready"
+    sleep 1
+  ) &
+  holder=$!
+  for attempt in $(seq 1 100); do
+    [[ -e "$ready" ]] && break
+    sleep 0.01
+  done
+  [[ -e "$ready" ]] || {
+    wait "$holder" || true
+    fail 'legacy lock holder did not become ready'
+    return 1
+  }
+  acquire_upgrade_locks 1 >/dev/null 2>&1
+  rc=$?
+  wait "$holder" || true
+  [[ $rc -ne 0 ]] || {
+    release_upgrade_locks >/dev/null 2>&1 || true
+    fail 'held legacy lock was migrated'
+    return 1
+  }
+  assert_mode 644 "$LIVE_INTERFACE_LOCK" || return 1
+
+  ln -- "$LIVE_INTERFACE_LOCK" "$runtime/legacy-lock-alias"
+  acquire_upgrade_locks 1 >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || {
+    release_upgrade_locks >/dev/null 2>&1 || true
+    fail 'multiply linked legacy lock was migrated'
+    return 1
+  }
+  assert_mode 644 "$LIVE_INTERFACE_LOCK" || return 1
+
+  rm -- "$runtime/legacy-lock-alias"
+  chmod 0600 -- "$LIVE_INTERFACE_LOCK"
+  : >"$runtime/wg2.lock"
+  chmod 0644 -- "$runtime/wg2.lock"
+  acquire_upgrade_locks 1 >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || {
+    release_upgrade_locks >/dev/null 2>&1 || true
+    fail 'quiesced selected-interface gate migrated another interface lock'
+    return 1
+  }
+  assert_mode 644 "$runtime/wg2.lock" || return 1
+
+  rm -- "$runtime/wg2.lock" "$LIVE_SETUP_GUARD"
+  : >"$LIVE_SETUP_GUARD"
+  chmod 0644 -- "$LIVE_SETUP_GUARD"
+  acquire_upgrade_locks 1 >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || {
+    release_upgrade_locks >/dev/null 2>&1 || true
+    fail 'selected-interface gate migrated a legacy setup guard'
+    return 1
+  }
+  assert_mode 644 "$LIVE_SETUP_GUARD" || return 1
+
+  chmod 0600 -- "$LIVE_SETUP_GUARD"
+  rm -- "$LIVE_INTERFACE_LOCK"
+  : >"$runtime/legacy-symlink-target"
+  chmod 0644 -- "$runtime/legacy-symlink-target"
+  ln -s -- "$runtime/legacy-symlink-target" "$LIVE_INTERFACE_LOCK"
+  acquire_upgrade_locks 1 >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || {
+    release_upgrade_locks >/dev/null 2>&1 || true
+    fail 'legacy lock symlink was migrated'
+    return 1
+  }
+  assert_mode 644 "$runtime/legacy-symlink-target" || return 1
+
+  if (( EUID == 0 )); then
+    rm -- "$LIVE_INTERFACE_LOCK"
+    : >"$LIVE_INTERFACE_LOCK"
+    chmod 0644 -- "$LIVE_INTERFACE_LOCK"
+    chown 65534 -- "$LIVE_INTERFACE_LOCK"
+    acquire_upgrade_locks 1 >/dev/null 2>&1
+    rc=$?
+    [[ $rc -ne 0 ]] || {
+      release_upgrade_locks >/dev/null 2>&1 || true
+      fail 'wrong-owner legacy lock was migrated'
+      return 1
+    }
+    [[ "$(stat -c '%u' -- "$LIVE_INTERFACE_LOCK")" == 65534 ]] ||
+      fail 'wrong-owner legacy lock ownership changed'
+  fi
+)
+
 test_upgrade_locks_refuse_held_wg1_lock_or_unsafe_setup_guard() (
   local stage runtime outside rc
 

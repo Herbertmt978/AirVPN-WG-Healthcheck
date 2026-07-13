@@ -146,6 +146,8 @@ sudo ./install.sh --quiesce wg0
 
 `--quiesce` records the timer state, stops the selected timer and worker, waits for inactivity, checks locks and recovery artifacts, installs the new files, and leaves the timer disabled for a manual check. It is incompatible with `--enable` and `DESTDIR`. If it reports an incomplete upgrade, keep the timer disabled and follow the [upgrade recovery procedure](docs/operations.md#upgrade-and-rollback).
 
+For v1.0 upgrades only, quiescence can tighten an empty root-owned legacy lock from mode `0644` to `0600` after proving it is the unlocked selected-interface file beneath the private runtime directory. It never relaxes validation for setup guards, other interfaces, nonempty files, links, or ordinary non-quiesced installs.
+
 ## Security and support
 
 Read [SECURITY.md](SECURITY.md) before reporting a vulnerability and [CONTRIBUTING.md](CONTRIBUTING.md) before sharing diagnostics. Never submit private keys, API keys, tokens, passwords, complete configuration files, or unredacted logs.

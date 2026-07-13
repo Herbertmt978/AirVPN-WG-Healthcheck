@@ -67,6 +67,8 @@ sudo ./install.sh --quiesce wg0
 
 The installer stops the selected timer and worker, checks for active shared instances, locks, pending transactions, and safety records, and leaves the timer disabled. It never implicitly re-enables a previously enabled timer. Do not combine `--quiesce` with `--enable`, and do not use it with `DESTDIR` staging.
 
+A v1.0-era service can leave an empty root-owned selected-interface lock at mode `0644`. Only after the selected timer and worker are inactive, `--quiesce` may acquire that exact regular single-link file, tighten it through the open descriptor to `0600`, and retain the lock through publication. A held, linked, nonempty, wrong-owner, differently permissioned, setup-guard, or other-interface file still stops the upgrade. Do not change lock metadata manually to bypass a refusal.
+
 If an upgrade refuses because a recovery artifact exists, keep the timer disabled. Reconcile the pending transaction with the currently installed version first; do not delete a pending or safety marker to force an upgrade. Then rerun the quiesced installer, check `wg-healthcheck status wg0`, run the manual service check, and make a fresh timer decision.
 
 For rollback, first disable the timer and stop the worker. Validate that no recovery artifact remains, then install only a reviewed compatible revision. Older installers can enable a timer automatically, so keep the timer runtime-masked until the manual health check succeeds. A runtime mask lives under `/run` and does not replace the installer-managed unit file under `/etc`. Review any nonzero installer result; a masked timer is not permission to ignore an earlier copy or validation failure.

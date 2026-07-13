@@ -90,13 +90,18 @@ equivalence. Three production files remain a frozen review-size exception for v1
   and secure managed admission would add a source or process boundary to the static path;
 - `libexec/airvpn-api` (1,563 lines), because splitting its isolated executable would alter
   the fixed private-descriptor, import, installation, and archive contract;
-- `install.sh` (1,111 lines), because its inert-guard-to-final-launcher publication order is
+- `install.sh` (1,154 lines), because its inert-guard-to-final-launcher publication order is
   one linear rollback invariant.
 
 These are ceilings, not growth allowances. A new command, persistent record version,
 provider transport, installer artifact, device-lifecycle feature, or increase beyond a
 frozen ceiling requires a new design decision before implementation. Tests are split into
 bounded explicit units and do not receive an exception.
+
+The Task 15 live-upgrade drill reopened the installer ceiling when a safe v1.0-era lock
+blocked the reviewed v1.1 path. The accepted increase is limited to an FD-pinned migration
+of the selected interface's root-owned, single-link, empty mode-`0644` lock after quiescence;
+ordinary upgrades, setup guards, held locks, and every other interface remain strict.
 
 ### Block-level review
 

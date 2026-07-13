@@ -26,7 +26,7 @@ REVIEW_LINE_LIMIT = 800
 REVIEW_EXCEPTIONS = {
     Path("bin/wg-healthcheck"): 2214,
     Path("libexec/airvpn-api"): 1563,
-    Path("install.sh"): 1111,
+    Path("install.sh"): 1154,
 }
 CODE_SUFFIXES = {".bash", ".py", ".sh"}
 EXTENSIONLESS_CODE_OWNERS = {
