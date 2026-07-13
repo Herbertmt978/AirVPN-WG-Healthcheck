@@ -1,11 +1,11 @@
 # Todo Checkpoint: AirVPN API-Managed WireGuard Profiles
 
-Updated: 2026-07-12
+Updated: 2026-07-13
 
 ## TodoCheckpointDraft
 
-- **Current todo:** implement Task 9's guided two-mode setup CLI and secret-input boundary
-  over the accepted Task 8 administration commands.
+- **Current todo:** implement Task 10's transactional setup application and credential
+  lifecycle over the accepted guided two-mode planning boundary.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -17,7 +17,9 @@ Updated: 2026-07-12
   digest-bound v2 journal durability, factual crash classification, and v1 compatibility;
   Task 7 qBittorrent containment, identity-pinned full-profile switching, immutable Docker
   recovery, and durable safety-record rollback/finalization; Task 8 explicit lifecycle
-  commands, redacted status, quiesced state reset, and unattended API-mode dispatch.
+  commands, redacted status, quiesced state reset, and unattended API-mode dispatch;
+  Task 9 guided dual-mode setup, credential-free country selection, private credential and
+  settings descriptors, prospective configuration validation, and redacted dry runs.
 - **Completed evidence slice:** green Windows-compatible checks plus a complete Ubuntu
   24.04 container baseline, including POSIX modes and ShellCheck. Task 1 independently
   cleared specification and code-quality/security review. Task 2 cleared both reviews
@@ -31,21 +33,23 @@ Updated: 2026-07-12
   adversarial security review after its provisional implementation was reopened twice and
   every reproduced fail-closed gap was repaired. Task 8 cleared specification,
   adversarial security, and code-quality review after six exact-SHA findings plus earlier
-  live-review findings were reproduced and fixed without amending history.
-- **Active slice:** Task 9 guided setup parsing and private secret transport.
-- **Pending:** implementation Tasks 9-16 from the approved plan.
-- **Evidence refs:** Task 8 commits `2089c78` and `82eb266`. Exact final-tree evidence:
-  managed Linux 120/120 as root and 116/116 with four intentional root-only skips as a
-  normal user; static/runtime 79/79; exact follow-up specification 20/20 plus 6/6,
-  quality 15/15 plus 1/1, and security 14/14 plus 3/3 focused gates; Bash syntax,
-  ShellCheck 0.11, JSON standard-library parsing, diff integrity, and Gitleaks over the
-  tree and 44-commit history are green. Reviews proved provider-only FD inheritance,
-  non-mutating dry-run orphan handling, single-epoch/non-incrementing preflight accounting,
-  durable snapshot/reset retries, equal-endpoint crash-safe restore, root-0700 config
-  ownership, fixed status redaction, and no managed-to-static failure fallback.
+  live-review findings were reproduced and fixed without amending history. Task 9 cleared
+  setup and runtime specification, security, and quality review after TTY fallback,
+  descriptor inheritance, pre-sanitization metadata, signal-handler inheritance, and
+  nested-redirection cleanup defects were reproduced and repaired.
+- **Active slice:** Task 10 transactional setup application and credential lifecycle.
+- **Pending:** implementation Tasks 10-16 from the approved plan.
+- **Evidence refs:** Task 9 commit `f706c74`. Exact final-tree evidence: Python 92/92
+  (including setup 27/27), runtime Linux 84/84, managed Linux 121/121, Bash syntax,
+  ShellCheck, diff integrity, and Gitleaks over the 1.51 MB tree are green. Independent
+  reviews approved the exact final runtime diff and the setup boundary. Tests prove core
+  suppression before secret inspection, strict controlling-TTY behavior, root-0600 stable
+  files, distinct descriptor number and inode, no pre-provider child inheritance,
+  canonical bounded settings, country allowlist semantics, full prospective validation,
+  early close on failure, and child-free interruption cleanup.
 - **Blocked on:** nothing at this checkpoint.
-- **Next step:** execute Task 9 RED-to-GREEN, then independently review TTY/file descriptor
-  credential handling and country-choice semantics.
+- **Next step:** execute Task 10 RED-to-GREEN, including quiescence, credential/config
+  rollback, first-provision inert-static recovery, and fresh-status timer enablement.
 
 ## ResumeStateHint
 
@@ -53,8 +57,8 @@ Updated: 2026-07-12
 - Implementation worktree:
   `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `82eb266`; the Task 8 checkpoint documentation is
-  the next commit before Task 9 begins.
+- Last accepted implementation commit: `f706c74`; the Task 9 checkpoint documentation is
+  the next commit before Task 10 begins.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -68,9 +72,10 @@ Updated: 2026-07-12
 - **Fallbacks:** static mode is an explicit product choice, not a managed-error fallback.
 - **Retirement:** only obsolete "no credentials anywhere" assertions retire in v1.1.
 - **Complexity:** `libexec/airvpn-api` is 1,598 lines, `tests/test_airvpn_api.py` is
-  2,263 lines, `bin/wg-healthcheck` is 1,656 lines, `libexec/wg-healthcheck-managed` is
-  3,770 lines, and `tests/test_wg_managed_profiles.sh` is 6,257 lines. These exceed the
-  plan's review threshold. Task 14's split/ownership decision remains mandatory and cannot
-  be waived before release.
-- **Evidence decision:** `continue` to Task 9; Tasks 1-8 are accepted, while release and
+  2,263 lines, `bin/wg-healthcheck` is 1,896 lines, `bin/wg-healthcheck-setup` is 825 lines,
+  `libexec/wg-healthcheck-managed` is 3,771 lines, `tests/test_wg_healthcheck.sh` is 2,865
+  lines, and `tests/test_wg_managed_profiles.sh` is 6,312 lines. These exceed the plan's
+  review threshold. Task 14's split/ownership decision remains mandatory and cannot be
+  waived before release.
+- **Evidence decision:** `continue` to Task 10; Tasks 1-9 are accepted, while release and
   live VM completion remain unclaimed.

@@ -565,7 +565,7 @@ and automation.
   immediately before apply effects.
 - [x] **Verify GREEN.** Run focused/full setup tests, both focused Bash descriptor gates,
   both complete Bash suites, and `python3 -m py_compile bin/wg-healthcheck-setup`.
-- [ ] **Commit.** `git commit -m "Add guided dual-mode setup"`.
+- [x] **Commit.** `git commit -m "Add guided dual-mode setup"`.
 
 ## Task 10: Setup application and credential lifecycle
 

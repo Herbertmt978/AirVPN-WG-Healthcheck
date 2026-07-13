@@ -245,6 +245,30 @@
 - No live API credential, provider mutation, or VM change was used. Task 14 must still
   resolve the 3,770-line managed module and 6,257-line managed test owner before release.
 
+### Task 9: guided setup and private settings transport (accepted)
+
+- Commit `f706c740cb25fdd6316342c4c994d3d1cba93b43` added the optional two-mode setup
+  command, credential-free eligible-country discovery and selection, strict hidden/file
+  credential input, a bounded canonical proposed-settings descriptor, and runtime dry-run
+  validation without persistent changes.
+- Security review reproduced and closed failures involving getpass echo fallback, unsafe
+  credential ancestors and special files, unstable metadata, pre-sanitization metadata
+  children, original settings-descriptor inheritance, signal-path child inheritance, and
+  nested Bash redirection restoring an unowned credential descriptor.
+- Final GREEN evidence on the exact implementation commit:
+  - Python discovery: 92/92 passed, including 27/27 setup tests;
+  - runtime Ubuntu 24.04 root suite: 84/84 passed;
+  - managed Ubuntu 24.04 root suite: 121/121 passed with no skip;
+  - focused sanitizer/descriptor cleanup regression: 3/3 passed;
+  - Python compile, Bash syntax, ShellCheck, diff integrity, and Gitleaks over the 1.51 MB
+    tree passed with no leak.
+- Independent setup, runtime specification, adversarial security, and code-quality reviews
+  approved the final boundary. The runtime closes both private descriptors before every
+  pre-provider child and keeps credential ownership in `main` until Bash has restored any
+  temporarily hidden descriptor.
+- No live API credential, provider mutation, persistent setup application, or VM change was
+  used. Task 10 owns transactional persistence and Task 14 must split oversized owners.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.
