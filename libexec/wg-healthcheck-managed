@@ -3032,6 +3032,15 @@ managed_cleanup_orphan_candidate() {
   managed_sync_artifact_parent "${WG_CONF%/*}"
 }
 
+managed_command_cleanup_candidate() {
+  local action="${1:-}"
+  [[ "$action" == apply ]] || return 1
+  [[ "${SETUP_LEASE_ADOPTED:-0}" == 1 && "${GUARD_LOCKED:-0}" == 1 &&
+     "${CONTEXT_LOCKED:-0}" == 1 ]] || return 1
+  managed_cleanup_orphan_candidate || return 1
+  [[ ! -e "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]]
+}
+
 managed_create_pre_managed_snapshot() {
   local digest endpoint
   managed_journal_paths_are_fixed || return 1
@@ -3371,8 +3380,9 @@ managed_profile_admin_config_is_valid() {
 }
 
 managed_profile_attempt_precheck() {
-  local operation="${1:?}" action="${2:?}" rc
+  local operation="${1:?}" action="${2:?}" supplied_credential="${3:?}" rc
   [[ "$action" == dry-run || "$action" == apply ]] || return 1
+  [[ "$supplied_credential" == 0 || "$supplied_credential" == 1 ]] || return 1
   managed_profile_admin_config_is_valid || return 1
   if [[ -e "$MANAGED_CANDIDATE" || -L "$MANAGED_CANDIDATE" ]]; then
     if [[ "$action" == dry-run ]]; then
@@ -3387,7 +3397,16 @@ managed_profile_attempt_precheck() {
   fi
   case "$operation" in
     provision) [[ ! -e "$WG_CONF" && ! -L "$WG_CONF" ]] ;;
-    adopt) [[ "$AIRVPN_PROFILE_SOURCE" == static ]] && managed_profile_file_is_secure "$WG_CONF" ;;
+    adopt)
+      managed_profile_file_is_secure "$WG_CONF" || return 1
+      if [[ "$action" == dry-run ]]; then
+        [[ "$AIRVPN_PROFILE_SOURCE" == static ||
+           ( "$AIRVPN_PROFILE_SOURCE" == api && "$supplied_credential" == 1 &&
+             "${PROPOSED_SETTINGS_READY:-0}" == 1 ) ]]
+      else
+        [[ "$AIRVPN_PROFILE_SOURCE" == static ]]
+      fi
+      ;;
     rotate)
       [[ "$AIRVPN_PROFILE_SOURCE" == api ]] && managed_profile_file_is_secure "$WG_CONF" ||
         return 1
@@ -3419,10 +3438,11 @@ managed_validate_installed_key_closed() {
 
 managed_run_profile_attempt() {
   local operation="${1:?}" action="${2:?}" credential_fd="${3-}"
-  local verify_speed="${5:-0}" bypass=0 rc
+  local verify_speed="${5:-0}" bypass=0 supplied_credential=0 rc
   [[ $# == 5 && ( "$action" == dry-run || "$action" == apply ) ]] || return 1
   [[ "$verify_speed" == 0 || "$verify_speed" == 1 ]] || return 1
   [[ -z "$credential_fd" ]] || validate_credential_fd_number "$credential_fd" || return 1
+  [[ -z "$credential_fd" ]] || supplied_credential=1
   if [[ "$action" == apply && ( "$operation" == provision || "$operation" == adopt ) ]]; then
     if ! managed_apply_credential_ready "$credential_fd"; then
       [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd"
@@ -3430,7 +3450,7 @@ managed_run_profile_attempt() {
     fi
   fi
   if managed_call_without_private_fd "$credential_fd" \
-      managed_profile_attempt_precheck "$operation" "$action"; then
+      managed_profile_attempt_precheck "$operation" "$action" "$supplied_credential"; then
     rc=0
   else
     rc=$?
@@ -3744,7 +3764,7 @@ managed_reset_api_state() {
 managed_dispatch_command() {
   local command="${1:-}" action="${2:-}" status_json="${3:-0}" credential_fd="${4:-}"
   case "$command" in
-    check|provision|adopt|rotate|restore-static|reset-api-state|status) ;;
+    check|provision|adopt|rotate|restore-static|reset-api-state|cleanup-candidate|status) ;;
     *)
       [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd" || return 1
       log "Unknown managed command"
@@ -3766,6 +3786,7 @@ managed_dispatch_command() {
     rotate) managed_command_rotate "$action" ;;
     restore-static) managed_command_restore_static "$action" ;;
     reset-api-state) managed_reset_api_state "$action" ;;
+    cleanup-candidate) managed_command_cleanup_candidate "$action" ;;
     status) managed_render_status "$status_json" ;;
   esac
 }

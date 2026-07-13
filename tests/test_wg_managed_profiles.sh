@@ -4863,8 +4863,43 @@ test_provision_and_adopt_commands_run_authenticated_redacted_flows() {
   [[ -f "$PRE_MANAGED_CONF" ]] || fail "adopt apply must create its immutable snapshot" || return 1
   assert_contains 'AIRVPN_PROFILE_SOURCE=api' "$(<"$CFG")" \
     "adopt apply must select API mode" || return 1
+
+  : > "$TEST_TMP/provider-calls"
+  AIRVPN_PROFILE_SOURCE=api
+  PROPOSED_SETTINGS_READY=0
+  exec {credential_fd}<"$TEST_TMP/credential"
+  set +e
+  managed_command_adopt dry-run "$credential_fd" >/dev/null 2>&1
+  rc=$?
+  set +e
+  assert_eq 1 "$rc" \
+    "API-mode adopt dry-run must require a validated settings override" || return 1
+  PROPOSED_SETTINGS_READY=1
+  set +e
+  managed_command_adopt dry-run '' >/dev/null 2>&1
+  rc=$?
+  set +e
+  assert_eq 1 "$rc" \
+    "API-mode adopt dry-run must require a supplied credential override" || return 1
+  assert_eq '' "$(<"$TEST_TMP/provider-calls")" \
+    "incomplete replacement validation must fail before provider access" || return 1
+  exec {credential_fd}<"$TEST_TMP/credential"
+  output="$(managed_command_adopt dry-run "$credential_fd")" || return 1
+  assert_contains 'pinned=1' "$output" \
+    "API-mode adopt dry-run must validate a proposed replacement credential" || return 1
+  [[ -f "$PRE_MANAGED_CONF" ]] ||
+    fail "replacement validation must preserve the existing pre-managed snapshot" || return 1
+  exec {credential_fd}<"$AIRVPN_API_KEY_FILE"
+  set +e
+  managed_command_adopt apply "$credential_fd" >/dev/null 2>&1
+  rc=$?
+  set +e
+  assert_eq 1 "$rc" "API-mode adopt apply must remain forbidden" || return 1
   provider_calls="$(<"$TEST_TMP/provider-calls")"
-  assert_contains 'provider:adopt:' "$provider_calls" "adopt must run the authenticated owner"
+  assert_eq 1 "$(wc -l < "$TEST_TMP/provider-calls")" \
+    "forbidden API-mode adopt apply must fail before provider access" || return 1
+  assert_contains 'provider:adopt:' "$provider_calls" \
+    "adopt and replacement validation must run the authenticated owner"
 }
 
 test_generator_callback_handles_reserved_fd_collisions_and_clean_child_environment() {
@@ -5236,6 +5271,61 @@ test_orphan_candidate_recovery_is_durable_bounded_and_symlink_safe() {
   write_managed_candidate_fixture
   assert_eq orphan-candidate "$(managed_status_pending)" \
     "safe unowned candidate must be visible without exposing profile fields"
+}
+
+test_setup_owned_candidate_cleanup_requires_exclusive_lease_and_interface_lock() {
+  local rc
+  setup_managed_journal_fixture || return 1
+  rm -f -- "$ROTATION_PENDING" "$MANAGED_SAFETY"
+  : > "$TEST_TMP/setup-cleanup-sync"
+  : > "$TEST_TMP/setup-cleanup-status"
+  managed_sync_artifact_parent() { printf 'directory\n' >> "$TEST_TMP/setup-cleanup-sync"; }
+  write_status() { printf '%s:%s\n' "$1" "$2" >> "$TEST_TMP/setup-cleanup-status"; }
+  is_root() { return 0; }
+
+  GUARD_LOCKED=1
+  CONTEXT_LOCKED=1
+  SETUP_LEASE_ADOPTED=0
+  set +e; managed_dispatch_command cleanup-candidate apply 0 '' >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "an ordinary shared runtime guard must not authorize cleanup" || return 1
+  [[ -f "$MANAGED_CANDIDATE" ]] || fail "unauthorized cleanup must retain the candidate" || return 1
+
+  SETUP_LEASE_ADOPTED=1
+  GUARD_LOCKED=0
+  set +e; managed_dispatch_command cleanup-candidate apply 0 '' >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "cleanup must retain the adopted exclusive guard" || return 1
+  [[ -f "$MANAGED_CANDIDATE" ]] || fail "guardless cleanup must retain the candidate" || return 1
+
+  GUARD_LOCKED=1
+  CONTEXT_LOCKED=0
+  set +e; managed_dispatch_command cleanup-candidate apply 0 '' >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "cleanup must run while holding the interface lock" || return 1
+  [[ -f "$MANAGED_CANDIDATE" ]] || fail "interface-unlocked cleanup must retain the candidate" || return 1
+
+  CONTEXT_LOCKED=1
+  managed_dispatch_command cleanup-candidate apply 0 '' || return 1
+  [[ ! -e "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]] ||
+    fail "authorized setup cleanup must remove the safe orphan candidate" || return 1
+  assert_eq directory "$(<"$TEST_TMP/setup-cleanup-sync")" \
+    "setup cleanup must retain the existing durable orphan-removal owner" || return 1
+  assert_eq '' "$(<"$TEST_TMP/setup-cleanup-status")" \
+    "candidate recovery must not overwrite health status" || return 1
+  managed_dispatch_command cleanup-candidate apply 0 '' ||
+    fail "authorized cleanup must be idempotent once the candidate is absent" || return 1
+
+  write_managed_candidate_fixture
+  : > "$TEST_TMP/setup-cleanup-owner-calls"
+  managed_cleanup_orphan_candidate() {
+    printf 'called\n' >> "$TEST_TMP/setup-cleanup-owner-calls"
+    return 0
+  }
+  set +e; managed_dispatch_command cleanup-candidate apply 0 '' >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "cleanup must prove the candidate absent after its owner returns" || return 1
+  assert_eq called "$(<"$TEST_TMP/setup-cleanup-owner-calls")" \
+    "setup cleanup must call the existing safe orphan-cleanup owner" || return 1
+  [[ -f "$MANAGED_CANDIDATE" ]] || fail "failed absence proof must retain visible evidence" || return 1
+  assert_eq '' "$(<"$TEST_TMP/setup-cleanup-status")" \
+    "failed candidate absence proof must remain status-neutral"
 }
 
 setup_profile_orphan_command_fixture() {
@@ -6043,8 +6133,9 @@ test_unexpected_credential_fd_is_closed_before_noncredential_dispatch() {
   managed_command_rotate() { printf 'rotate\n' >> "$TEST_TMP/dispatch-events"; }
   managed_command_restore_static() { printf 'restore\n' >> "$TEST_TMP/dispatch-events"; }
   managed_reset_api_state() { printf 'reset\n' >> "$TEST_TMP/dispatch-events"; }
+  managed_command_cleanup_candidate() { printf 'cleanup\n' >> "$TEST_TMP/dispatch-events"; }
   managed_render_status() { printf 'status\n' >> "$TEST_TMP/dispatch-events"; }
-  for command in check rotate restore-static reset-api-state status; do
+  for command in check rotate restore-static reset-api-state cleanup-candidate status; do
     exec {credential_fd}<"$TEST_TMP/credential"
     set +e; managed_dispatch_command "$command" dry-run 0 "$credential_fd" >/dev/null 2>&1; rc=$?; set +e
     assert_eq 1 "$rc" "$command must refuse an unexpected credential descriptor" || return 1
@@ -6251,6 +6342,7 @@ tests=(
   test_apply_requires_installed_credential_and_override_identity_match
   test_selector_and_candidate_staging_failures_do_not_consume_authenticated_attempts
   test_orphan_candidate_recovery_is_durable_bounded_and_symlink_safe
+  test_setup_owned_candidate_cleanup_requires_exclusive_lease_and_interface_lock
   test_provision_dry_run_preserves_preexisting_orphan_candidate
   test_adopt_dry_run_preserves_preexisting_orphan_candidate
   test_rotate_dry_run_preserves_preexisting_orphan_candidate

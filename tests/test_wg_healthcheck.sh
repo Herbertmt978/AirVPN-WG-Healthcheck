@@ -67,6 +67,7 @@ new_recovery_fixture() {
   ROTATE_STAMP="$STATE_DIR/wg0.last_rotate"
   SPEED_STAMP="$STATE_DIR/wg0.last_speedcheck"
   STATUS_FILE="$STATE_DIR/wg0.status"
+  SETUP_GUARD="$STATE_DIR/wg0.setup-guard"
   ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
   LOCK="$STATE_DIR/wg0.lock"
   mkdir -p "$STATE_DIR"
@@ -150,6 +151,7 @@ new_main_fixture() {
     ROTATE_STAMP="$STATE_DIR/wg0.last_rotate"
     SPEED_STAMP="$STATE_DIR/wg0.last_speedcheck"
     STATUS_FILE="$STATE_DIR/wg0.status"
+    SETUP_GUARD="$STATE_DIR/wg0.setup-guard"
     ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
     MANAGED_SAFETY="${WG_CONF}.safety-healthcheck"
     AIRVPN_API_HELPER="$ROOT/libexec/airvpn-api"
@@ -163,6 +165,12 @@ new_main_fixture() {
   }
   is_root() { return 0; }
   owner_mode() { printf '0:%s\n' "$(stat -c '%a' -- "$1")"; }
+  setup_guard_metadata_matches() {
+    local inspected_fd="${1:?}"
+    [[ -f "$SETUP_GUARD" && ! -L "$SETUP_GUARD" &&
+       -e "/proc/$BASHPID/fd/$inspected_fd" &&
+       "/proc/$BASHPID/fd/$inspected_fd" -ef "$SETUP_GUARD" ]]
+  }
   interface_lock_fd_identity() { stat -Lc '%d:%i' -- "$LOCK"; }
   validate_secure_executable() { return 0; }
   validate_secure_file() { return 0; }
@@ -211,10 +219,17 @@ test_runtime_cli_preserves_legacy_version_and_rejects_unknown_forms() {
   assert_eq check "$COMMAND" "legacy invocation must select the timer health command" || return 1
   assert_eq wg0 "$IFACE" "legacy invocation must retain the interface" || return 1
   assert_eq '' "$ACTION_MODE" "legacy invocation must not imply a mutation mode" || return 1
+  assert_eq 1 "$LEGACY_INVOCATION" "single-interface syntax must retain benign timer contention semantics" || return 1
+
+  parse_cli check wg0 || return 1
+  assert_eq check "$COMMAND" "explicit check must select the health command" || return 1
+  assert_eq 0 "$LEGACY_INVOCATION" "explicit check must remain distinguishable from the timer form" || return 1
 
   parse_cli --version || return 1
   assert_eq version "$COMMAND" "--version must remain a standalone command" || return 1
   usage_text="$(usage 2>&1)"
+  assert_contains 'wg-healthcheck check <iface> [--setup-lease-fd N]' "$usage_text" \
+    "usage must document setup-owned controlled checks" || return 1
   assert_contains 'wg-healthcheck provision <iface> --dry-run [--credential-fd N] [--settings-fd N]' "$usage_text" \
     "usage must document the provision dry-run settings override" || return 1
   assert_contains 'wg-healthcheck provision <iface> --apply [--credential-fd N]' "$usage_text" \
@@ -223,6 +238,8 @@ test_runtime_cli_preserves_legacy_version_and_rejects_unknown_forms() {
     "usage must document the adopt dry-run settings override" || return 1
   assert_contains 'wg-healthcheck adopt <iface> --apply [--credential-fd N]' "$usage_text" \
     "usage must keep adopt apply credential-only" || return 1
+  assert_contains 'wg-healthcheck cleanup-candidate <iface> --apply --setup-lease-fd N' "$usage_text" \
+    "usage must document the setup-only orphan recovery command" || return 1
 
   for payload in '' '--version wg0' 'unknown wg0 --dry-run' 'wg0 extra' \
       'status --bad' 'rotate bad/interface --dry-run'; do
@@ -232,6 +249,52 @@ test_runtime_cli_preserves_legacy_version_and_rejects_unknown_forms() {
     rc=$?
     set +e
     assert_eq 64 "$rc" "strict CLI must reject '$payload'" || return 1
+  done
+}
+
+test_setup_lease_cli_is_explicit_scoped_and_fd_distinct() {
+  local command payload rc
+  source "$SCRIPT"
+
+  parse_cli check wg0 --setup-lease-fd 12 || return 1
+  assert_eq 12 "$SETUP_LEASE_FD" "explicit check may reuse setup's exclusive lease" || return 1
+  assert_eq 0 "$LEGACY_INVOCATION" "lease-bearing checks must never masquerade as timer runs" || return 1
+
+  for command in provision adopt restore-static reset-api-state; do
+    parse_cli "$command" wg0 --dry-run --setup-lease-fd 12 || return 1
+    assert_eq 12 "$SETUP_LEASE_FD" "$command may reuse setup's exclusive lease" || return 1
+  done
+
+  parse_cli cleanup-candidate wg0 --apply --setup-lease-fd 12 || return 1
+  assert_eq cleanup-candidate "$COMMAND" \
+    "candidate cleanup must have an explicit administrative command" || return 1
+  assert_eq apply "$ACTION_MODE" "candidate cleanup must be apply-only" || return 1
+  assert_eq 12 "$SETUP_LEASE_FD" \
+    "candidate cleanup must require setup's inherited lease" || return 1
+
+  for payload in \
+      'wg0 --setup-lease-fd 12' \
+      'status wg0 --setup-lease-fd 12' \
+      'rotate wg0 --dry-run --setup-lease-fd 12' \
+      'cleanup-candidate wg0' \
+      'cleanup-candidate wg0 --apply' \
+      'cleanup-candidate wg0 --dry-run --setup-lease-fd 12' \
+      'cleanup-candidate wg0 --apply --credential-fd 11 --setup-lease-fd 12' \
+      'cleanup-candidate wg0 --apply --settings-fd 11 --setup-lease-fd 12' \
+      'cleanup-candidate wg0 --apply --setup-lease-fd 12 --setup-lease-fd 13' \
+      'check wg0 --dry-run' \
+      'check wg0 --setup-lease-fd 2' \
+      'check wg0 --setup-lease-fd 012' \
+      'check wg0 --setup-lease-fd nope' \
+      'check wg0 --setup-lease-fd 12 --setup-lease-fd 13' \
+      'provision wg0 --dry-run --credential-fd 12 --setup-lease-fd 12' \
+      'provision wg0 --dry-run --credential-fd 11 --settings-fd 12 --setup-lease-fd 12'; do
+    read -r -a argv <<< "$payload"
+    set +e
+    parse_cli "${argv[@]}" >/dev/null 2>&1
+    rc=$?
+    set +e
+    assert_eq 64 "$rc" "setup lease grammar must reject '$payload'" || return 1
   done
 }
 
@@ -521,9 +584,7 @@ test_main_captures_settings_before_context_and_overlays_only_memory() {
 
 test_main_sanitizes_before_settings_metadata_children() {
   local credential_fd settings_fd rc events marker
-  source "$SCRIPT"
-  TEST_TMP="$(mktemp -d)"
-  trap "rm -rf -- '$TEST_TMP'" EXIT
+  new_main_fixture
   events="$TEST_TMP/events"
   marker="$TEST_TMP/hostile-stat"
   : > "$events"
@@ -577,9 +638,7 @@ test_main_sanitizes_before_settings_metadata_children() {
 
 test_second_sanitizer_failure_closes_restored_credential_fd() {
   local credential_fd rc read_rc leaked='' sanitizer_calls=0
-  source "$SCRIPT"
-  TEST_TMP="$(mktemp -d)"
-  trap "rm -rf -- '$TEST_TMP'" EXIT
+  new_main_fixture
   printf 'credential sentinel\n' > "$TEST_TMP/credential"
 
   eval "$(declare -f sanitize_process_environment | sed \
@@ -637,7 +696,7 @@ test_runtime_defaults_and_fixed_paths_ignore_environment() {
   done
 
   IFACE=wg0
-  for key in CFG WG_CONF STATE_DIR LOCK RESTART_STAMP ROTATE_STAMP SPEED_STAMP STATUS_FILE \
+  for key in CFG WG_CONF STATE_DIR LOCK SETUP_GUARD RESTART_STAMP ROTATE_STAMP SPEED_STAMP STATUS_FILE \
       ROTATION_PENDING MANAGED_SAFETY AIRVPN_API_HELPER MANAGED_MODULE AIRVPN_API_KEY_FILE \
       AIRVPN_API_STATE_FILE AIRVPN_API_LOCK MANAGED_CANDIDATE PRE_MANAGED_CONF PATH; do
     printf -v "$key" '%s' "/tmp/hostile-$key"
@@ -647,6 +706,7 @@ test_runtime_defaults_and_fixed_paths_ignore_environment() {
   assert_eq '/etc/wireguard/wg0.conf' "$WG_CONF" "WG_CONF must be fixed" || return 1
   assert_eq '/run/wg-healthcheck' "$STATE_DIR" "STATE_DIR must be fixed" || return 1
   assert_eq '/run/wg-healthcheck/wg0.lock' "$LOCK" "LOCK must be fixed" || return 1
+  assert_eq '/run/wg-healthcheck/wg0.setup-guard' "$SETUP_GUARD" "setup guard path must be fixed" || return 1
   assert_eq '/run/wg-healthcheck/wg0.last_restart' "$RESTART_STAMP" "restart stamp must be fixed" || return 1
   assert_eq '/run/wg-healthcheck/wg0.last_rotate' "$ROTATE_STAMP" "rotation stamp must be fixed" || return 1
   assert_eq '/run/wg-healthcheck/wg0.last_speedcheck' "$SPEED_STAMP" "speed stamp must be fixed" || return 1
@@ -702,6 +762,7 @@ test_hostile_internal_paths_cannot_redirect_main_or_truncate_lock_target() {
   WG_CONF="$TEST_TMP/hostile-wg.conf"
   STATE_DIR="$TEST_TMP/hostile-state"
   LOCK="$victim"
+  SETUP_GUARD="$victim"
   RESTART_STAMP="$TEST_TMP/hostile-restart"
   ROTATE_STAMP="$TEST_TMP/hostile-rotate"
   SPEED_STAMP="$TEST_TMP/hostile-speed"
@@ -723,8 +784,8 @@ test_hostile_internal_paths_cannot_redirect_main_or_truncate_lock_target() {
   assert_file_equals 'do-not-truncate' "$victim" "hostile LOCK must never be opened" || return 1
   assert_eq "$expected_cfg" "$CFG" "main must replace hostile CFG through its source-only path seam" || return 1
   assert_eq "$expected_wg" "$WG_CONF" "main must replace hostile WG_CONF through its source-only path seam" || return 1
-  assert_eq "$expected_cfg" "${calls%%$'\n'*}" "the derived CFG must be the first file validated" || return 1
-  assert_contains "$expected_wg" "$calls" "the derived WG_CONF must be validated"
+  assert_eq '' "$calls" "guard contention must precede every configuration validation" || return 1
+  assert_eq "$TEST_TMP/state/wg0.setup-guard" "$SETUP_GUARD" "main must replace hostile setup-guard input"
 }
 
 test_main_validates_both_fixed_files_before_parsing_config() {
@@ -733,8 +794,8 @@ test_main_validates_both_fixed_files_before_parsing_config() {
   : > "$TEST_TMP/order"
   validate_secure_file() { printf 'validate:%s:%s:%s\n' "$1" "$2" "$3" >> "$TEST_TMP/order"; }
   parse_healthcheck_config() { printf 'parse:%s\n' "$1" >> "$TEST_TMP/order"; }
-  validate_settings() { printf 'settings\n' >> "$TEST_TMP/order"; }
-  prepare_state_dir() { return 1; }
+  validate_settings() { printf 'settings\n' >> "$TEST_TMP/order"; return 1; }
+  prepare_state_dir() { mkdir -p -- "$STATE_DIR"; }
 
   set +e
   main wg0
@@ -1546,6 +1607,260 @@ test_main_uses_root_seam_and_validates_both_files() {
   assert_contains "file:${CFG}:health-check configuration:600" "$calls" "main must validate CFG"
 }
 
+test_setup_guard_precedes_context_and_stale_context_is_never_loaded_on_contention() {
+  local guard_fd captured_guard_fd captured_interface_fd expected_rc invocation rc events
+  local -a argv=()
+  new_main_fixture
+  : > "$TEST_TMP/guard-order"
+  acquire_runtime_guard() {
+    printf 'guard\n' >> "$TEST_TMP/guard-order"
+    exec {GUARD_FD}<>"$TEST_TMP/held-guard"
+    guard_fd="$GUARD_FD"
+    GUARD_LOCKED=1
+  }
+  load_command_context() {
+    printf 'context\n' >> "$TEST_TMP/guard-order"
+    return 1
+  }
+
+  set +e; main check wg0 >/dev/null 2>&1; rc=$?; set +e
+  events="$(<"$TEST_TMP/guard-order")"
+  assert_eq 1 "$rc" "context failure must remain visible after guard acquisition" || return 1
+  assert_eq $'guard\ncontext' "$events" "setup guard must precede every configuration read" || return 1
+  [[ ! -e "/proc/$BASHPID/fd/$guard_fd" ]] ||
+    fail "context failure must close the shared setup guard descriptor" || return 1
+  assert_eq '' "$GUARD_FD" "context failure must clear guard ownership" || return 1
+
+  for invocation in legacy explicit administrative; do
+    new_main_fixture
+    : > "$TEST_TMP/guard-order"
+    acquire_runtime_guard() {
+      printf 'guard-contended\n' >> "$TEST_TMP/guard-order"
+      GUARD_LOCKED=0
+      return 0
+    }
+    load_command_context() {
+      printf 'stale-context-loaded\n' >> "$TEST_TMP/guard-order"
+      return 1
+    }
+    case "$invocation" in
+      legacy) argv=(wg0); expected_rc=0 ;;
+      explicit) argv=(check wg0); expected_rc=75 ;;
+      administrative) argv=(reset-api-state wg0 --dry-run); expected_rc=75 ;;
+    esac
+    set +e; main "${argv[@]}" >/dev/null 2>&1; rc=$?; set +e
+    assert_eq "$expected_rc" "$rc" "$invocation guard contention must retain its command semantics" || return 1
+    assert_file_equals guard-contended "$TEST_TMP/guard-order" \
+      "$invocation guard contention must prevent stale configuration and all later locks" || return 1
+  done
+
+  new_main_fixture
+  : > "$TEST_TMP/guard-order"
+  acquire_runtime_guard() {
+    printf 'guard\n' >> "$TEST_TMP/guard-order"
+    exec {GUARD_FD}<>"$TEST_TMP/held-guard"
+    captured_guard_fd="$GUARD_FD"
+    GUARD_LOCKED=1
+  }
+  load_command_context() { printf 'context\n' >> "$TEST_TMP/guard-order"; }
+  open_interface_lock() {
+    local output_variable="${1:?}" opened_fd=''
+    printf 'interface\n' >> "$TEST_TMP/guard-order"
+    exec {opened_fd}<>"$TEST_TMP/held-interface"
+    captured_interface_fd="$opened_fd"
+    printf -v "$output_variable" '%s' "$opened_fd"
+  }
+  acquire_command_lock() { CONTEXT_LOCKED=1; }
+  dispatch_command() { printf 'global-dispatch\n' >> "$TEST_TMP/guard-order"; return 42; }
+  set +e; main reset-api-state wg0 --dry-run >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 42 "$rc" "dispatch failure must remain visible after all locks are acquired" || return 1
+  assert_file_equals $'guard\ncontext\ninterface\nglobal-dispatch' "$TEST_TMP/guard-order" \
+    "runtime lock order must remain guard then interface then managed global dispatch" || return 1
+  for guard_fd in "$captured_guard_fd" "$captured_interface_fd"; do
+    [[ ! -e "/proc/$BASHPID/fd/$guard_fd" ]] ||
+      fail "dispatch error retained runtime lock descriptor $guard_fd" || return 1
+  done
+}
+
+test_main_keeps_credential_private_during_pre_guard_context() {
+  local credential_fd rc events
+  new_main_fixture
+  printf 'credential sentinel\n' > "$TEST_TMP/credential"
+  exec {credential_fd}<"$TEST_TMP/credential"
+  PROBE_FD="$credential_fd"
+  events="$TEST_TMP/private-preflight.events"
+  : > "$events"
+
+  eval "$(declare -f derive_fixed_runtime_paths | sed \
+    '1s/derive_fixed_runtime_paths/fixture_derive_fixed_runtime_paths/')"
+  probe_private_preflight() {
+    local stage="${1:?}"
+    if bash -c '[[ ! -e "/proc/self/fd/$1" ]]' bash "$PROBE_FD"; then
+      printf 'closed:%s\n' "$stage" >> "$events"
+    else
+      printf 'leaked:%s\n' "$stage" >> "$events"
+    fi
+    return 0
+  }
+  derive_fixed_runtime_paths() {
+    probe_private_preflight fixed-paths
+    fixture_derive_fixed_runtime_paths
+    SETUP_GUARD=
+  }
+  is_root() { probe_private_preflight root-check; }
+  load_command_context() {
+    probe_private_preflight context
+    return 1
+  }
+
+  set +e
+  main provision wg0 --dry-run --credential-fd "$credential_fd" >/dev/null 2>&1
+  rc=$?
+  set +e
+  events="$(<"$events")"
+  assert_eq 1 "$rc" "context fixture must stop the private-FD preflight" || return 1
+  assert_contains closed:fixed-paths "$events" \
+    "fixed path derivation must not expose the credential to a child" || return 1
+  assert_contains closed:root-check "$events" \
+    "root validation must not expose the credential to a child" || return 1
+  assert_contains closed:context "$events" \
+    "guarded context loading must not expose the credential to a child" || return 1
+  [[ "$events" != *leaked:* ]] || fail "no pre-provider stage may leak the credential descriptor"
+}
+
+test_setup_guard_is_private_nofollow_and_validates_exclusive_inherited_lease() {
+  local guard_fd='' lease_fd='' other_fd='' rc victim
+  source "$SCRIPT"
+  command -v flock >/dev/null 2>&1 || return 0
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  IFACE=wg0
+  STATE_DIR="$TEST_TMP/state"
+  SETUP_GUARD="$STATE_DIR/wg0.setup-guard"
+  mkdir -p -- "$STATE_DIR"
+  chmod 700 -- "$STATE_DIR"
+  victim="$TEST_TMP/victim"
+  printf 'do-not-truncate\n' > "$victim"
+  ln -s -- "$victim" "$SETUP_GUARD"
+  if (( EUID != 0 )); then
+    setup_guard_metadata_matches() {
+      local inspected_fd="${1:?}"
+      [[ -f "$SETUP_GUARD" && ! -L "$SETUP_GUARD" &&
+         -e "/proc/$BASHPID/fd/$inspected_fd" &&
+         "/proc/$BASHPID/fd/$inspected_fd" -ef "$SETUP_GUARD" ]]
+    }
+  fi
+
+  set +e; open_setup_guard guard_fd >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "setup guard symlink must be rejected" || return 1
+  assert_eq do-not-truncate "$(<"$victim")" "guard validation must never truncate a symlink target" || return 1
+
+  rm -f -- "$SETUP_GUARD"
+  open_setup_guard guard_fd || return 1
+  assert_eq 600 "$(stat -c '%a' -- "$SETUP_GUARD")" "created setup guard must be mode 0600" || return 1
+  if (( EUID == 0 )); then
+    chmod 640 -- "$SETUP_GUARD"
+    set +e; setup_guard_metadata_matches "$guard_fd" >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "guard metadata validation must reject a non-0600 inode" || return 1
+    chmod 600 -- "$SETUP_GUARD"
+    setup_guard_metadata_matches "$guard_fd" || return 1
+    chown 1 -- "$SETUP_GUARD"
+    set +e; setup_guard_metadata_matches "$guard_fd" >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "guard metadata validation must reject a non-root inode" || return 1
+    chown 0 -- "$SETUP_GUARD"
+    setup_guard_metadata_matches "$guard_fd" || return 1
+  fi
+  exec {guard_fd}>&-
+
+  exec {lease_fd}<>"$SETUP_GUARD"
+  command flock -n -x "$lease_fd" || return 1
+  SETUP_LEASE_FD=
+  CREDENTIAL_FD=
+  SETTINGS_FD=
+  GUARD_FD=
+  GUARD_LOCKED=0
+  acquire_runtime_guard || return 1
+  assert_eq 0 "$GUARD_LOCKED" "ordinary shared acquisition must observe setup's exclusive lease" || return 1
+  assert_eq '' "$GUARD_FD" "shared contention must close the losing guard descriptor" || return 1
+  assert_eq 0 "${SETUP_LEASE_ADOPTED:-0}" \
+    "ordinary shared acquisition must not authorize setup-only commands" || return 1
+  SETUP_LEASE_FD="$lease_fd"
+  acquire_runtime_guard || return 1
+  assert_eq 1 "$GUARD_LOCKED" "validated inherited lease must retain exclusive ownership" || return 1
+  assert_eq "$lease_fd" "$GUARD_FD" "runtime must reuse the exact inherited open file description" || return 1
+  assert_eq '' "$SETUP_LEASE_FD" "validated lease ownership must transfer to guard cleanup" || return 1
+  assert_eq 1 "${SETUP_LEASE_ADOPTED:-0}" \
+    "only the validated inherited exclusive lease may authorize setup-only commands" || return 1
+  cleanup_runtime_fds || return 1
+  assert_eq 0 "${SETUP_LEASE_ADOPTED:-0}" \
+    "guard cleanup must revoke setup-only command authorization" || return 1
+
+  exec {lease_fd}<>"$SETUP_GUARD"
+  SETUP_LEASE_FD="$lease_fd"
+  set +e; acquire_runtime_guard >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "an unlocked descriptor must never self-authorize as a setup lease" || return 1
+  cleanup_runtime_fds || return 1
+
+  printf 'other inode\n' > "$TEST_TMP/other"
+  chmod 600 -- "$TEST_TMP/other"
+  exec {other_fd}<>"$TEST_TMP/other"
+  command flock -n -x "$other_fd" || return 1
+  SETUP_LEASE_FD="$other_fd"
+  set +e; acquire_runtime_guard >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "exclusive lease for a different inode must be rejected" || return 1
+  cleanup_runtime_fds || return 1
+}
+
+test_setup_lease_validation_helpers_inherit_no_other_private_descriptors() {
+  local credential_fd settings_fd lease_fd target_fd rc calls
+  source "$SCRIPT"
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  STATE_DIR="$TEST_TMP/state"
+  SETUP_GUARD="$STATE_DIR/wg0.setup-guard"
+  mkdir -p -- "$STATE_DIR"
+  chmod 700 -- "$STATE_DIR"
+  : > "$SETUP_GUARD"
+  chmod 600 -- "$SETUP_GUARD"
+  printf 'credential sentinel\n' > "$TEST_TMP/credential"
+  printf 'settings sentinel\n' > "$TEST_TMP/settings"
+  exec {credential_fd}<"$TEST_TMP/credential"
+  exec {settings_fd}<"$TEST_TMP/settings"
+  exec {lease_fd}<>"$SETUP_GUARD"
+  CREDENTIAL_FD="$credential_fd"
+  SETTINGS_FD="$settings_fd"
+  SETUP_LEASE_FD="$lease_fd"
+  : > "$TEST_TMP/flock-calls"
+  setup_guard_metadata_matches() {
+    local inspected_fd="${1:?}"
+    [[ "/proc/$BASHPID/fd/$inspected_fd" -ef "$SETUP_GUARD" ]]
+  }
+  flock() {
+    target_fd="${!#}"
+    if [[ -e "/proc/$BASHPID/fd/$credential_fd" ||
+          -e "/proc/$BASHPID/fd/$settings_fd" ]]; then
+      printf 'secret-fd-leak\n' >> "$TEST_TMP/flock-calls"
+    fi
+    if [[ "$2" == -s ]]; then
+      [[ ! -e "/proc/$BASHPID/fd/$lease_fd" ]] || printf 'lease-fd-leak\n' >> "$TEST_TMP/flock-calls"
+      printf 'probe\n' >> "$TEST_TMP/flock-calls"
+      return 1
+    fi
+    printf 'lease\n' >> "$TEST_TMP/flock-calls"
+    return 0
+  }
+
+  set +e; acquire_runtime_guard; rc=$?; set +e
+  calls="$(<"$TEST_TMP/flock-calls")"
+  assert_eq 0 "$rc" "exclusive validation fixture must succeed" || return 1
+  assert_eq $'probe\nlease' "$calls" \
+    "lease proof helpers must receive only their target descriptor" || return 1
+  cleanup_runtime_fds || return 1
+  for target_fd in "$credential_fd" "$settings_fd" "$lease_fd"; do
+    [[ ! -e "/proc/$BASHPID/fd/$target_fd" ]] || fail "cleanup retained private descriptor $target_fd" || return 1
+  done
+}
+
 test_main_lock_contention_is_nonblocking_and_side_effect_free() {
   local rc calls
   new_main_fixture
@@ -1691,6 +2006,8 @@ test_load_command_context_allows_profile_independent_commands_to_lack_profile() 
   load_command_context || fail "observational status must allow a genuinely missing profile" || return 1
   COMMAND=reset-api-state
   load_command_context || fail "state reset must remain usable when the profile is missing" || return 1
+  COMMAND=cleanup-candidate
+  load_command_context || fail "setup-owned orphan cleanup must allow a genuinely missing profile" || return 1
 
   printf '%s\n' '[Interface]' '[Peer]' 'Endpoint = 192.0.2.1:1637' > "$WG_CONF"
   COMMAND=provision
@@ -2098,20 +2415,31 @@ test_interruption_handler_retains_marker_and_installs_traps() {
 }
 
 test_interruption_handler_is_child_free_with_untracked_private_descriptors() {
-  local credential_fd settings_fd key_fd candidate_fd
+  local credential_fd settings_fd setup_fd guard_fd interface_fd key_fd candidate_fd tracked_fd
   new_recovery_fixture
   printf '192.0.2.10:1637\n' > "$ROTATION_PENDING"
   printf 'credential sentinel\n' > "$TEST_TMP/credential"
   printf 'settings sentinel\n' > "$TEST_TMP/settings"
   printf 'credential duplicate sentinel\n' > "$TEST_TMP/key-duplicate"
   printf 'private profile sentinel\n' > "$TEST_TMP/candidate"
+  printf 'setup lease sentinel\n' > "$TEST_TMP/setup-lease"
+  printf 'guard sentinel\n' > "$TEST_TMP/guard"
+  printf 'interface lock sentinel\n' > "$TEST_TMP/interface-lock"
   : > "$TEST_TMP/private-fd-leak"
   exec {credential_fd}<"$TEST_TMP/credential"
   exec {settings_fd}<"$TEST_TMP/settings"
   exec {key_fd}<"$TEST_TMP/key-duplicate"
   exec {candidate_fd}<"$TEST_TMP/candidate"
+  exec {setup_fd}<>"$TEST_TMP/setup-lease"
+  exec {guard_fd}<>"$TEST_TMP/guard"
+  exec {interface_fd}<>"$TEST_TMP/interface-lock"
   CREDENTIAL_FD="$credential_fd"
   SETTINGS_FD="$settings_fd"
+  SETUP_LEASE_FD="$setup_fd"
+  GUARD_FD="$guard_fd"
+  GUARD_LOCKED=1
+  LOCK_FD="$interface_fd"
+  CONTEXT_LOCKED=1
   write_status() {
     (
       if [[ -e "/proc/$BASHPID/fd/$credential_fd" ||
@@ -2130,8 +2458,15 @@ test_interruption_handler_is_child_free_with_untracked_private_descriptors() {
     "signal handling must launch no helper while any private descriptor can exist" || return 1
   assert_eq '' "$CREDENTIAL_FD" "signal handling must clear the credential descriptor owner" || return 1
   assert_eq '' "$SETTINGS_FD" "signal handling must clear the settings descriptor owner" || return 1
-  [[ ! -e "/proc/$BASHPID/fd/$credential_fd" && ! -e "/proc/$BASHPID/fd/$settings_fd" ]] ||
-    fail "signal handling must close both tracked private descriptors in the parent" || return 1
+  assert_eq '' "$SETUP_LEASE_FD" "signal handling must clear an unadopted setup descriptor" || return 1
+  assert_eq '' "$GUARD_FD" "signal handling must clear the active setup guard owner" || return 1
+  assert_eq '' "$LOCK_FD" "signal handling must clear the interface lock owner" || return 1
+  assert_eq 0 "$GUARD_LOCKED" "signal handling must clear setup guard state" || return 1
+  assert_eq 0 "$CONTEXT_LOCKED" "signal handling must clear interface lock state" || return 1
+  for tracked_fd in "$credential_fd" "$settings_fd" "$setup_fd" "$guard_fd" "$interface_fd"; do
+    [[ ! -e "/proc/$BASHPID/fd/$tracked_fd" ]] ||
+      fail "signal handling retained tracked descriptor $tracked_fd" || return 1
+  done
   exec {key_fd}<&-
   exec {candidate_fd}<&-
 }
@@ -2613,6 +2948,7 @@ test_status_main_path_is_observational_and_creates_no_runtime_files() {
   [[ ! -e "$STATE_DIR" && ! -L "$STATE_DIR" ]] ||
     fail "status must not create the runtime state directory" || return 1
   [[ ! -e "$LOCK" && ! -L "$LOCK" ]] || fail "status must not create the interface lock"
+  [[ ! -e "$SETUP_GUARD" && ! -L "$SETUP_GUARD" ]] || fail "status must not create the setup guard"
 }
 
 test_interface_lock_open_is_nofollow_private_and_never_truncates_symlink_target() {
@@ -2760,6 +3096,7 @@ tests=(
   test_version_output_is_fixed_and_public
   test_sourceable_without_executing_or_enabling_errexit
   test_runtime_cli_preserves_legacy_version_and_rejects_unknown_forms
+  test_setup_lease_cli_is_explicit_scoped_and_fd_distinct
   test_mutating_cli_requires_exactly_one_mode_and_scopes_options
   test_settings_descriptor_is_exact_stable_private_and_canonical
   test_main_captures_settings_before_context_and_overlays_only_memory
@@ -2799,6 +3136,10 @@ tests=(
   test_rotation_disabled_speed_restart_and_failure_status
   test_fixed_command_wrappers_pass_exact_argv
   test_main_uses_root_seam_and_validates_both_files
+  test_setup_guard_precedes_context_and_stale_context_is_never_loaded_on_contention
+  test_main_keeps_credential_private_during_pre_guard_context
+  test_setup_guard_is_private_nofollow_and_validates_exclusive_inherited_lease
+  test_setup_lease_validation_helpers_inherit_no_other_private_descriptors
   test_main_lock_contention_is_nonblocking_and_side_effect_free
   test_explicit_lock_contention_is_busy_and_closes_credential_descriptors
   test_load_command_context_allows_profile_independent_commands_to_lack_profile

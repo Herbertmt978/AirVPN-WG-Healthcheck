@@ -171,6 +171,10 @@ recovery snapshot.
 - `wg-healthcheck adopt <iface> --dry-run [--credential-fd N] [--settings-fd N]`
   validates a matching static profile; `adopt <iface> --apply [--credential-fd N]`
   explicitly adopts it and refuses a changed device identity.
+- An existing API-mode profile may use `adopt --dry-run` only with both a supplied
+  credential descriptor and a validated proposed-settings descriptor. This is the narrow
+  setup replacement-key validation seam; it remains identity-pinned and `adopt --apply`
+  remains forbidden in API mode.
 - The setup-only `--settings-fd` is rejected on apply and every other command. It validates
   proposed device/country settings before any persistent config change.
 - `wg-healthcheck rotate <iface> --dry-run|--apply` selects and validates an alternate;
@@ -184,6 +188,16 @@ recovery snapshot.
 Mutating administrative commands require exactly one of `--dry-run` or `--apply` so an
 omitted safety flag cannot cause a network change. The systemd invocation remains the
 only argument-free recovery path.
+
+Setup adds a fixed administrative lease at
+`/run/wg-healthcheck/<iface>.setup-guard`, a root-owned mode-0600 regular file. Ordinary
+non-status runtime invocations acquire it shared before loading configuration and hold it
+through cleanup. Setup stops the timer/worker and holds it exclusive across validation,
+config/key persistence, runtime apply, rollback, fresh health verification, and the timer
+decision. Only explicit setup-capable commands may accept an inherited lease descriptor;
+runtime verifies that descriptor is the exact fixed file and part of the exclusive locked
+open-file description. The lock order is administrative lease, interface lock, then global
+API lock. Status stays observational and never creates a lease file.
 
 The setup-only settings descriptor is a root-owned mode-0600 regular file with both a
 different descriptor number and a different `(st_dev,st_ino)` identity from the credential
@@ -295,6 +309,15 @@ offers explicit removal. Uninstall preserves credentials unless the operator exp
 uses `--remove-credential`; removal unlinks the file and syncs its directory but makes no
 unreliable secure-erasure claim for journaling or copy-on-write filesystems.
 
+Only an already-active API configuration may reuse its installed credential without a
+prompt. Entering API mode from static always requires a proposed descriptor, even when a
+retained key file exists. An exact retained key may be revalidated without rewriting it;
+a different value requires `--replace-credential`. Credential selection during interrupted
+setup is based on the durable pre-transaction configuration snapshot rather than current
+key-file presence. If recovery can still commit or roll back either source, setup requests
+a proposal and accepts it after recovery only when it exactly matches the restored active
+API credential or an explicit replacement was requested.
+
 The credential supplied for acceptance testing is not a production credential. It is
 removed after the live test. The VM remains in API mode only after the owner supplies a
 new API key that was not pasted into chat; otherwise it is returned to verified static mode.
@@ -382,6 +405,49 @@ installs and revalidates the credential, and then calls runtime apply without a 
 override. Runtime's existing final source flip is the activation point. Any failure
 restores the exact prior config and credential; every crash before apply therefore remains
 in inert static mode.
+
+Authenticated validation retains runtime-owned attempt, outcome, backoff, and credential
+identity accounting even if setup later rolls back; removing that security history would
+enable retry storms and is not part of setup rollback. Stopping the timer is also a
+persistent safety action, not rolled back implicitly. After runtime apply, setup performs a
+controlled health run under its lease and accepts only a newly replaced, stable,
+root-owned mode-0600 status with a current `healthy` or `recovered` outcome. That fresh
+health proof is the ordinary setup commit point. The explicit exception is a successful
+`restore-static --apply`: runtime has already completed its verified profile/qBittorrent
+transaction and source change, so that success commits the restored static profile. A
+later setup-status proof failure retains that exact static result with the timer disabled
+rather than combining the restored profile with a rolled-back API source. If the optional
+timer enable then fails, setup disables/stops the timer, retains the verified committed
+mode/config/credential/profile, and reports that only timer activation remains incomplete;
+it does not attempt to undo a possibly successful managed recovery.
+
+Setup recovery uses a strict root-only journal beside the health configuration. Legacy v1
+and v2 records retain their exact field order and historical phases; neither may claim the
+v3-only `verifying` or `rolled-back` phases. Current v3 records contain exact ordered
+`version`, `operation`, `phase`, prior-key, prior-snapshot, key-change, proof-start, and
+prior-status identity fields with canonical LF separators. Operation/phase combinations
+are explicit. Static operations must record `key_changed=0`; an API operation cannot claim
+both that no prior key existed and that the key was unchanged. `verifying` and `verified`
+require a persisted proof start; every other phase, including `rolled-back`, requires zero
+proof fields. Before invoking a recoverable health check, setup records `verifying` with
+the prior status identity and start time. Rollback restores repeatable snapshots, records
+`rolled-back` with cleared proof, then removes the snapshots and journal last.
+
+Atomic journal, health-config, and credential rewrites each use a fixed same-directory
+root-only staging name opened with exclusive creation. They never overwrite an abandoned
+staging entry. An apply recovery holds the exclusive setup lease while durably discarding
+these unpublished fixed entries before it reads the authoritative journal; a dry run with
+one present fails closed without mutating it. This bounds every possible staged secret and
+makes a power-loss remnant discoverable and recoverable without directory-pattern guesses.
+
+Each setup snapshot is copied to a fixed same-directory root-only staging path, synced,
+validated, published without overwriting an existing snapshot, and followed by a directory
+barrier. Recovery removes an unpublished staging copy only while the journal is still
+`prepared`; a later phase without its authoritative snapshot fails closed. A published
+snapshot and its interrupted same-inode staging link are reconciled durably before restore.
+A lone runtime-owned managed candidate is removed only by the managed runtime under the
+inherited exclusive setup lease and interface lock, with no pending journal or safety
+record, strict metadata/size checks, unlink, parent sync, and an absence proof.
 
 ## Managed rotation transaction
 

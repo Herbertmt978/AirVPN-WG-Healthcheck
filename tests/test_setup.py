@@ -5,6 +5,7 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -20,7 +21,9 @@ SENTINEL = "f" * 64
 
 
 def _load_setup():
-    loader = importlib.machinery.SourceFileLoader("wg_healthcheck_setup", str(SETUP))
+    loader = importlib.machinery.SourceFileLoader(
+        "wg_healthcheck_setup_entrypoint", str(SETUP)
+    )
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     sys.modules[loader.name] = module
@@ -40,6 +43,50 @@ def _countries():
 
 
 class SetupCliTests(unittest.TestCase):
+    def test_entrypoint_is_thin_source_relative_and_ignores_pythonpath(self):
+        self.assertLessEqual(len(SETUP.read_text(encoding="utf-8").splitlines()), 80)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bin_dir = root / "bin"
+            package_parent = root / "libexec"
+            hostile = root / "hostile"
+            bin_dir.mkdir()
+            package_parent.mkdir()
+            hostile.mkdir()
+            entrypoint = bin_dir / SETUP.name
+            shutil.copy2(SETUP, entrypoint)
+            shutil.copytree(
+                ROOT / "libexec" / "wg_healthcheck_setup",
+                package_parent / "wg_healthcheck_setup",
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            marker = root / "hostile-imported"
+            (hostile / "wg_healthcheck_setup.py").write_text(
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('imported', encoding='ascii')\n",
+                encoding="ascii",
+            )
+            environment = {
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONPATH": str(hostile),
+            }
+
+            completed = subprocess.run(
+                [sys.executable, str(entrypoint), "--help"],
+                cwd=root,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertFalse(marker.exists())
+            self.assertFalse(
+                (package_parent / "wg_healthcheck_setup" / "__pycache__").exists()
+            )
+
     def test_main_disables_core_before_inspecting_secret_inputs(self):
         events = []
 
@@ -56,9 +103,13 @@ class SetupCliTests(unittest.TestCase):
             raise setup.SetupError("secret values are not accepted")
 
         stderr = io.StringIO()
-        with mock.patch.object(setup, "disable_core_dumps", side_effect=disable), mock.patch.object(
-            setup, "_deny_secret_inputs", side_effect=deny
-        ), contextlib.redirect_stderr(stderr):
+        with (
+            mock.patch.object(
+                setup.cli.private_io, "disable_core_dumps", side_effect=disable
+            ),
+            mock.patch.object(setup.cli, "_deny_secret_inputs", side_effect=deny),
+            contextlib.redirect_stderr(stderr),
+        ):
             return_code = setup.main(RecordingArguments())
 
         self.assertEqual(return_code, 64)
@@ -79,8 +130,20 @@ class SetupCliTests(unittest.TestCase):
 
     def test_noninteractive_requires_explicit_mode_action_and_timer_decisions(self):
         cases = (
-            (["--non-interactive", "--dry-run", "--leave-timer-disabled", "wg0"], "mode"),
-            (["--non-interactive", "--mode", "static", "--leave-timer-disabled", "wg0"], "dry-run or --apply"),
+            (
+                ["--non-interactive", "--dry-run", "--leave-timer-disabled", "wg0"],
+                "mode",
+            ),
+            (
+                [
+                    "--non-interactive",
+                    "--mode",
+                    "static",
+                    "--leave-timer-disabled",
+                    "wg0",
+                ],
+                "dry-run or --apply",
+            ),
             (["--non-interactive", "--mode", "static", "--dry-run", "wg0"], "timer"),
         )
         for argv, message in cases:
@@ -88,7 +151,7 @@ class SetupCliTests(unittest.TestCase):
                 with self.assertRaisesRegex(setup.SetupError, message):
                     setup.resolve_request(setup.parse_args(argv))
 
-    def test_noninteractive_api_requires_device_countries_and_credential_file(self):
+    def test_noninteractive_api_requires_device_countries_and_replacement_file(self):
         base = [
             "--non-interactive",
             "--mode",
@@ -97,31 +160,55 @@ class SetupCliTests(unittest.TestCase):
             "--leave-timer-disabled",
         ]
         cases = (
-            (base + ["--countries", "GB", "--credential-file", "/run/key", "wg0"], "device"),
-            (base + ["--device", "default", "--credential-file", "/run/key", "wg0"], "countries"),
-            (base + ["--device", "default", "--countries", "GB", "wg0"], "credential-file"),
+            (
+                base + ["--countries", "GB", "--credential-file", "/run/key", "wg0"],
+                "device",
+            ),
+            (
+                base + ["--device", "default", "--credential-file", "/run/key", "wg0"],
+                "countries",
+            ),
+            (
+                base
+                + [
+                    "--device",
+                    "default",
+                    "--countries",
+                    "GB",
+                    "--replace-credential",
+                    "wg0",
+                ],
+                "credential-file",
+            ),
         )
         for argv, message in cases:
             with self.subTest(argv=argv):
                 with self.assertRaisesRegex(setup.SetupError, message):
                     setup.resolve_request(setup.parse_args(argv))
 
+        reusable = setup.resolve_request(
+            setup.parse_args(base + ["--device", "default", "--countries", "GB", "wg0"])
+        )
+        self.assertIsNone(reusable.credential_file)
+
     def test_secret_environment_name_is_rejected_even_when_empty_without_echo(self):
         for value in ("", SENTINEL):
             with self.subTest(value_present=bool(value)):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
-                with mock.patch.dict(
-                    os.environ, {"AIRVPN_API_KEY": value}, clear=False
-                ), mock.patch.object(setup.subprocess, "run") as run, contextlib.redirect_stdout(
-                    stdout
-                ), contextlib.redirect_stderr(stderr):
+                with (
+                    mock.patch.dict(os.environ, {"AIRVPN_API_KEY": value}, clear=False),
+                    mock.patch.object(setup.subprocess, "run") as run,
+                    contextlib.redirect_stdout(stdout),
+                    contextlib.redirect_stderr(stderr),
+                ):
                     return_code = setup.main(["--mode", "static", "wg0"])
 
                 self.assertEqual(return_code, 64)
                 self.assertNotIn(SENTINEL, stdout.getvalue() + stderr.getvalue())
                 self.assertIn(
-                    "AIRVPN_API_KEY environment input is not accepted", stderr.getvalue()
+                    "AIRVPN_API_KEY environment input is not accepted",
+                    stderr.getvalue(),
                 )
                 run.assert_not_called()
 
@@ -130,7 +217,10 @@ class SetupCliTests(unittest.TestCase):
             with self.subTest(argv_form=argv[0].split("=", 1)[0]):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
-                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                with (
+                    contextlib.redirect_stdout(stdout),
+                    contextlib.redirect_stderr(stderr),
+                ):
                     return_code = setup.main(argv)
 
                 self.assertEqual(return_code, 64)
@@ -150,12 +240,19 @@ class SetupCliTests(unittest.TestCase):
             events.append(("prompt", prompt))
             return SENTINEL
 
-        with mock.patch.object(setup.resource, "setrlimit", side_effect=setrlimit), mock.patch.object(
-            setup, "open_controlling_tty", side_effect=lambda: os.dup(terminal)
+        with (
+            mock.patch.object(setup.resource, "setrlimit", side_effect=setrlimit),
+            mock.patch.object(
+                setup.private_io,
+                "open_controlling_tty",
+                side_effect=lambda: os.dup(terminal),
+            ),
         ):
             with setup.read_hidden_credential(getpass_fn=getpass_fn) as credential:
                 self.assertGreaterEqual(credential.fd, 3)
-                self.assertEqual(os.pread(credential.fd, 65, 0), (SENTINEL + "\n").encode("ascii"))
+                self.assertEqual(
+                    os.pread(credential.fd, 65, 0), (SENTINEL + "\n").encode("ascii")
+                )
 
         self.assertEqual(events[0][0], "limit")
         self.assertEqual(events[1][0], "prompt")
@@ -172,12 +269,17 @@ class SetupCliTests(unittest.TestCase):
         controller, terminal = os.openpty()
         self.addCleanup(os.close, controller)
         self.addCleanup(os.close, terminal)
-        with mock.patch.object(
-            setup, "open_controlling_tty", side_effect=lambda: os.dup(terminal)
-        ), mock.patch.object(
-            setup.getpass,
-            "getpass",
-            side_effect=setup.getpass.GetPassWarning("echo would be enabled"),
+        with (
+            mock.patch.object(
+                setup.private_io,
+                "open_controlling_tty",
+                side_effect=lambda: os.dup(terminal),
+            ),
+            mock.patch.object(
+                setup.getpass,
+                "getpass",
+                side_effect=setup.getpass.GetPassWarning("echo would be enabled"),
+            ),
         ):
             with self.assertRaisesRegex(setup.SetupError, "hidden credential input"):
                 setup.read_hidden_credential()
@@ -191,9 +293,13 @@ class SetupCliTests(unittest.TestCase):
 
             with setup.open_credential_file(str(good)) as credential:
                 self.assertTrue(stat.S_ISREG(os.fstat(credential.fd).st_mode))
-                self.assertEqual(os.pread(credential.fd, 65, 0), (SENTINEL + "\n").encode("ascii"))
+                self.assertEqual(
+                    os.pread(credential.fd, 65, 0), (SENTINEL + "\n").encode("ascii")
+                )
 
-            with mock.patch.object(setup.os, "stat", side_effect=AssertionError("path stat")):
+            with mock.patch.object(
+                setup.os, "stat", side_effect=AssertionError("path stat")
+            ):
                 with setup.open_credential_file(str(good)) as credential:
                     self.assertEqual(os.fstat(credential.fd).st_uid, 0)
 
@@ -224,7 +330,9 @@ class SetupCliTests(unittest.TestCase):
                 with self.assertRaisesRegex(setup.SetupError, "root-owned"):
                     setup.open_credential_file(str(good))
 
-    def test_credential_file_rejects_untrusted_ancestors_metadata_drift_and_high_fd(self):
+    def test_credential_file_rejects_untrusted_ancestors_metadata_drift_and_high_fd(
+        self,
+    ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             unsafe = root / "unsafe"
@@ -247,7 +355,9 @@ class SetupCliTests(unittest.TestCase):
                     raise OSError("FIFO open refused by test double")
                 return real_open(path, flags, *args, **kwargs)
 
-            with mock.patch.object(setup.os, "open", side_effect=refuse_fifo_without_blocking):
+            with mock.patch.object(
+                setup.os, "open", side_effect=refuse_fifo_without_blocking
+            ):
                 with self.assertRaises(setup.SetupError):
                     setup.open_credential_file(str(fifo))
             self.assertTrue(final_flags[0] & os.O_NONBLOCK)
@@ -278,13 +388,17 @@ class SetupCliTests(unittest.TestCase):
                 return value
 
             with mock.patch.object(setup.os, "fstat", side_effect=drifting_metadata):
-                with self.assertRaisesRegex(setup.SetupError, "changed while being read"):
+                with self.assertRaisesRegex(
+                    setup.SetupError, "changed while being read"
+                ):
                     setup.open_credential_file(str(good))
 
             base_fd = os.open(good, os.O_RDONLY | os.O_CLOEXEC)
             self.addCleanup(os.close, base_fd)
             high_fd = fcntl.fcntl(base_fd, fcntl.F_DUPFD_CLOEXEC, 1024)
-            with mock.patch.object(setup, "_open_absolute_nofollow", return_value=high_fd):
+            with mock.patch.object(
+                setup.private_io, "_open_absolute_nofollow", return_value=high_fd
+            ):
                 with self.assertRaisesRegex(setup.SetupError, "descriptor range"):
                     setup.open_credential_file(str(good))
 
@@ -297,9 +411,12 @@ class SetupCliTests(unittest.TestCase):
                 argv, 0, "generated\tMensa-1\t198.51.100.10:1637\tpinned=1\n", ""
             )
 
-        with setup.credential_from_bytes(
-            (SENTINEL + "\n").encode("ascii")
-        ) as credential, setup.settings_from_values("default", "GB NL") as settings:
+        with (
+            setup.credential_from_bytes(
+                (SENTINEL + "\n").encode("ascii")
+            ) as credential,
+            setup.settings_from_values("default", "GB NL") as settings,
+        ):
             setup.run_runtime_validation("wg0", "adopt", credential, settings, run=run)
             credential_fd = credential.fd
             settings_fd = settings.fd
@@ -332,14 +449,20 @@ class SetupCliTests(unittest.TestCase):
                 with setup.settings_from_values(device, countries) as settings:
                     metadata = os.fstat(settings.fd)
                     expected = (
-                        f"version=1\ndevice={device}\ncountries={countries}\n".encode("ascii")
+                        f"version=1\ndevice={device}\ncountries={countries}\n".encode(
+                            "ascii"
+                        )
                     )
                     self.assertEqual(os.pread(settings.fd, 257, 0), expected)
                     self.assertLessEqual(metadata.st_size, 256)
                     self.assertEqual(stat.S_IMODE(metadata.st_mode), 0o600)
                     self.assertEqual(metadata.st_uid, 0)
 
-        for device, countries in (("bad\nvalue", "GB"), ("default", "gb"), ("default", "GB  NL")):
+        for device, countries in (
+            ("bad\nvalue", "GB"),
+            ("default", "gb"),
+            ("default", "GB  NL"),
+        ):
             with self.subTest(device=device, countries=countries):
                 with self.assertRaises(setup.SetupError):
                     setup.settings_from_values(device, countries)
@@ -350,9 +473,12 @@ class SetupCliTests(unittest.TestCase):
 
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with setup.credential_from_bytes(
-            (SENTINEL + "\n").encode("ascii")
-        ) as credential, setup.settings_from_values("default", "GB") as settings:
+        with (
+            setup.credential_from_bytes(
+                (SENTINEL + "\n").encode("ascii")
+            ) as credential,
+            setup.settings_from_values("default", "GB") as settings,
+        ):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 with self.assertRaisesRegex(setup.SetupError, "validation failed"):
                     setup.run_runtime_validation(
@@ -365,7 +491,9 @@ class SetupCliTests(unittest.TestCase):
         def run(_argv, **_kwargs):
             raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, SENTINEL)
 
-        with self.assertRaisesRegex(setup.SetupError, "could not be executed") as raised:
+        with self.assertRaisesRegex(
+            setup.SetupError, "could not be executed"
+        ) as raised:
             setup.fetch_public_countries(run=run)
         self.assertNotIn(SENTINEL, str(raised.exception))
 
@@ -378,13 +506,19 @@ class SetupCliTests(unittest.TestCase):
         )
         for child_output in invalid:
             with self.subTest(child_output=child_output[:40]):
+
                 def run(argv, **_kwargs):
                     return subprocess.CompletedProcess(argv, 0, child_output, "")
 
-                with setup.credential_from_bytes(
-                    (SENTINEL + "\n").encode("ascii")
-                ) as credential, setup.settings_from_values("default", "GB") as settings:
-                    with self.assertRaisesRegex(setup.SetupError, "invalid redacted manifest"):
+                with (
+                    setup.credential_from_bytes(
+                        (SENTINEL + "\n").encode("ascii")
+                    ) as credential,
+                    setup.settings_from_values("default", "GB") as settings,
+                ):
+                    with self.assertRaisesRegex(
+                        setup.SetupError, "invalid redacted manifest"
+                    ):
                         setup.run_runtime_validation(
                             "wg0", "provision", credential, settings, run=run
                         )
@@ -436,14 +570,18 @@ class SetupCliTests(unittest.TestCase):
         self.assertFalse(selection.all_countries)
         self.assertEqual(selection.codes, ("NL", "GB", "SE"))
 
-    def test_country_selection_is_bounded_before_integer_conversion_or_secret_read(self):
+    def test_country_selection_is_bounded_before_integer_conversion_or_secret_read(
+        self,
+    ):
         many = tuple(
             setup.Country(f"{chr(65 + first)}{chr(65 + second)}", "Eligible", 1)
             for first in range(2)
             for second in range(17)
         )
         with self.assertRaisesRegex(setup.SetupError, "at most 32"):
-            setup.normalize_country_selection(" ".join(country.code for country in many), many)
+            setup.normalize_country_selection(
+                " ".join(country.code for country in many), many
+            )
 
         with self.assertRaises(setup.SetupError):
             setup.normalize_country_selection("9" * 5000, _countries())
@@ -578,13 +716,28 @@ class SetupCliTests(unittest.TestCase):
         @contextlib.contextmanager
         def credential():
             events.append("credential")
-            with setup.credential_from_bytes((SENTINEL + "\n").encode("ascii")) as value:
+            with setup.credential_from_bytes(
+                (SENTINEL + "\n").encode("ascii")
+            ) as value:
                 yield value
 
-        with mock.patch.object(setup, "fetch_public_countries", side_effect=fetch), mock.patch.object(
-            setup, "read_hidden_credential", side_effect=credential
-        ), mock.patch.object(setup, "run_runtime_validation"):
-            setup.execute_request(setup.resolve_request(args), input_fn=lambda _prompt: "")
+        with (
+            mock.patch.object(
+                setup.cli.clients, "fetch_public_countries", side_effect=fetch
+            ),
+            mock.patch.object(
+                setup.cli.private_io, "read_hidden_credential", side_effect=credential
+            ),
+            mock.patch.object(
+                setup.cli.application,
+                "api_requires_proposed_credential",
+                return_value=True,
+            ),
+            mock.patch.object(setup.cli.application, "preview_api_request"),
+        ):
+            setup.execute_request(
+                setup.resolve_request(args), input_fn=lambda _prompt: ""
+            )
 
         self.assertEqual(events, ["countries", "credential"])
 

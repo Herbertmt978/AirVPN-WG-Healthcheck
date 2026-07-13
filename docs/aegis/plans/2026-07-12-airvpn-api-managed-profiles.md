@@ -569,7 +569,12 @@ and automation.
 
 ## Task 10: Setup application and credential lifecycle
 
-**Files:** modify `bin/wg-healthcheck-setup`, `tests/test_setup.py`.
+**Files:** split and modify `bin/wg-healthcheck-setup`,
+`libexec/wg_healthcheck_setup/*`, `tests/test_setup.py`, and
+`tests/test_setup_apply.py`; modify `bin/wg-healthcheck`,
+`libexec/wg-healthcheck-managed`, `tests/test_wg_healthcheck.sh`, and
+`tests/test_wg_managed_profiles.sh` for the administrative lease and replacement-validation
+seam.
 
 **Why:** setup must validate before persistence and recover atomically from key/config/
 timer failures.
@@ -579,7 +584,7 @@ API behavior.
 
 **Verification:** `python3 -m unittest tests.test_setup.SetupApplyTests -v`.
 
-- [ ] **Write RED tests.** Cover identity mismatch preserving static state, key persisted
+- [x] **Write RED tests.** Cover identity mismatch preserving static state, key persisted
   only after authenticated validation, failed adoption restoring the previous key,
   replacement revalidation/rollback, explicit unlink+directory sync removal, preservation
   of unrelated valid health keys, pre-managed static restoration, and timer enable only
@@ -590,11 +595,16 @@ API behavior.
   prove worker/interface/global locks and recovery artifacts inactive, remain quiesced
   through rollback and verification, and re-enable only after fresh healthy/recovered
   status. Cover the first-provision inert-static recovery profile and its adoption retry.
-- [ ] **Verify RED.** Require state snapshots to show no mutation on each failed path
+  Require an exclusive setup lease held across the full transaction, shared acquisition by
+  ordinary runtime invocations, and validated lease reuse only by setup-owned runtime
+  children. Cover active-API replacement validation only when both credential and settings
+  overrides are present, with API-mode adopt apply still forbidden.
+- [x] **Verify RED.** Require state snapshots to show no mutation on each failed path
   except the specified post-durable-install first-provision outcome. That outcome retains
   only the exact root-0600 profile with static source, disabled timer, restored config and
-  credential, and no candidate, journal, or safety artifact.
-- [ ] **Implement minimal application flow.** Validate the proposed credential and strict
+  credential, and no candidate, journal, or safety artifact. Runtime-owned authenticated
+  attempt/backoff accounting and the persistent timer stop are explicit allowed deltas.
+- [x] **Implement minimal application flow.** Validate the proposed credential and strict
   device/country settings together through distinct private FDs. After success, atomically
   persist device/countries while retaining `AIRVPN_PROFILE_SOURCE=static`, stage/sync/
   rename the credential with one bounded previous copy, revalidate the installed key, and
@@ -602,13 +612,17 @@ API behavior.
   activation point. Restore the exact previous config and credential on every failure;
   when first provisioning already durably installed a profile, retain it as the specified
   inert static recovery profile instead of deleting secret material. Before any apply
-  mutation, stop the timer and worker, prove interface/global locks and all recovery
-  artifacts inactive, and keep the boundary quiesced through rollback and verification.
+  mutation, stop the timer and worker, acquire the fixed exclusive administrative lease,
+  prove interface/global locks and all recovery artifacts inactive, and keep the boundary
+  quiesced through rollback and verification. Ordinary runtime owns a shared lease; setup
+  children validate and reuse the inherited exclusive lease in guard-first lock order.
   Invoke systemd enable only after reading a fresh successful private status file. Route
-  state reset to the runtime owner under the same boundary.
-- [ ] **Verify GREEN.** Run focused/full setup tests and a staged temporary-directory
+  state reset to the runtime owner under the same boundary. Fresh health is the setup
+  commit point: a subsequent optional timer-enable failure leaves the verified API setup
+  committed but disables the timer and reports the incomplete enable action.
+- [x] **Verify GREEN.** Run focused/full setup tests and a staged temporary-directory
   integration with fixed command doubles.
-- [ ] **Commit.** `git commit -m "Make setup changes transactional"`.
+- [x] **Commit.** `git commit -m "Make setup changes transactional"`.
 
 ## Task 11: Installer and systemd upgrade safety
 
