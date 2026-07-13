@@ -328,6 +328,32 @@
   exceed the approved review threshold.
 - No VM, release, remote-history, or repository-visibility mutation occurred in Task 11.
 
+### Task 12: public dual-mode documentation and MIT license
+
+- Commit `0e3f74a` adds the standard MIT license, a first-screen static/API choice,
+  exact interactive quick starts, explicit country-selection semantics, root/credential
+  boundaries, a complete operator guide, and current security/contribution rules.
+- The operator guide provides safe manual-health/timer decisions, credential replacement
+  and removal, API-state maintenance, quiesced upgrades, runtime-masked rollback with an
+  installer-failure gate, and all-instance package removal that preserves recovery data.
+- RED documentation contracts initially failed for the absent license/operator guide and
+  stale v1.0-only claims. Review then reproduced and fixed an unsafe persistent systemd
+  mask, unchecked rollback installer failure, incomplete removal steps, vague prerequisites,
+  a broken development-checks link, missing WireGuard mode, and ambiguous `ALL` storage.
+- Fresh final-tree verification:
+  - public documentation contract: 12/12 passed;
+  - root-path installer suite: 57 passed, one intentional non-root check skipped;
+  - non-root installer suite: 58 passed, no skips;
+  - native Linux Python discovery remained 179/179 green, with the final documentation
+    contract rerun separately after the last prose-only corrections;
+  - Bash syntax, ShellCheck 0.11.0 style, local Markdown links, and diff checks passed;
+  - pinned Gitleaks 8.30.1 scanned 2.38 MB and found no leaks.
+- Independent Terra specification/usability review and Luna adversarial security review
+  returned READY for Task 12. Both reviews explicitly block release until Task 13 updates
+  `VERSION`, adds v1.1 notes, includes every runtime/setup owner plus license/operations in
+  both archives, and extends CI/release scanning.
+- No VM, tag, release, history rewrite, push, or repository-visibility mutation occurred.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.

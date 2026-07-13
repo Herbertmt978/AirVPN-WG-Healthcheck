@@ -663,20 +663,20 @@ receive direct replacements or redirects where practical.
 
 **Verification:** `python3 -m unittest tests.test_public_docs -v` plus repository tests.
 
-- [ ] **Write RED tests.** Require a first-100-line mode table; both exact two-command
+- [x] **Write RED tests.** Require a first-100-line mode table; both exact two-command
   paths; status/manual-run/timer decisions; operations links; credential location/
   replacement/removal; kill-switch and fixed-device limits; MIT text/README declaration;
   no private addresses/home paths/key-like values; static/API config examples; and clear
   single-country, multi-country allowlist, soft-order preference, and explicit `ALL`
   instructions.
-- [ ] **Verify RED.** Require failures for absent license/operations/two-mode copy.
-- [ ] **Implement documentation.** Add standard MIT text with
+- [x] **Verify RED.** Require failures for absent license/operations/two-mode copy.
+- [x] **Implement documentation.** Add standard MIT text with
   `Copyright (c) 2026 Herbertmt978`; rewrite README opening/quick starts; move long upgrade,
   rollback, uninstall, state repair, and key replacement into `docs/operations.md`; update
   security reporting and contribution secret rules; document exact config grammar.
-- [ ] **Verify GREEN.** Run doc tests, installer repository-contract tests, link checks,
+- [x] **Verify GREEN.** Run doc tests, installer repository-contract tests, link checks,
   and `git diff --check`.
-- [ ] **Commit.** `git commit -m "Document dual-mode installation"`.
+- [x] **Commit.** `git commit -m "Document dual-mode installation"`.
 
 ## Task 13: Version, changelog, release notes, packaging, and CI
 
