@@ -14,7 +14,7 @@
 
 ## Architecture decisions
 
-No ADRs have been accepted yet.
+- [ADR 0001: dual-mode profile management ownership](adr/0001-dual-mode-profile-management.md)
 
 ## Work records
 

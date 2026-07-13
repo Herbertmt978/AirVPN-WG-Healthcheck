@@ -390,8 +390,10 @@ require_pattern(ci_concurrency.group("body"), r"cancel-in-progress:\s*true", "CI
 for required in (
     'PYTHON_BIN="${pythonLocation:?}/bin/python"',
     '"$PYTHON_BIN" -m unittest discover -s tests -p \'test_*.py\' -v',
-    "bash -n bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh",
-    "shellcheck -x -S style bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh",
+    "bash scripts/build-managed-module.sh --check",
+    "bash -n bin/wg-healthcheck libexec/wg-healthcheck-managed libexec/wg-healthcheck-managed.d/*.bash install.sh scripts/*.sh tests/*.sh tests/lib/*.sh tests/install/*.sh tests/wg_healthcheck/*.sh tests/wg_managed/*.sh",
+    "shellcheck -s bash -x -S style bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh tests/lib/wg_healthcheck_test_support.sh tests/lib/wg_managed_test_support.sh tests/wg_healthcheck/*.sh tests/wg_managed/*.sh",
+    "shellcheck -s bash -x -S style -e SC2034 libexec/wg-healthcheck-managed.d/*.bash",
     "sudo install -D -m 0755 bin/wg-healthcheck-setup /usr/local/sbin/wg-healthcheck-setup",
     "sudo install -D -m 0644 libexec/wg-healthcheck-managed /usr/local/libexec/wg-healthcheck/wg-healthcheck-managed",
     "sudo install -D -m 0644 libexec/wg_healthcheck_setup/*.py /usr/local/libexec/wg-healthcheck/wg_healthcheck_setup/",

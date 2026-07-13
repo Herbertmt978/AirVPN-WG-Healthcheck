@@ -39,8 +39,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes shellcheck
 
+      - name: Verify generated managed runtime
+        run: bash scripts/build-managed-module.sh --check
+
       - name: Validate Bash syntax
-        run: bash -n bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh
+        run: bash -n bin/wg-healthcheck libexec/wg-healthcheck-managed libexec/wg-healthcheck-managed.d/*.bash install.sh scripts/*.sh tests/*.sh tests/lib/*.sh tests/install/*.sh tests/wg_healthcheck/*.sh tests/wg_managed/*.sh
 
       - name: Run Python contract tests as root
         run: |
@@ -85,7 +88,11 @@ jobs:
           env -i PATH="$SAFE_PATH" LC_ALL=C TMPDIR=/tmp PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 HOME="$HOME" /bin/bash tests/test_release.sh
 
       - name: Run ShellCheck
-        run: shellcheck -x -S style bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh
+        run: |
+          # test_install.sh follows its fixed split manifest with shared context; the other split groups are listed directly.
+          shellcheck -s bash -x -S style bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh tests/lib/wg_healthcheck_test_support.sh tests/lib/wg_managed_test_support.sh tests/wg_healthcheck/*.sh tests/wg_managed/*.sh
+          # The complete generated module retains SC2034 analysis; isolated fragments cannot see sibling references.
+          shellcheck -s bash -x -S style -e SC2034 libexec/wg-healthcheck-managed.d/*.bash
 
       - name: Verify systemd units
         run: |

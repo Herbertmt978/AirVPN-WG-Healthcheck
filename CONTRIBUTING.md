@@ -11,6 +11,13 @@
 
 Run the complete checks documented in [README.md](README.md#development-checks) on Linux. Documentation changes must also pass `python3 -m unittest tests.test_public_docs -v`. Pull requests should pass the repository's GitHub Actions workflow.
 
+Managed-runtime changes belong in the fixed fragments under
+`libexec/wg-healthcheck-managed.d`, not in the generated file alone. Run
+`bash scripts/build-managed-module.sh --write`, review both the fragments and generated
+diff, and leave `bash scripts/build-managed-module.sh --check` passing. The installer and
+release archive intentionally ship only the generated `libexec/wg-healthcheck-managed`
+admission boundary.
+
 ## Review expectations
 
 Changes that can restart WireGuard, mutate its configuration, or access Docker should explain failure behavior, rollback behavior, and the manual validation performed. Do not weaken root ownership, file-mode, HTTPS, timeout, or pending-transaction checks to make a test pass.

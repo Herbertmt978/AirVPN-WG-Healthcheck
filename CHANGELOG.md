@@ -31,6 +31,9 @@ All notable changes to this project are documented here. Release numbers follow
   runtime owner through inert upgrade guards.
 - Release archives and CI now cover the complete v1.1 runtime on Ubuntu 22.04 and 24.04,
   with reproducible tar/ZIP assets and exact installed-layout checks.
+- Managed recovery now has bounded canonical source fragments and split regression suites,
+  while production still installs and validates one deterministically generated runtime
+  module; CI rejects source drift and architecture-boundary growth.
 - Updated the SHA-pinned GitHub artifact actions used by future release workflows
   to their Node 24 versions.
 
@@ -40,9 +43,10 @@ All notable changes to this project are documented here. Release numbers follow
   file and cross process boundaries only through private descriptors, never arguments,
   environment variables, logs, or status output.
 - HTTPS-only public requests, non-redirecting fixed-origin authenticated requests,
-  bounded response/profile grammars, root-only state, identity-pinned adoption,
-  qBittorrent stop/start barriers, and fail-closed rollback prevent untrusted provider
-  data or ambiguous recovery state from being accepted.
+  bounded response/profile grammars, full fixed-path ancestor validation for privileged
+  code, root-only state, identity-pinned adoption, qBittorrent stop/start barriers, and
+  fail-closed rollback prevent untrusted provider data or ambiguous recovery state from
+  being accepted.
 - Static mode opens no credential, makes no authenticated request, and remains isolated
   from AirVPN device lifecycle; this project does not create, renew, revoke, or delete a
   device.

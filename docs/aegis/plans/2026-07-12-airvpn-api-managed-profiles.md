@@ -67,8 +67,10 @@ bash tests/test_wg_healthcheck.sh
 bash tests/test_wg_managed_profiles.sh
 bash tests/test_install.sh
 bash tests/test_release.sh --ref HEAD
-bash -n bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh
-shellcheck -x -S style bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh
+bash scripts/build-managed-module.sh --check
+bash -n bin/wg-healthcheck libexec/wg-healthcheck-managed libexec/wg-healthcheck-managed.d/*.bash install.sh scripts/*.sh tests/*.sh tests/lib/*.sh tests/install/*.sh tests/wg_healthcheck/*.sh tests/wg_managed/*.sh
+shellcheck -s bash -x -S style bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh tests/lib/wg_healthcheck_test_support.sh tests/lib/wg_managed_test_support.sh tests/wg_healthcheck/*.sh tests/wg_managed/*.sh
+shellcheck -s bash -x -S style -e SC2034 libexec/wg-healthcheck-managed.d/*.bash
 systemd-analyze verify systemd/wg-healthcheck@.service systemd/wg-healthcheck@.timer
 actionlint
 ```

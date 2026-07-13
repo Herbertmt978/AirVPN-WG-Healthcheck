@@ -744,30 +744,26 @@ validate_secure_parent_directory() {
     return 1
   fi
 }
-validate_secure_executable() {
-  local path="${1:?}" parent file_meta parent_meta parent_mode
-  parent="${path%/*}"; [[ "$parent" != "$path" ]] || parent=.
+validate_secure_code_path() {
+  local path="${1:?}" required_mode="${2:?}" ancestor metadata ancestor_mode
+  [[ "$path" == /* && "$path" != *//* && "$path" != */../* && "$path" != */./* ]] || return 1
+  ancestor="${path%/*}"; [[ -n "$ancestor" ]] || ancestor=/
+  while :; do
+    path_is_directory "$ancestor" && ! path_is_symlink "$ancestor" || return 1
+    metadata="$(owner_mode "$ancestor")" || return 1
+    [[ "$metadata" =~ ^0:([0-7]{3,4})$ ]] || return 1
+    ancestor_mode="${BASH_REMATCH[1]}"
+    if (( (8#$ancestor_mode & 8#022) != 0 && (8#$ancestor_mode & 8#1000) == 0 )); then
+      return 1
+    fi
+    [[ "$ancestor" == / ]] && break
+    ancestor="${ancestor%/*}"; [[ -n "$ancestor" ]] || ancestor=/
+  done
   path_is_regular "$path" && ! path_is_symlink "$path" || return 1
-  file_meta="$(owner_mode "$path")" || return 1
-  [[ "$file_meta" == 0:755 ]] || return 1
-  path_is_directory "$parent" && ! path_is_symlink "$parent" || return 1
-  parent_meta="$(owner_mode "$parent")" || return 1
-  [[ "$parent_meta" =~ ^0:([0-7]{3,4})$ ]] || return 1
-  parent_mode="${BASH_REMATCH[1]}"
-  (( (8#$parent_mode & 8#022) == 0 ))
+  [[ "$(owner_mode "$path")" == "0:$required_mode" ]]
 }
-validate_secure_module() {
-  local path="${1:?}" parent file_meta parent_meta parent_mode
-  parent="${path%/*}"; [[ "$parent" != "$path" ]] || parent=.
-  path_is_regular "$path" && ! path_is_symlink "$path" || return 1
-  file_meta="$(owner_mode "$path")" || return 1
-  [[ "$file_meta" == 0:644 ]] || return 1
-  path_is_directory "$parent" && ! path_is_symlink "$parent" || return 1
-  parent_meta="$(owner_mode "$parent")" || return 1
-  [[ "$parent_meta" =~ ^0:([0-7]{3,4})$ ]] || return 1
-  parent_mode="${BASH_REMATCH[1]}"
-  (( (8#$parent_mode & 8#022) == 0 ))
-}
+validate_secure_executable() { validate_secure_code_path "${1:?}" 755; }
+validate_secure_module() { validate_secure_code_path "${1:?}" 644; }
 load_managed_module() {
   if (( MANAGED_MODULE_LOADED )); then return 0; fi
   if ! validate_secure_module "$MANAGED_MODULE"; then

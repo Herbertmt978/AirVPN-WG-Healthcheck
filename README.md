@@ -158,25 +158,40 @@ Use [GitHub Issues](https://github.com/Herbertmt978/airvpn-wg-healthcheck/issues
 
 - [`bin/wg-healthcheck`](bin/wg-healthcheck) — health, recovery, status, and fixed command dispatch.
 - [`bin/wg-healthcheck-setup`](bin/wg-healthcheck-setup) and [`libexec/wg_healthcheck_setup`](libexec/wg_healthcheck_setup) — guided, transactional static/API setup.
-- [`libexec/wg-healthcheck-managed`](libexec/wg-healthcheck-managed) — managed-profile state and recovery owner.
+- `libexec/wg-healthcheck-managed.d` (full source checkouts only) — bounded canonical sources for managed-profile state and recovery.
+- [`libexec/wg-healthcheck-managed`](libexec/wg-healthcheck-managed) — generated, single-file managed runtime and installed trust boundary.
 - [`libexec/airvpn-api`](libexec/airvpn-api) — strict standard-library provider response parser and profile generator.
 - [`install.sh`](install.sh), [`systemd`](systemd), and [`config`](config) — installer, units, and safe example configuration.
 
 ## Development checks
 
-Run the complete deterministic suite on Linux from the repository root:
+Run the complete deterministic suite on Linux from a full Git checkout. The curated
+runtime archives omit development-only sources and tests.
 
 ```bash
+bash scripts/build-managed-module.sh --check
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 bash tests/test_wg_healthcheck.sh
 bash tests/test_wg_managed_profiles.sh
 bash tests/test_install.sh
 bash tests/test_release.sh --ref HEAD
-bash -n bin/wg-healthcheck install.sh libexec/wg-healthcheck-managed \
-  scripts/*.sh tests/*.sh
-shellcheck -x -S style bin/wg-healthcheck install.sh \
-  libexec/wg-healthcheck-managed scripts/*.sh tests/*.sh
+bash -n bin/wg-healthcheck libexec/wg-healthcheck-managed \
+  libexec/wg-healthcheck-managed.d/*.bash install.sh scripts/*.sh tests/*.sh \
+  tests/lib/*.sh tests/install/*.sh tests/wg_healthcheck/*.sh tests/wg_managed/*.sh
+shellcheck -s bash -x -S style bin/wg-healthcheck libexec/wg-healthcheck-managed \
+  install.sh scripts/*.sh tests/*.sh tests/lib/wg_healthcheck_test_support.sh \
+  tests/lib/wg_managed_test_support.sh \
+  tests/wg_healthcheck/*.sh tests/wg_managed/*.sh
+shellcheck -s bash -x -S style -e SC2034 libexec/wg-healthcheck-managed.d/*.bash
 systemd-analyze verify systemd/wg-healthcheck@.service systemd/wg-healthcheck@.timer
 ```
+
+Edit the fixed source fragments under `libexec/wg-healthcheck-managed.d`, then regenerate
+the tracked runtime with `bash scripts/build-managed-module.sh --write`. Release archives
+contain only the generated runtime, so production still admits one fixed managed module.
+The full generated module keeps cross-fragment unused-variable analysis enabled; the
+fragment-only ShellCheck pass suppresses `SC2034` because sibling references are invisible
+when each bounded source unit is parsed alone. The installer runner's fixed source hints
+let ShellCheck analyze its split units with their shared fixture context.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for change and review expectations.
