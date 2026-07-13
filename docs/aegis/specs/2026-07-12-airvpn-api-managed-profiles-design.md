@@ -339,7 +339,7 @@ Authenticated generation uses one `GET` request to the fixed URL
 `https://airvpn.org/api/generator/` with the `API-KEY` header and percent-encoded query
 parameters:
 
-- `system=linux`
+- `system=other` (AirVPN's raw single-profile output, not an OS archive)
 - `protocols=wireguard_1_udp_<port>`
 - `servers=<exact public_name selected from the status response>`
 - `device=<explicit configured device>`
@@ -357,10 +357,11 @@ validation.
 
 The request has a 20-second default timeout capped at 60 seconds, rejects every redirect,
 and accepts at most 64 KiB. HTTP 200 may contain a JSON error and therefore is not treated
-as success. The helper accepts only the expected WireGuard text content or a bounded JSON
-error object; it rejects HTML, archives, multipart data, unsupported content encodings,
-and any unexpected content type. Redacted response-shape fixtures captured during the live
-dry run become deterministic contract tests without retaining credentials or key material.
+as success. The helper explicitly requests AirVPN's `system=other` raw profile form and
+accepts only the expected WireGuard text content or a bounded JSON error object; it rejects
+HTML, OS archives, multipart data, unsupported content encodings, and any unexpected
+content type. Synthetic redacted response-shape fixtures provide deterministic contract
+tests without retaining credentials or generated key material.
 
 Required structure:
 

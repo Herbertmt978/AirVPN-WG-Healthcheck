@@ -135,6 +135,23 @@ directory and supplies it on fixed fd5. No provider field can be reclassified as
 installed hook. This compatibility repair does not authorize another helper increase or
 relax the future extraction/superseding-decision trigger.
 
+The first request that reached AirVPN used `system=linux` and was rejected at the response
+boundary before profile parsing. Public AirVPN raw-configuration examples use
+`system=other`, so the generator now requests that raw single-profile form. The fixed
+origin, method, authentication header, remaining query parameters, byte bounds, and strict
+archive/content rejection are unchanged. No response body or complete header set was
+retained, so the rejected response's exact media type is intentionally not asserted.
+
+AirVPN's wider API surface was reviewed before freezing this boundary. Version 1.1 uses
+the credential-free `status` service for country/server selection, authenticated
+`generator` only for a fixed device's profile, and credential-free `whatismyip` for
+tunnel-bound egress proof. Read-only `userinfo` and `devices` responses contain account,
+session, or device-identity data and are not part of unattended health checks. A future
+setup-only device picker may consume a strictly reduced `devices` view, but create, renew,
+revoke, delete, or automatic device switching still require the separate blue/green
+identity design. `disconnect` is destructive, while `notification` and `dns_lists` have
+different privacy and resolver owners; none is an implicit recovery action.
+
 ### Block-level review
 
 The release review also found 13 production functions above the preferred 80-line block

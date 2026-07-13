@@ -191,7 +191,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
         self.assertEqual(
             request.full_url,
             "https://airvpn.org/api/generator/"
-            "?system=linux"
+            "?system=other"
             "&protocols=wireguard_1_udp_1637"
             "&servers=Mensa-1"
             "&device=My%20Device_1.0"
@@ -688,7 +688,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
     def test_classified_exception_chain_does_not_retain_secret_detail(self):
         sentinel = "b" * 64
         request = urllib.request.Request(
-            "https://airvpn.org/api/generator/?system=linux",
+            "https://airvpn.org/api/generator/?system=other",
             headers={"API-KEY": sentinel},
         )
         opener = mock.Mock()

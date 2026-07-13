@@ -43,6 +43,8 @@ All notable changes to this project are documented here. Release numbers follow
   only an exact local phase enum for safe troubleshooting.
 - Updated the SHA-pinned GitHub artifact actions used by future release workflows
   to their Node 24 versions.
+- Authenticated generation requests AirVPN's raw single-profile output; OS-specific
+  archive output remains rejected at the provider response boundary.
 
 ### Security
 
