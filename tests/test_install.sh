@@ -16,6 +16,8 @@ SOURCE_SERVICE="$ROOT/systemd/wg-healthcheck@.service"
 SOURCE_TIMER="$ROOT/systemd/wg-healthcheck@.timer"
 SOURCE_CONFIG="$ROOT/config/wg0.conf.example"
 README_FILE="$ROOT/README.md"
+OPERATIONS_FILE="$ROOT/docs/operations.md"
+LICENSE_FILE="$ROOT/LICENSE"
 GITIGNORE_FILE="$ROOT/.gitignore"
 GITATTRIBUTES_FILE="$ROOT/.gitattributes"
 SECURITY_FILE="$ROOT/SECURITY.md"
@@ -101,13 +103,13 @@ assert_not_contains() {
   fi
 }
 
-read_readme_section() {
-  local start="$1" end="$2"
+read_markdown_section() {
+  local file="$1" start="$2" end="$3"
   awk -v start="$start" -v end="$end" '
     $0 == start { inside=1; next }
     inside && $0 == end { exit }
     inside { print }
-  ' "$README_FILE"
+  ' "$file"
 }
 
 assert_ordered_text() {
@@ -115,7 +117,7 @@ assert_ordered_text() {
   shift
   for needle in "$@"; do
     [[ "$remaining" == *"$needle"* ]] || {
-      fail "missing or out-of-order README text: $needle"
+      fail "missing or out-of-order documentation text: $needle"
       return 1
     }
     remaining="${remaining#*"$needle"}"
@@ -588,7 +590,7 @@ test_artifact_failure_is_ordered_and_safely_retryable() (
     printf '%s\n' target-setup-package >>"$log"
   }
   # Called indirectly by install_artifacts from the sourced installer.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   publish_setup_upgrade_guard() {
     printf '%s\n' target-setup-guard >>"$log"
   }
@@ -629,7 +631,7 @@ test_managed_artifact_install_order_is_dependency_safe() (
     printf '%s\n' target-setup-package >>"$log"
   }
   # Called indirectly by install_artifacts from the sourced installer.
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   publish_setup_upgrade_guard() {
     printf '%s\n' target-setup-guard >>"$log"
   }
@@ -1573,52 +1575,31 @@ test_service_environment_and_hardening_contract() {
     fail 'privileged installer must use the fixed privileged-mode /bin/bash shebang'
 }
 
-test_readme_documents_safe_operator_lifecycle() {
+test_readme_documents_dual_mode_quick_paths_and_manual_timer_decision() {
   local expected
   # These are literal Markdown excerpts, not expandable shell expressions.
   # shellcheck disable=SC2016
   local -a required=(
-    'Speed checks and AirVPN rotation are disabled by default.'
-    'exact configured endpoint'
-    'exactly one `[Peer]` section and one `Endpoint`'
-    'numeric IPv4 or bracketed IPv6 address'
-    'independent firewall kill switch'
-    'Docker socket is root-equivalent'
-    '`iputils-ping` when `PING_TARGET` is configured'
-    'root-owned regular files with mode `0600`'
+    'MIT License'
+    '## Choose a mode'
+    'Static profile mode'
+    'API-managed profile mode'
+    'Default; credential-free.'
+    'Explicit opt-in; API key required.'
+    '### Static quick start'
     'sudo ./install.sh wg0'
-    'does not enable or start the timer'
-    'sudoedit /etc/wireguard/healthcheck.d/wg0.conf'
+    'sudo wg-healthcheck-setup --mode static wg0'
+    '### API-managed quick start'
+    'sudo wg-healthcheck-setup --mode api wg0'
+    'hidden terminal prompt'
+    'After either path'
+    'explicitly decide whether to enable the timer'
+    'sudo wg-healthcheck status wg0'
     'sudo systemctl start wg-healthcheck@wg0.service'
-    'sudo cat /run/wg-healthcheck/wg0.status'
     'sudo systemctl enable --now wg-healthcheck@wg0.timer'
-    'sudo ./install.sh --enable wg0'
-    'already-reviewed configuration'
-    'Existing per-interface configuration is preserved'
-    'helper, then main script, then units'
-    'daemon-reload runs only after all managed files are installed successfully'
-    'may leave earlier compatible replacements in place'
-    'keep the timer stopped and rerun the installer'
-    'data, not shell code'
-    'Unknown keys and duplicate keys are rejected'
-    'No `export`, command substitution, variable expansion, or shell commands are accepted.'
-    'RESTART_CMD_UP'
-    'RESTART_CMD_DOWN'
-    'POST_RESTART_CMD'
-    'AIRVPN_USERINFO_URL'
-    'AIRVPN_API_ENV'
-    '/etc/wireguard/airvpn-healthcheck.env'
-    'default dev wg0 table 100'
-    'from 192.0.2.2 lookup 100'
-    '/run/wg-healthcheck/<iface>.status'
-    '/etc/wireguard/<iface>.conf.bak-healthcheck'
-    '/etc/wireguard/<iface>.conf.pending-healthcheck'
-    'Never delete the pending marker manually.'
-    '`suppressed` and `degraded` are intentionally nonzero'
-    'Repository rollback'
-    '## Uninstall'
-    '## Security'
-    'No license is currently granted'
+    'Leave the timer disabled if the manual result is not healthy or recovered.'
+    '[operator guide](docs/operations.md)'
+    'independent firewall kill switch'
   )
 
   assert_file "$README_FILE" || return 1
@@ -1627,41 +1608,44 @@ test_readme_documents_safe_operator_lifecycle() {
   done
 }
 
-test_readme_migration_quiesces_writers_before_pending_check() {
+test_operations_upgrade_quiesces_before_install_and_preserves_recovery_state() {
   local section
-  section="$(read_readme_section '## Migrating an existing deployment' '## State and recovery transaction')"
-  [[ -n "$section" ]] || { fail 'README migration section is missing'; return 1; }
+  section="$(read_markdown_section "$OPERATIONS_FILE" '## Upgrade and rollback' '## State repair and return to static mode')"
+  [[ -n "$section" ]] || { fail 'operations upgrade section is missing'; return 1; }
 
-  # Literal README shell snippet; expansion would invalidate the assertion.
+  # Literal operator-guide shell snippet; expansion would invalidate the assertion.
   # shellcheck disable=SC2016
   assert_ordered_text "$section" \
-    'sudo systemctl disable --now wg-healthcheck@wg0.timer' \
-    'sudo systemctl stop wg-healthcheck@wg0.service' \
-    'sudo test ! -e /etc/wireguard/wg0.conf.pending-healthcheck' \
-    'sudo ./install.sh wg0' \
-    'sudoedit /etc/wireguard/healthcheck.d/wg0.conf' || return 1
+    'sudo ./install.sh --quiesce wg0' \
+    'Then rerun the quiesced installer' \
+    'check `wg-healthcheck status wg0`' \
+    'run the manual service check' \
+    'make a fresh timer decision' || return 1
 
-  [[ "$section" == *'Stopping the service waits for or cancels any active oneshot and returns only after the unit is inactive.'* ]] ||
-    { fail 'migration does not explain active-oneshot quiescence'; return 1; }
-  [[ "$section" == *'The pending-marker check must exit zero before you install or edit.'* ]] ||
-    { fail 'migration does not make the pending check a precondition'; return 1; }
-  [[ "$section" == *'If it fails, do not install or edit anything; reconcile the pending rotation with the current version or troubleshoot it first.'* ]] ||
-    fail 'migration does not stop on pending recovery state'
+  [[ "$section" == *'stops the selected timer and worker'* ]] ||
+    { fail 'upgrade instructions do not quiesce the selected timer and worker'; return 1; }
+  [[ "$section" == *'active shared instances, locks, pending transactions, and safety records'* ]] ||
+    { fail 'upgrade instructions do not check shared activity, locks, and recovery state'; return 1; }
+  [[ "$section" == *'leaves the timer disabled'* ]] ||
+    { fail 'upgrade instructions do not require a disabled timer after quiesce'; return 1; }
+  # Literal Markdown contains backticks and is intentionally not expanded.
+  # shellcheck disable=SC2016
+  [[ "$section" == *'Do not combine `--quiesce` with `--enable`'* && "$section" == *'`DESTDIR` staging'* ]] ||
+    fail 'upgrade instructions do not state the quiesce mode exclusions'
+  [[ "$section" == *'do not delete a pending or safety marker to force an upgrade'* ]] ||
+    fail 'upgrade instructions permit forcing past recovery state'
 }
 
-test_readme_package_uninstall_quiesces_every_instance() {
+test_operations_package_uninstall_quiesces_every_instance_and_preserves_pending_state() {
   local section
-  section="$(read_readme_section '## Uninstall' '## FAQ')"
-  [[ -n "$section" ]] || { fail 'README uninstall section is missing'; return 1; }
+  section="$(read_markdown_section "$OPERATIONS_FILE" '## Disable and uninstall' '## Useful status commands')"
+  [[ -n "$section" ]] || { fail 'operations uninstall section is missing'; return 1; }
 
-  # Literal README shell snippets; expansion would invalidate the assertions.
+  # Literal operator-guide shell snippets; expansion would invalidate the assertions.
   # shellcheck disable=SC2016
   assert_ordered_text "$section" \
-    '### Disable one interface' \
     'sudo systemctl disable --now wg-healthcheck@wg0.timer' \
     'sudo systemctl stop wg-healthcheck@wg0.service' \
-    'sudo test ! -e /etc/wireguard/wg0.conf.pending-healthcheck' \
-    '### Remove the package' \
     'mapfile -t timers' \
     "systemctl list-unit-files --type=timer --no-legend --plain 'wg-healthcheck@*.timer'" \
     'mapfile -t services' \
@@ -1679,72 +1663,46 @@ test_readme_package_uninstall_quiesces_every_instance() {
     fail 'uninstall does not preserve pending recovery state'
 }
 
-test_readme_rollback_masks_legacy_auto_enable_until_validation() {
+test_operations_rollback_masks_legacy_auto_enable_until_validation() {
   local section
-  section="$(read_readme_section '### Repository rollback' '## Development checks')"
-  [[ -n "$section" ]] || { fail 'README rollback section is missing'; return 1; }
+  section="$(read_markdown_section "$OPERATIONS_FILE" '## Upgrade and rollback' '## State repair and return to static mode')"
+  [[ -n "$section" ]] || { fail 'operations rollback section is missing'; return 1; }
 
   assert_ordered_text "$section" \
     'sudo systemctl disable --now wg-healthcheck@wg0.timer' \
     'sudo systemctl stop wg-healthcheck@wg0.service' \
-    'sudo test ! -e /etc/wireguard/wg0.conf.pending-healthcheck' \
-    'sudo systemctl mask wg-healthcheck@wg0.timer' \
-    'git switch --detach <known-good-commit>' \
-    'sudo ./install.sh wg0' \
-    'installer_rc=$?' \
-    'sudo systemctl is-enabled wg-healthcheck@wg0.timer' \
-    'sudo systemctl disable --now wg-healthcheck@wg0.timer' \
+    'sudo systemctl mask --runtime wg-healthcheck@wg0.timer' \
+    'if ! sudo ./install.sh wg0; then' \
+    'Rollback installer failed; timer remains runtime-masked.' \
+    'exit 1' \
     'sudo systemctl start wg-healthcheck@wg0.service' \
     'sudo cat /run/wg-healthcheck/wg0.status' \
-    'sudo systemctl unmask wg-healthcheck@wg0.timer' \
+    'sudo systemctl unmask --runtime wg-healthcheck@wg0.timer' \
     'sudo systemctl enable --now wg-healthcheck@wg0.timer' || return 1
 
-  [[ "$section" == *"A legacy installer may unconditionally run \`enable --now\`."* ]] ||
+  [[ "$section" == *'Older installers can enable a timer automatically'* ]] ||
     { fail 'rollback does not identify the legacy auto-enable hazard'; return 1; }
-  [[ "$section" == *'Do not ignore a nonzero installer result.'* ]] ||
-    { fail 'rollback permits blind installer-error suppression'; return 1; }
-  [[ "$section" == *'Continue only if its output proves the only failure was the final masked-enable attempt.'* ]] ||
-    { fail 'rollback does not bound the expected masked installer failure'; return 1; }
-  [[ "$section" == *"Review the target revision's README, configuration template, and required files before running its service."* ]] ||
+  [[ "$section" == *'reviewed compatible revision'* ]] ||
     { fail 'rollback omits target-revision configuration compatibility'; return 1; }
-  [[ "$section" == *'The timer must remain masked throughout the one-shot validation.'* ]] ||
+  [[ "$section" == *'Never continue past a nonzero installer result.'* ]] ||
+    { fail 'rollback permits execution after installer failure'; return 1; }
+  [[ "$section" == *'keep the timer runtime-masked until the manual health check succeeds'* ]] ||
     fail 'rollback unmasks the timer before validation is complete'
 }
 
-test_readme_retired_credential_deletion_is_reference_gated() {
-  local section delete_count
-  section="$(read_readme_section '## Migrating an existing deployment' '## State and recovery transaction')"
-  [[ -n "$section" ]] || { fail 'README migration section is missing'; return 1; }
+test_operations_credential_removal_is_explicit_and_uninstall_preserves_recovery_data() {
+  local credential_section uninstall_section
+  credential_section="$(read_markdown_section "$OPERATIONS_FILE" '## Credential lifecycle' '## Upgrade and rollback')"
+  uninstall_section="$(read_markdown_section "$OPERATIONS_FILE" '## Disable and uninstall' '## Useful status commands')"
+  [[ -n "$credential_section" ]] || { fail 'operations credential lifecycle section is missing'; return 1; }
+  [[ -n "$uninstall_section" ]] || { fail 'operations uninstall section is missing'; return 1; }
 
-  for expected in \
-    "--exclude='airvpn-healthcheck.env'" \
-    '/etc/systemd/system' \
-    '/run/systemd/system' \
-    '/usr/lib/systemd/system' \
-    '/lib/systemd/system' \
-    '/etc/wireguard' \
-    '/usr/local'; do
-    [[ "$section" == *"$expected"* ]] || {
-      fail "credential reference scan omits: $expected"
-      return 1
-    }
-  done
-
-  # Literal README shell snippet; expansion would invalidate the assertion.
-  # shellcheck disable=SC2016
-  assert_ordered_text "$section" \
-    'grep_rc=0' \
-    'case "$grep_rc" in' \
-    '0)' \
-    'Still referenced; do not delete:' \
-    '1)' \
-    'sudo rm -f -- /etc/wireguard/airvpn-healthcheck.env' \
-    '*)' \
-    'Reference scan failed' \
-    'esac' || return 1
-
-  delete_count="$(grep -Fxc -- '    sudo rm -f -- /etc/wireguard/airvpn-healthcheck.env' <<<"$section")"
-  [[ "$delete_count" == 1 ]] || fail 'credential deletion must appear exactly once in the no-reference branch'
+  [[ "$credential_section" == *'--remove-credential --apply'* ]] ||
+    fail 'credential removal is not an explicit applied static-mode operation'
+  [[ "$credential_section" == *'Normal package removal intentionally preserves the credential and persistent API state'* ]] ||
+    fail 'credential lifecycle does not preserve data during ordinary removal'
+  [[ "$uninstall_section" == *'Package removal does not remove the WireGuard profile, health-check configuration, credential, pre-managed snapshot, or persistent API state.'* ]] ||
+    fail 'uninstall instructions do not preserve operator and API recovery data'
 }
 
 test_python_bytecode_is_ignored() {
@@ -1765,6 +1723,8 @@ test_public_repository_docs_are_sanitized_and_complete() {
   local combined_file="$TEST_TMP/public-repository-docs" forbidden required
 
   assert_file "$README_FILE" || return 1
+  assert_file "$OPERATIONS_FILE" || return 1
+  assert_file "$LICENSE_FILE" || return 1
   assert_file "$SECURITY_FILE" || return 1
   assert_file "$CONTRIBUTING_FILE" || return 1
   assert_file "$CHANGELOG_FILE" || return 1
@@ -1772,6 +1732,8 @@ test_public_repository_docs_are_sanitized_and_complete() {
   assert_file "$RELEASE_NOTES_FILE" || return 1
   command cat -- \
     "$README_FILE" \
+    "$OPERATIONS_FILE" \
+    "$LICENSE_FILE" \
     "$SOURCE_CONFIG" \
     "$SECURITY_FILE" \
     "$CONTRIBUTING_FILE" \
@@ -1779,23 +1741,21 @@ test_public_repository_docs_are_sanitized_and_complete() {
     "$VERSION_FILE" \
     "$RELEASE_NOTES_FILE" > "$combined_file" || return 1
 
-  # Literal README shell snippet; expansion would invalidate the assertion.
+  # Literal public-documentation shell snippet; expansion would invalidate the assertion.
   # shellcheck disable=SC2016
   for required in \
     'not affiliated with or endorsed by AirVPN' \
-    'DESTDIR="$stage" ./install.sh wg0' \
-    '## Uninstall' \
-    'complete uninstall' \
-    'Active health-check instances remain; package removal stopped.' \
-    'A pending recovery transaction exists; package removal stopped.' \
+    '## Choose a mode' \
+    'Static profile mode' \
+    'API-managed profile mode' \
+    'sudo wg-healthcheck-setup --mode static wg0' \
+    'sudo wg-healthcheck-setup --mode api wg0' \
+    'Leave the timer disabled if the manual result is not healthy or recovered.' \
+    '## Upgrade and rollback' \
+    '## Disable and uninstall' \
+    'MIT License' \
     '## Security' \
-    '## Releases and versioning' \
-    'airvpn-wg-healthcheck-${version}.tar.gz' \
-    'SHA256SUMS' \
-    'wg-healthcheck --version' \
-    '## Support' \
-    'No license is currently granted' \
-    '| `1.0.x` | Yes |' \
+    '| `1.1.x` | Yes |' \
     'private vulnerability-reporting flow' \
     'Never submit WireGuard private keys'; do
     assert_contains "$required" "$combined_file" || return 1
@@ -2264,11 +2224,11 @@ run_test safe_inert_environment_template test_safe_inert_environment_template
 run_test installer_declares_exact_mode_contract test_installer_declares_exact_mode_contract
 run_test authenticated_telemetry_and_command_hooks_are_retired test_authenticated_telemetry_and_command_hooks_are_retired
 run_test service_environment_and_hardening_contract test_service_environment_and_hardening_contract
-run_test readme_documents_safe_operator_lifecycle test_readme_documents_safe_operator_lifecycle
-run_test readme_migration_quiesces_writers_before_pending_check test_readme_migration_quiesces_writers_before_pending_check
-run_test readme_package_uninstall_quiesces_every_instance test_readme_package_uninstall_quiesces_every_instance
-run_test readme_rollback_masks_legacy_auto_enable_until_validation test_readme_rollback_masks_legacy_auto_enable_until_validation
-run_test readme_retired_credential_deletion_is_reference_gated test_readme_retired_credential_deletion_is_reference_gated
+run_test readme_documents_dual_mode_quick_paths_and_manual_timer_decision test_readme_documents_dual_mode_quick_paths_and_manual_timer_decision
+run_test operations_upgrade_quiesces_before_install_and_preserves_recovery_state test_operations_upgrade_quiesces_before_install_and_preserves_recovery_state
+run_test operations_package_uninstall_quiesces_every_instance_and_preserves_pending_state test_operations_package_uninstall_quiesces_every_instance_and_preserves_pending_state
+run_test operations_rollback_masks_legacy_auto_enable_until_validation test_operations_rollback_masks_legacy_auto_enable_until_validation
+run_test operations_credential_removal_is_explicit_and_uninstall_preserves_recovery_data test_operations_credential_removal_is_explicit_and_uninstall_preserves_recovery_data
 run_test python_bytecode_is_ignored test_python_bytecode_is_ignored
 run_test repository_text_uses_lf_on_every_platform test_repository_text_uses_lf_on_every_platform
 run_test public_repository_docs_are_sanitized_and_complete test_public_repository_docs_are_sanitized_and_complete

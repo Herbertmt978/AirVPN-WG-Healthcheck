@@ -3,13 +3,13 @@
 ## Before opening a change
 
 - Keep changes narrow and preserve the single-peer, fail-closed recovery model.
-- Never commit real WireGuard configuration, credentials, endpoint inventories, hostnames, private network layouts, or unredacted operational logs.
+- Never commit real WireGuard configuration, AirVPN API keys, credentials, private keys, tokens, endpoint inventories, hostnames, private network layouts, generated profiles, or unredacted operational logs. Redact secrets before attaching any test evidence.
 - Update the README and configuration example when behavior or accepted settings change.
 - Add a focused regression test for every recovery, parsing, installer, or systemd behavior change.
 
 ## Verification
 
-Run the complete checks documented in [README.md](README.md#development-checks) on Linux. Pull requests should also pass the repository's GitHub Actions workflow.
+Run the complete checks documented in [README.md](README.md#development-checks) on Linux. Documentation changes must also pass `python3 -m unittest tests.test_public_docs -v`. Pull requests should pass the repository's GitHub Actions workflow.
 
 ## Review expectations
 

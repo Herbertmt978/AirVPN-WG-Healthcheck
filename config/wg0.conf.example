@@ -42,7 +42,10 @@ AIRVPN_DEVICE=
 
 # AirVPN endpoint rotation and exit verification. Static mode uses only public status data.
 AIRVPN_ROTATE_ENABLED=0
+# One country code is strict: only that country is eligible.
+# Multiple codes form an allowlist; their order is only a soft preference.
 AIRVPN_COUNTRIES="GB NL BE DE FR IE"
+# Setup's explicit ALL choice is stored as AIRVPN_COUNTRIES= (empty): every eligible country.
 AIRVPN_WG_PORT=1637
 AIRVPN_ROTATE_COOLDOWN=1800
 AIRVPN_STATUS_URL=https://airvpn.org/api/status/?format=json
