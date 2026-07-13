@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 
+# Sourced-installer fixtures intentionally modify dynamically scoped globals only inside
+# subshell test cases; later top-level assertions continue using the original values.
+# shellcheck disable=SC2031
 set -uo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 INSTALLER="$ROOT/install.sh"
 SOURCE_MAIN="$ROOT/bin/wg-healthcheck"
 SOURCE_HELPER="$ROOT/libexec/airvpn-api"
+SOURCE_MANAGED_MODULE="$ROOT/libexec/wg-healthcheck-managed"
+SOURCE_SETUP="$ROOT/bin/wg-healthcheck-setup"
+SOURCE_SETUP_PACKAGE="$ROOT/libexec/wg_healthcheck_setup"
 SOURCE_SERVICE="$ROOT/systemd/wg-healthcheck@.service"
 SOURCE_TIMER="$ROOT/systemd/wg-healthcheck@.timer"
 SOURCE_CONFIG="$ROOT/config/wg0.conf.example"
@@ -174,6 +180,123 @@ test_default_staged_install_from_unrelated_cwd() {
   assert_mode 644 "$stage/etc/systemd/system/wg-healthcheck@.timer" || return 1
   assert_mode 700 "$stage/etc/wireguard/healthcheck.d" || return 1
   assert_mode 600 "$stage/etc/wireguard/healthcheck.d/wg0.conf" || return 1
+}
+
+test_staged_managed_profile_artifacts_have_exact_content_and_modes() {
+  local stage source relative target
+  require_posix_modes || return $?
+  stage="$(new_stage)" || return 1
+
+  run_staged "$stage" wg0 >/dev/null 2>&1 || { fail 'staged managed-profile install failed'; return 1; }
+
+  assert_file "$stage/usr/local/libexec/wg-healthcheck/wg-healthcheck-managed" || return 1
+  assert_same_bytes "$SOURCE_MANAGED_MODULE" \
+    "$stage/usr/local/libexec/wg-healthcheck/wg-healthcheck-managed" || return 1
+  assert_mode 644 "$stage/usr/local/libexec/wg-healthcheck/wg-healthcheck-managed" || return 1
+
+  assert_file "$stage/usr/local/sbin/wg-healthcheck-setup" || return 1
+  assert_same_bytes "$SOURCE_SETUP" "$stage/usr/local/sbin/wg-healthcheck-setup" || return 1
+  assert_mode 755 "$stage/usr/local/sbin/wg-healthcheck-setup" || return 1
+
+  assert_dir "$stage/usr/local/libexec/wg-healthcheck/wg_healthcheck_setup" || return 1
+  while IFS= read -r source; do
+    relative="${source#"$SOURCE_SETUP_PACKAGE"/}"
+    target="$stage/usr/local/libexec/wg-healthcheck/wg_healthcheck_setup/$relative"
+    assert_file "$target" || return 1
+    assert_same_bytes "$source" "$target" || return 1
+    assert_mode 644 "$target" || return 1
+  done < <(find "$SOURCE_SETUP_PACKAGE" -type f -name '*.py' -print | sort)
+
+  assert_dir "$stage/var/lib/wg-healthcheck" || return 1
+  assert_mode 700 "$stage/var/lib/wg-healthcheck"
+}
+
+test_new_sources_and_targets_are_preflighted_before_staging_mutation() {
+  local copy_root stage rc outside target before after
+  local -a missing_sources=(
+    'libexec/wg-healthcheck-managed'
+    'bin/wg-healthcheck-setup'
+    'libexec/wg_healthcheck_setup/__init__.py'
+  )
+
+  copy_root="$TEST_TMP/installer-managed-sources"
+  mkdir -p -- "$copy_root"
+  cp -- "$INSTALLER" "$copy_root/install.sh"
+  cp -a -- "$ROOT/bin" "$ROOT/libexec" "$ROOT/systemd" "$ROOT/config" "$copy_root/"
+
+  for target in "${missing_sources[@]}"; do
+    rm -f -- "$copy_root/$target"
+    stage="$(new_stage)" || return 1
+    (
+      cd -- "$UNRELATED_CWD" || exit 1
+      DESTDIR="$stage" "$BASH" "$copy_root/install.sh" wg0
+    ) >/dev/null 2>"$TEST_TMP/missing-managed-source.err"
+    rc=$?
+    [[ $rc -ne 0 ]] || { fail "install accepted missing managed source: $target"; return 1; }
+    [[ -z "$(find "$stage" -mindepth 1 -print -quit)" ]] || {
+      fail "missing managed source mutated staging tree: $target"
+      return 1
+    }
+    cp -- "$ROOT/$target" "$copy_root/$target"
+  done
+
+  outside="$TEST_TMP/preflight-outside"
+  printf 'outside sentinel\n' >"$outside"
+  for target in \
+    'usr/local/libexec/wg-healthcheck/wg-healthcheck-managed' \
+    'usr/local/sbin/wg-healthcheck-setup' \
+    'usr/local/libexec/wg-healthcheck/wg_healthcheck_setup' \
+    'var/lib/wg-healthcheck'; do
+    stage="$(new_stage)" || return 1
+    target="$stage/$target"
+    mkdir -p -- "${target%/*}"
+    if ! ln -s -- "$outside" "$target" 2>/dev/null || [[ ! -L "$target" ]]; then
+      skip 'new managed-target symlink preflight (symlinks unavailable)'
+      return 77
+    fi
+    before="$(find "$stage" -mindepth 1 -printf '%P\n' | sort)"
+    run_staged "$stage" wg0 >/dev/null 2>"$TEST_TMP/managed-target-preflight.err"
+    rc=$?
+    after="$(find "$stage" -mindepth 1 -printf '%P\n' | sort)"
+    [[ $rc -ne 0 ]] || { fail "managed target symlink was accepted: $target"; return 1; }
+    [[ "$after" == "$before" ]] || {
+      fail "new target preflight partially mutated staging tree: $target"
+      return 1
+    }
+    [[ "$(cat "$outside")" == 'outside sentinel' ]] || {
+      fail "new target preflight modified symlink destination: $target"
+      return 1
+    }
+  done
+}
+
+test_installer_preserves_api_credential_pre_managed_snapshot_and_state() {
+  local stage key snapshot state key_copy snapshot_copy state_copy
+  require_posix_modes || return $?
+  stage="$(new_stage)" || return 1
+  key="$stage/etc/wireguard/healthcheck.d/wg0.api-key"
+  snapshot="$stage/etc/wireguard/wg0.conf.pre-managed"
+  state="$stage/var/lib/wg-healthcheck/wg0.api-state"
+  mkdir -p -- "${key%/*}" "${state%/*}"
+  printf 'operator-credential-placeholder\n' >"$key"
+  printf 'operator-pre-managed-profile\n' >"$snapshot"
+  printf 'operator-api-state\n' >"$state"
+  chmod 0600 -- "$key" "$snapshot" "$state"
+  key_copy="$TEST_TMP/preserved-key"
+  snapshot_copy="$TEST_TMP/preserved-snapshot"
+  state_copy="$TEST_TMP/preserved-state"
+  cp -- "$key" "$key_copy"
+  cp -- "$snapshot" "$snapshot_copy"
+  cp -- "$state" "$state_copy"
+
+  run_staged "$stage" wg0 >/dev/null 2>&1 || { fail 'staged reinstall with operator state failed'; return 1; }
+  assert_same_bytes "$key_copy" "$key" || return 1
+  assert_same_bytes "$snapshot_copy" "$snapshot" || return 1
+  assert_same_bytes "$state_copy" "$state" || return 1
+  assert_mode 600 "$key" || return 1
+  assert_mode 600 "$snapshot" || return 1
+  assert_mode 600 "$state" || return 1
+  assert_dir "$stage/var/lib/wg-healthcheck"
 }
 
 test_zero_args_and_explicit_wg0_are_compatible() {
@@ -443,33 +566,82 @@ test_artifact_failure_is_ordered_and_safely_retryable() (
 
   # shellcheck source=install.sh
   source "$INSTALLER"
-  SOURCE_MAIN='source-main'
-  SOURCE_HELPER='source-helper'
-  SOURCE_SERVICE='source-service'
-  SOURCE_TIMER='source-timer'
-  SOURCE_CONFIG='source-config'
-  TARGET_MAIN='target-main'
-  TARGET_HELPER='target-helper'
-  TARGET_SERVICE='target-service'
-  TARGET_TIMER='target-timer'
-  TARGET_CONFIG='target-config'
-  LIVE_INSTALL=0
+  local SOURCE_MAIN='source-main' SOURCE_HELPER='source-helper'
+  local SOURCE_MANAGED_MODULE='source-managed-module' SOURCE_SETUP='source-setup'
+  local SOURCE_SERVICE='source-service' SOURCE_TIMER='source-timer'
+  local SOURCE_CONFIG='source-config' TARGET_MAIN='target-main'
+  local TARGET_HELPER='target-helper' TARGET_MANAGED_MODULE='target-managed-module'
+  local TARGET_SETUP='target-setup' TARGET_SERVICE='target-service'
+  local TARGET_TIMER='target-timer' TARGET_CONFIG='target-config'
+  local LIVE_INSTALL=0
   : >"$log"
 
-  # Called indirectly by install_artifacts from the sourced installer.
+  # Called indirectly by install_guarded_artifacts from the sourced installer.
   # shellcheck disable=SC2329
   atomic_install_file() {
     printf '%s\n' "$2" >>"$log"
     [[ "$2" != "$TARGET_SERVICE" ]]
   }
+  # Called indirectly by install_artifacts from the sourced installer.
+  # shellcheck disable=SC2329
+  install_setup_package() {
+    printf '%s\n' target-setup-package >>"$log"
+  }
+  # Called indirectly by install_artifacts from the sourced installer.
+  # shellcheck disable=SC2329
+  publish_setup_upgrade_guard() {
+    printf '%s\n' target-setup-guard >>"$log"
+  }
+  create_layout() { return 0; }
 
-  install_artifacts
+  install_guarded_artifacts
   rc=$?
   actual="$(cat "$log")"
-  expected=$'target-helper\ntarget-main\ntarget-service'
+  expected=$'target-helper\ntarget-managed-module\ntarget-setup-package\ntarget-service'
   [[ $rc -ne 0 ]] || { fail 'later artifact failure was ignored'; return 1; }
   [[ "$actual" == "$expected" ]] ||
     fail "unsafe artifact order or work continued after failure: $actual"
+)
+
+test_managed_artifact_install_order_is_dependency_safe() (
+  local rc actual expected log="$TEST_TMP/managed-artifact-order"
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  local SOURCE_MAIN='source-main' SOURCE_HELPER='source-helper'
+  local SOURCE_MANAGED_MODULE='source-managed-module' SOURCE_SETUP='source-setup'
+  local SOURCE_SERVICE='source-service' SOURCE_TIMER='source-timer'
+  local SOURCE_CONFIG='source-config' TARGET_MAIN='target-main'
+  local TARGET_HELPER='target-helper' TARGET_MANAGED_MODULE='target-managed-module'
+  local TARGET_SETUP='target-setup' TARGET_SERVICE='target-service'
+  local TARGET_TIMER='target-timer' TARGET_CONFIG='target-config'
+  local LIVE_INSTALL=0
+  : >"$log"
+
+  # Called indirectly by install_guarded_artifacts from the sourced installer.
+  # shellcheck disable=SC2329
+  atomic_install_file() {
+    printf '%s\n' "$2" >>"$log"
+  }
+  # Setup code must be in place before the launcher's atomic publication.
+  # shellcheck disable=SC2329
+  install_setup_package() {
+    printf '%s\n' target-setup-package >>"$log"
+  }
+  # Called indirectly by install_artifacts from the sourced installer.
+  # shellcheck disable=SC2329
+  publish_setup_upgrade_guard() {
+    printf '%s\n' target-setup-guard >>"$log"
+  }
+  create_layout() { return 0; }
+
+  install_guarded_artifacts
+  rc=$?
+  actual="$(cat "$log")"
+  expected=$'target-helper\ntarget-managed-module\ntarget-setup-package\ntarget-service\ntarget-timer\ntarget-config'
+  [[ $rc -eq 0 ]] || { fail 'managed artifact install did not complete'; return 1; }
+  [[ "$actual" == "$expected" ]] ||
+    fail "managed artifacts were not atomically published in dependency-safe order: $actual"
 )
 
 test_existing_managed_file_owner_is_not_blessed() {
@@ -513,15 +685,778 @@ test_systemctl_behavior_is_explicit_and_exact() {
   systemctl_exec() { printf '%s\n' "$*" >>"$log"; }
 
   : >"$log"
-  run_live_systemctl 0 wg0 || return 1
+  run_live_systemctl reload wg0 || return 1
   [[ "$(cat "$log")" == daemon-reload ]] ||
     { fail "default action was not exactly daemon-reload: $(cat "$log")"; return 1; }
 
   : >"$log"
-  run_live_systemctl 1 wg0 || return 1
-  [[ "$(cat "$log")" == $'daemon-reload\nenable --now wg-healthcheck@wg0.timer' ]] ||
+  run_live_systemctl enable wg0 || return 1
+  [[ "$(cat "$log")" == 'enable --now wg-healthcheck@wg0.timer' ]] ||
     fail "--enable actions were not exact: $(cat "$log")"
+
+  if run_live_systemctl invalid wg0 >/dev/null 2>&1; then
+    fail 'invalid live-systemctl action was accepted'
+  fi
 }
+
+test_quiesce_argument_matrix_is_explicit_and_staging_is_rejected() (
+  local stage rc
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  declare -F prepare_live_upgrade >/dev/null || {
+    fail 'installer does not expose the live-upgrade preflight seam'
+    return 1
+  }
+
+  parse_arguments --quiesce wg0 || { fail '--quiesce wg0 was rejected'; return 1; }
+  parse_arguments --quiesce >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail '--quiesce accepted a missing interface'; return 1; }
+  parse_arguments --quiesce --enable wg0 >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail '--quiesce accepted --enable'; return 1; }
+  parse_arguments --enable --quiesce wg0 >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail '--enable accepted --quiesce'; return 1; }
+
+  stage="$(new_stage)" || return 1
+  DESTDIR="$stage" "$BASH" "$INSTALLER" --quiesce wg0 >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail '--quiesce was accepted with DESTDIR staging'; return 1; }
+  [[ -z "$(find "$stage" -mindepth 1 -print -quit)" ]] ||
+    fail '--quiesce with DESTDIR mutated the staging tree'
+)
+
+test_ordinary_live_upgrade_refuses_an_active_worker_before_mutation() (
+  local stage log="$TEST_TMP/ordinary-active-worker.log" rc actual
+  stage="$(new_stage)" || return 1
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  DESTDIR="$stage"
+  LIVE_INSTALL=1
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  declare -F prepare_live_upgrade >/dev/null || {
+    fail 'installer does not expose the live-upgrade preflight seam'
+    return 1
+  }
+  : >"$log"
+  systemctl_exec() {
+    printf 'systemctl %s\n' "$*" >>"$log"
+    case "$*" in
+      'is-active --quiet wg-healthcheck@wg0.timer') return 3 ;;
+      'is-active --quiet wg-healthcheck@wg0.service') return 0 ;;
+    esac
+    return 0
+  }
+  flock_exec() { printf 'flock %s\n' "$*" >>"$log"; return 0; }
+  sleep_exec() { printf 'sleep %s\n' "$*" >>"$log"; return 0; }
+
+  prepare_live_upgrade 0 wg0 2>"$TEST_TMP/ordinary-active-worker.err"
+  rc=$?
+  actual="$(cat "$log")"
+  [[ $rc -ne 0 ]] || { fail 'ordinary install accepted an active worker'; return 1; }
+  [[ "$actual" == $'systemctl is-active --quiet wg-healthcheck@wg0.timer\nsystemctl is-active --quiet wg-healthcheck@wg0.service' ]] ||
+    fail "ordinary active-worker refusal did not stop at the worker probe: $actual"
+  [[ -z "$(find "$stage" -mindepth 1 -print -quit)" ]] ||
+    fail 'ordinary active-worker refusal mutated the live-layout fixture'
+)
+
+test_ordinary_live_upgrade_refuses_an_active_timer_before_mutation() (
+  local stage log="$TEST_TMP/ordinary-active-timer.log" rc actual
+  stage="$(new_stage)" || return 1
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  DESTDIR="$stage"
+  LIVE_INSTALL=1
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  declare -F prepare_live_upgrade >/dev/null || {
+    fail 'installer does not expose the live-upgrade preflight seam'
+    return 1
+  }
+  : >"$log"
+  systemctl_exec() {
+    printf 'systemctl %s\n' "$*" >>"$log"
+    [[ "$*" == 'is-active --quiet wg-healthcheck@wg0.timer' ]] && return 0
+    return 3
+  }
+  flock_exec() { printf 'flock %s\n' "$*" >>"$log"; return 0; }
+  sleep_exec() { printf 'sleep %s\n' "$*" >>"$log"; return 0; }
+
+  prepare_live_upgrade 0 wg0 2>"$TEST_TMP/ordinary-active-timer.err"
+  rc=$?
+  actual="$(cat "$log")"
+  [[ $rc -ne 0 ]] || { fail 'ordinary install accepted an active timer'; return 1; }
+  [[ "$actual" == 'systemctl is-active --quiet wg-healthcheck@wg0.timer' ]] ||
+    fail "ordinary active-timer refusal continued past the timer probe: $actual"
+  [[ -z "$(find "$stage" -mindepth 1 -print -quit)" ]] ||
+    fail 'ordinary active-timer refusal mutated the live-layout fixture'
+)
+
+test_ordinary_live_upgrade_refuses_a_held_interface_lock() (
+  local stage log="$TEST_TMP/ordinary-held-lock.log" rc actual
+  stage="$(new_stage)" || return 1
+  mkdir -p -- "$stage/run/wg-healthcheck"
+  chmod 0700 -- "$stage/run/wg-healthcheck"
+  : >"$stage/run/wg-healthcheck/wg0.lock"
+  chmod 0600 -- "$stage/run/wg-healthcheck/wg0.lock"
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  DESTDIR="$stage"
+  LIVE_INSTALL=1
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  declare -F prepare_live_upgrade >/dev/null || {
+    fail 'installer does not expose the live-upgrade preflight seam'
+    return 1
+  }
+  : >"$log"
+  systemctl_exec() {
+    printf 'systemctl %s\n' "$*" >>"$log"
+    [[ "$1" == is-active ]] && return 3
+    return 0
+  }
+  flock_exec() { printf 'flock %s\n' "$*" >>"$log"; return 1; }
+  sleep_exec() { printf 'sleep %s\n' "$*" >>"$log"; return 0; }
+
+  prepare_live_upgrade 0 wg0 2>"$TEST_TMP/ordinary-held-lock.err"
+  rc=$?
+  actual="$(cat "$log")"
+  [[ $rc -ne 0 ]] || { fail 'ordinary install accepted a held interface lock'; return 1; }
+  assert_ordered_text "$actual" \
+    'systemctl is-active --quiet wg-healthcheck@wg0.timer' \
+    'systemctl is-active --quiet wg-healthcheck@wg0.service' \
+    'flock ' || return 1
+  [[ "$actual" != *'disable --now'* && "$actual" != *'stop '* ]] ||
+    fail 'ordinary held-lock refusal changed unit state'
+)
+
+test_live_upgrade_refuses_pending_journal_or_safety_record() (
+  local stage log="$TEST_TMP/live-recovery-artifacts.log" artifact artifact_path rc actual
+  local -a artifacts=(
+    'wg0.conf.pending-healthcheck'
+    'wg0.conf.safety-healthcheck'
+    'healthcheck.d/wg0.setup-transaction'
+  )
+
+  for artifact in "${artifacts[@]}"; do
+    stage="$(new_stage)" || return 1
+    artifact_path="$stage/etc/wireguard/$artifact"
+    mkdir -p -- "${artifact_path%/*}" "$stage/run/wg-healthcheck"
+    chmod 0700 -- "$stage/run/wg-healthcheck"
+    : >"$stage/run/wg-healthcheck/wg0.lock"
+    chmod 0600 -- "$stage/run/wg-healthcheck/wg0.lock"
+    printf 'incomplete recovery evidence\n' >"$artifact_path"
+    : >"$log"
+
+    # shellcheck source=install.sh
+    source "$INSTALLER"
+    DESTDIR="$stage"
+    LIVE_INSTALL=1
+    INSTALL_OWNER_ARGS=()
+    initialize_paths
+    declare -F prepare_live_upgrade >/dev/null || {
+      fail 'installer does not expose the live-upgrade preflight seam'
+      return 1
+    }
+    systemctl_exec() {
+      printf 'systemctl %s\n' "$*" >>"$log"
+      [[ "$1" == is-active ]] && return 3
+      return 0
+    }
+    flock_exec() { printf 'flock %s\n' "$*" >>"$log"; return 0; }
+    sleep_exec() { printf 'sleep %s\n' "$*" >>"$log"; return 0; }
+
+    prepare_live_upgrade 0 wg0 2>"$TEST_TMP/recovery-artifact.err"
+    rc=$?
+    actual="$(cat "$log")"
+    [[ $rc -ne 0 ]] || { fail "ordinary install accepted recovery artifact: $artifact"; return 1; }
+    assert_ordered_text "$actual" \
+      'systemctl is-active --quiet wg-healthcheck@wg0.timer' \
+      'systemctl is-active --quiet wg-healthcheck@wg0.service' \
+      'flock ' || return 1
+  done
+)
+
+test_quiesce_stops_waits_checks_and_leaves_timer_disabled() (
+  local stage log="$TEST_TMP/quiesce.log" rc actual
+  stage="$(new_stage)" || return 1
+  mkdir -p -- "$stage/run/wg-healthcheck"
+  chmod 0700 -- "$stage/run/wg-healthcheck"
+  : >"$stage/run/wg-healthcheck/wg0.lock"
+  chmod 0600 -- "$stage/run/wg-healthcheck/wg0.lock"
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  DESTDIR="$stage"
+  LIVE_INSTALL=1
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  declare -F prepare_live_upgrade >/dev/null || {
+    fail 'installer does not expose the live-upgrade preflight seam'
+    return 1
+  }
+  : >"$log"
+  systemctl_exec() {
+    printf 'systemctl %s\n' "$*" >>"$log"
+    if [[ "$1" == is-enabled ]]; then
+      printf 'enabled\n'
+      return 0
+    fi
+    [[ "$1" == is-active ]] && return 3
+    [[ "$1" == enable ]] && return 99
+    return 0
+  }
+  wait_for_instance_inactive() { printf 'wait %s\n' "$*" >>"$log"; return 0; }
+  flock_exec() { printf 'flock %s\n' "$*" >>"$log"; return 0; }
+
+  prepare_live_upgrade 1 wg0
+  rc=$?
+  actual="$(cat "$log")"
+  [[ $rc -eq 0 ]] || { fail 'quiesced live upgrade did not complete its safety preflight'; return 1; }
+  assert_ordered_text "$actual" \
+    'systemctl is-enabled wg-healthcheck@wg0.timer' \
+    'systemctl disable --now wg-healthcheck@wg0.timer' \
+    'systemctl stop wg-healthcheck@wg0.service' \
+    'wait wg0' \
+    'flock ' || return 1
+  [[ "$actual" != *'systemctl enable '* ]] || fail 'quiesced upgrade re-enabled the timer'
+)
+
+test_systemctl_inactive_query_errors_fail_closed() (
+  local stage log="$TEST_TMP/systemctl-query-error.log" query_rc rc actual
+
+  for query_rc in 1 2; do
+    stage="$(new_stage)" || return 1
+    # shellcheck source=install.sh
+    source "$INSTALLER"
+    DESTDIR="$stage"
+    LIVE_INSTALL=1
+    INSTALL_OWNER_ARGS=()
+    initialize_paths
+    : >"$log"
+    systemctl_exec() {
+      printf 'systemctl %s\n' "$*" >>"$log"
+      [[ "$1" == is-active ]] && return "$query_rc"
+      return 0
+    }
+    flock_exec() { printf 'flock %s\n' "$*" >>"$log"; return 0; }
+    sleep_exec() { printf 'sleep %s\n' "$*" >>"$log"; return 0; }
+
+    prepare_live_upgrade 0 wg0 >/dev/null 2>&1
+    rc=$?
+    actual="$(cat "$log")"
+    [[ $rc -ne 0 ]] || { fail "ordinary install accepted is-active query rc $query_rc"; return 1; }
+    [[ "$actual" == 'systemctl is-active --quiet wg-healthcheck@wg0.timer' ]] || {
+      fail "ordinary query error continued beyond the first failed query: $actual"
+      return 1
+    }
+
+    : >"$log"
+    wait_for_instance_inactive wg0 >/dev/null 2>&1
+    rc=$?
+    actual="$(cat "$log")"
+    [[ $rc -ne 0 ]] || { fail "wait accepted is-active query rc $query_rc"; return 1; }
+    [[ "$actual" == 'systemctl is-active --quiet wg-healthcheck@wg0.timer' ]] || {
+      fail "wait query error slept or continued after an unknown unit state: $actual"
+      return 1
+    }
+  done
+)
+
+test_inactive_status_with_stderr_diagnostic_fails_closed() (
+  local stage log="$TEST_TMP/inactive-diagnostic.log" err="$TEST_TMP/inactive-diagnostic.err"
+  local inactive_rc rc actual
+
+  for inactive_rc in 3 4; do
+    stage="$(new_stage)" || return 1
+    # shellcheck source=install.sh
+    source "$INSTALLER"
+    DESTDIR="$stage"
+    LIVE_INSTALL=1
+    INSTALL_OWNER_ARGS=()
+    initialize_paths
+    : >"$log"
+    systemctl_exec() {
+      printf 'systemctl %s\n' "$*" >>"$log"
+      if [[ "$1" == is-active ]]; then
+        printf 'transport diagnostic\n' >&2
+        return "$inactive_rc"
+      fi
+      return 0
+    }
+    flock_exec() { printf 'flock %s\n' "$*" >>"$log"; return 0; }
+    sleep_exec() { printf 'sleep %s\n' "$*" >>"$log"; return 0; }
+
+    prepare_live_upgrade 0 wg0 >/dev/null 2>"$err"
+    rc=$?
+    actual="$(cat "$log")"
+    [[ $rc -ne 0 ]] || { fail "ordinary install accepted rc $inactive_rc with diagnostics"; return 1; }
+    [[ "$actual" == 'systemctl is-active --quiet wg-healthcheck@wg0.timer' ]] || {
+      fail "ordinary diagnostic status continued beyond the timer check: $actual"
+      return 1
+    }
+
+    : >"$log"
+    wait_for_instance_inactive wg0 >/dev/null 2>"$err"
+    rc=$?
+    actual="$(cat "$log")"
+    [[ $rc -ne 0 ]] || { fail "wait accepted rc $inactive_rc with diagnostics"; return 1; }
+    [[ "$actual" == 'systemctl is-active --quiet wg-healthcheck@wg0.timer' ]] || {
+      fail "wait diagnostic status slept or continued: $actual"
+      return 1
+    }
+  done
+)
+
+test_quiesce_timer_enable_state_is_exact_and_fail_closed() (
+  local stage log="$TEST_TMP/quiesce-enable-state.log" out="$TEST_TMP/quiesce-enable-state.out"
+  local record rc expected actual response response_rc expected_enabled
+  local -a accepted=(
+    'enabled:0:1'
+    'enabled-runtime:0:1'
+    'disabled:1:0'
+    'static:0:0'
+    'masked:1:0'
+    'not-found:1:0'
+  )
+  local -a rejected=(
+    'enabled\ :0'
+    'unknown:0'
+    ':0'
+    'enabled:2'
+  )
+
+  for record in "${accepted[@]}"; do
+    IFS=: read -r response response_rc expected_enabled <<<"$record"
+    stage="$(new_stage)" || return 1
+    # shellcheck source=install.sh
+    source "$INSTALLER"
+    DESTDIR="$stage"
+    LIVE_INSTALL=1
+    INSTALL_OWNER_ARGS=()
+    initialize_paths
+    : >"$log"
+    systemctl_exec() {
+      printf 'systemctl %s\n' "$*" >>"$log"
+      if [[ "$1" == is-enabled ]]; then
+        [[ -z "$response" ]] || printf '%s\n' "$response"
+        return "$response_rc"
+      fi
+      [[ "$1" == is-active ]] && return 3
+      return 0
+    }
+    wait_for_instance_inactive() { return 0; }
+    probe_existing_interface_lock() { return 0; }
+    refuse_recovery_artifacts() { return 0; }
+
+    prepare_live_upgrade 1 wg0 >"$out" 2>&1
+    rc=$?
+    actual="$(cat "$log")"
+    [[ $rc -eq 0 ]] || { fail "quiesce rejected documented timer state: $record"; return 1; }
+    [[ "$TIMER_WAS_ENABLED" == "$expected_enabled" ]] || {
+      fail "quiesce recorded the wrong enabled state for: $record"
+      return 1
+    }
+    [[ -z "$(cat "$out")" ]] || { fail 'timer-state query leaked stdout or stderr'; return 1; }
+    [[ "$actual" == *'systemctl is-enabled wg-healthcheck@wg0.timer'* &&
+       "$actual" != *'is-enabled --quiet'* ]] || {
+      fail "timer state query was not the required non-quiet command: $actual"
+      return 1
+    }
+  done
+
+  for record in "${rejected[@]}"; do
+    IFS=: read -r response response_rc <<<"$record"
+    stage="$(new_stage)" || return 1
+    # shellcheck source=install.sh
+    source "$INSTALLER"
+    DESTDIR="$stage"
+    LIVE_INSTALL=1
+    INSTALL_OWNER_ARGS=()
+    initialize_paths
+    : >"$log"
+    systemctl_exec() {
+      printf 'systemctl %s\n' "$*" >>"$log"
+      if [[ "$1" == is-enabled ]]; then
+        [[ -z "$response" ]] || printf '%s\n' "$response"
+        return "$response_rc"
+      fi
+      [[ "$1" == is-active ]] && return 3
+      return 0
+    }
+    wait_for_instance_inactive() { return 0; }
+    probe_existing_interface_lock() { return 0; }
+    refuse_recovery_artifacts() { return 0; }
+
+    prepare_live_upgrade 1 wg0 >"$out" 2>&1
+    rc=$?
+    [[ $rc -ne 0 ]] || { fail "quiesce accepted ambiguous timer state: $record"; return 1; }
+    assert_not_contains 'disable --now' "$log" || return 1
+  done
+)
+
+test_quiesce_rejects_enabled_state_with_stderr_diagnostic_before_disable() (
+  local stage log="$TEST_TMP/enable-diagnostic.log" err="$TEST_TMP/enable-diagnostic.err" rc
+  stage="$(new_stage)" || return 1
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  DESTDIR="$stage"
+  LIVE_INSTALL=1
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  : >"$log"
+  systemctl_exec() {
+    printf 'systemctl %s\n' "$*" >>"$log"
+    if [[ "$1" == is-enabled ]]; then
+      printf 'enabled\n'
+      printf 'state-query diagnostic\n' >&2
+      return 0
+    fi
+    return 0
+  }
+
+  prepare_live_upgrade 1 wg0 >/dev/null 2>"$err"
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail 'quiesce accepted enabled state with stderr diagnostics'; return 1; }
+  assert_not_contains 'disable --now' "$log" || return 1
+)
+
+test_live_upgrade_refuses_active_or_unqueryable_shared_instances() (
+  local stage log="$TEST_TMP/shared-unit.log" kind result rc actual
+  local -a cases=(
+    'timer:wg-healthcheck@wg1.timer active'
+    'service:query-error'
+  )
+
+  for result in "${cases[@]}"; do
+    IFS=: read -r kind result <<<"$result"
+    stage="$(new_stage)" || return 1
+    # shellcheck source=install.sh
+    source "$INSTALLER"
+    DESTDIR="$stage"
+    LIVE_INSTALL=1
+    INSTALL_OWNER_ARGS=()
+    initialize_paths
+    : >"$log"
+    systemctl_exec() {
+      printf 'systemctl %s\n' "$*" >>"$log"
+      [[ "$1" == is-active ]] && return 3
+      if [[ "$1" == list-units && "$*" == *"--type=$kind"* ]]; then
+        [[ "$result" == query-error ]] && return 1
+        printf '%s\n' "$result"
+        return 0
+      fi
+      return 0
+    }
+    flock_exec() { printf 'flock %s\n' "$*" >>"$log"; return 0; }
+
+    prepare_live_upgrade 0 wg0 >/dev/null 2>&1
+    rc=$?
+    actual="$(cat "$log")"
+    [[ $rc -ne 0 ]] || { fail "live upgrade accepted shared $kind result: $result"; return 1; }
+    assert_contains "list-units --type=$kind --state=active,activating,deactivating,reloading --no-legend --plain --full --no-pager wg-healthcheck@*.$kind" "$log" || return 1
+    assert_not_contains 'flock ' "$log" || return 1
+  done
+)
+
+test_upgrade_locks_are_retained_and_released_for_the_selected_interface() (
+  local stage runtime rc
+  stage="$(new_stage)" || return 1
+  runtime="$stage/run/wg-healthcheck"
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  IFACE=wg1
+  DESTDIR="$stage"
+  LIVE_INSTALL=1
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  declare -F acquire_upgrade_locks >/dev/null || {
+    fail 'installer does not expose upgrade-lock acquisition'
+    return 1
+  }
+  declare -F release_upgrade_locks >/dev/null || {
+    fail 'installer does not expose upgrade-lock release'
+    return 1
+  }
+  [[ -n "${LIVE_SETUP_GUARD:-}" ]] || {
+    fail 'installer does not derive the shared setup-guard path'
+    return 1
+  }
+  systemctl_exec() {
+    [[ "$1" == is-active ]] && return 3
+    [[ "$1" == list-units ]] && return 0
+    return 0
+  }
+
+  prepare_live_upgrade 0 wg1 || { fail 'safe wg1 upgrade preflight failed'; return 1; }
+  assert_dir "$runtime" || return 1
+  assert_mode 700 "$runtime" || return 1
+  assert_file "$LIVE_SETUP_GUARD" || return 1
+  assert_file "$LIVE_INTERFACE_LOCK" || return 1
+  assert_mode 600 "$LIVE_SETUP_GUARD" || return 1
+  assert_mode 600 "$LIVE_INTERFACE_LOCK" || return 1
+  [[ "$(stat -c '%u' -- "$LIVE_SETUP_GUARD")" == "$EUID" ]] ||
+    { fail 'setup guard owner is not the invoking root/EUID'; return 1; }
+  [[ "$(stat -c '%u' -- "$LIVE_INTERFACE_LOCK")" == "$EUID" ]] ||
+    { fail 'interface lock owner is not the invoking root/EUID'; return 1; }
+
+  command flock -n "$LIVE_SETUP_GUARD" -c true >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail 'competing installer acquired the retained setup guard'; return 1; }
+  command flock -n "$LIVE_INTERFACE_LOCK" -c true >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail 'competing installer acquired the retained wg1 lock'; return 1; }
+
+  release_upgrade_locks || { fail 'upgrade-lock release failed'; return 1; }
+  command flock -n "$LIVE_SETUP_GUARD" -c true >/dev/null 2>&1 ||
+    { fail 'setup guard remained held after release'; return 1; }
+  command flock -n "$LIVE_INTERFACE_LOCK" -c true >/dev/null 2>&1 ||
+    fail 'wg1 lock remained held after release'
+)
+
+test_upgrade_locks_refuse_held_wg1_lock_or_unsafe_setup_guard() (
+  local stage runtime outside rc
+
+  stage="$(new_stage)" || return 1
+  runtime="$stage/run/wg-healthcheck"
+  mkdir -p -- "$runtime"
+  chmod 0700 -- "$runtime"
+  : >"$runtime/wg1.lock"
+  chmod 0600 -- "$runtime/wg1.lock"
+  command flock -x "$runtime/wg1.lock" -c 'sleep 1' &
+  local holder=$!
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  IFACE=wg1
+  DESTDIR="$stage"
+  LIVE_INSTALL=1
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  declare -F acquire_upgrade_locks >/dev/null || {
+    wait "$holder" || true
+    fail 'installer does not expose upgrade-lock acquisition'
+    return 1
+  }
+  acquire_upgrade_locks >/dev/null 2>&1
+  rc=$?
+  wait "$holder" || true
+  [[ $rc -ne 0 ]] || { fail 'acquired a wg1 lock already held by another process'; return 1; }
+
+  outside="$TEST_TMP/setup-guard-outside"
+  printf 'outside sentinel\n' >"$outside"
+  rm -f -- "$LIVE_SETUP_GUARD"
+  ln -s -- "$outside" "$LIVE_SETUP_GUARD" || { skip 'setup-guard symlink test (symlinks unavailable)'; return 77; }
+  acquire_upgrade_locks >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail 'unsafe setup-guard symlink was accepted'; return 1; }
+  [[ "$(cat "$outside")" == 'outside sentinel' ]] || fail 'unsafe setup-guard target was overwritten'
+)
+
+test_quiesce_partial_failure_keeps_timer_disabled_and_reports_it() (
+  local stage log="$TEST_TMP/quiesce-partial.log" err="$TEST_TMP/quiesce-partial.err"
+  local phase rc actual
+  local -a phases=(stop wait shared lock artifacts)
+
+  for phase in "${phases[@]}"; do
+    stage="$(new_stage)" || return 1
+    rc=0
+    # shellcheck source=install.sh
+    source "$INSTALLER"
+    DESTDIR="$stage"
+    LIVE_INSTALL=1
+    INSTALL_OWNER_ARGS=()
+    initialize_paths
+    : >"$log"
+    systemctl_exec() {
+      printf 'systemctl %s\n' "$*" >>"$log"
+      case "$1" in
+        is-enabled) printf 'enabled\n'; return 0 ;;
+        disable) return 0 ;;
+        stop) [[ "$phase" == stop ]] && return 1; return 0 ;;
+        is-active) return 3 ;;
+        list-units) [[ "$phase" == shared ]] && return 1; return 0 ;;
+        enable) return 99 ;;
+      esac
+      return 0
+    }
+    wait_for_instance_inactive() { [[ "$phase" == wait ]] && return 1; return 0; }
+    probe_existing_interface_lock() { [[ "$phase" == lock ]] && return 1; return 0; }
+    refuse_recovery_artifacts() { [[ "$phase" == artifacts ]] && return 1; return 0; }
+
+    prepare_live_upgrade 1 wg0 >/dev/null 2>"$err"
+    rc=$?
+    actual="$(cat "$log")"
+    [[ $rc -ne 0 ]] || { fail "quiesce accepted a $phase failure after disable"; return 1; }
+    assert_contains 'disable --now wg-healthcheck@wg0.timer' "$log" || return 1
+    assert_contains 'timer remains disabled' "$err" || return 1
+    assert_not_contains 'enable ' "$log" || return 1
+  done
+)
+
+test_state_directory_creation_failure_aborts_layout() (
+  local stage log="$TEST_TMP/state-layout.log" rc
+  stage="$(new_stage)" || return 1
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  DESTDIR="$stage"
+  LIVE_INSTALL=0
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  : >"$log"
+  ensure_directory() {
+    printf '%s\n' "$1" >>"$log"
+    [[ "$1" != "$TARGET_STATE_DIR" ]]
+  }
+
+  create_layout
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail 'layout continued after persistent-state directory creation failed'; return 1; }
+  [[ "$(tail -n 1 -- "$log")" == "$TARGET_STATE_DIR" ]] ||
+    fail 'state directory was not a required layout owner'
+)
+
+test_setup_package_manifest_rejects_unexpected_entries_and_links() (
+  local stage source_package target_package source_file target_file rc case_name
+  local -a cases=(
+    missing-source-py unexpected-source-py unexpected-source-dir source-symlink
+    target-py target-dir target-symlink target-pycache
+  )
+
+  for case_name in "${cases[@]}"; do
+    stage="$(new_stage)" || return 1
+    source_package="$stage/source-package"
+    target_package="$stage/target-package"
+    mkdir -p -- "$source_package" "$target_package"
+
+    # shellcheck source=install.sh
+    source "$INSTALLER"
+    DESTDIR="$stage"
+    LIVE_INSTALL=0
+    INSTALL_OWNER_ARGS=()
+    initialize_paths
+    declare -F validate_setup_package_manifest >/dev/null || {
+      fail 'installer does not expose setup-package manifest validation'
+      return 1
+    }
+    SOURCE_SETUP_PACKAGE="$source_package"
+    TARGET_SETUP_PACKAGE="$target_package"
+    SOURCE_SETUP_PACKAGE_FILES=()
+    TARGET_SETUP_PACKAGE_FILES=()
+    for source_file in "$ROOT/libexec/wg_healthcheck_setup"/*.py; do
+      target_file="${source_file##*/}"
+      cp -- "$source_file" "$source_package/$target_file"
+      SOURCE_SETUP_PACKAGE_FILES+=("$source_package/$target_file")
+      TARGET_SETUP_PACKAGE_FILES+=("$target_package/$target_file")
+    done
+
+    validate_setup_package_manifest || { fail 'exact setup-package source manifest was rejected'; return 1; }
+    case "$case_name" in
+      missing-source-py)
+        rm -f -- "$source_package/application.py"
+        ;;
+      unexpected-source-py)
+        printf 'unexpected\n' >"$source_package/unexpected.py"
+        ;;
+      unexpected-source-dir)
+        mkdir -- "$source_package/unexpected-dir"
+        ;;
+      source-symlink)
+        if ! ln -s -- "$source_package/__init__.py" "$source_package/link.py"; then
+          skip 'setup-package source symlink test (symlinks unavailable)'
+          return 77
+        fi
+        ;;
+      target-py)
+        printf 'unexpected\n' >"$target_package/unexpected.py"
+        ;;
+      target-dir)
+        mkdir -- "$target_package/unexpected-dir"
+        ;;
+      target-symlink)
+        if ! ln -s -- "$source_package/__init__.py" "$target_package/link.py"; then
+          skip 'setup-package target symlink test (symlinks unavailable)'
+          return 77
+        fi
+        ;;
+      target-pycache)
+        mkdir -- "$target_package/__pycache__"
+        ;;
+    esac
+    validate_setup_package_manifest >/dev/null 2>&1
+    rc=$?
+    [[ $rc -ne 0 ]] || { fail "setup-package manifest accepted $case_name"; return 1; }
+  done
+)
+
+test_setup_upgrade_guard_is_published_before_package_and_retained_on_failure() (
+  local stage log="$TEST_TMP/setup-guard.log" rc
+  stage="$(new_stage)" || return 1
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  SOURCE_MAIN='source-main'
+  SOURCE_HELPER='source-helper'
+  SOURCE_MANAGED_MODULE='source-managed-module'
+  SOURCE_SETUP='source-setup'
+  SOURCE_SERVICE='source-service'
+  SOURCE_TIMER='source-timer'
+  SOURCE_CONFIG='source-config'
+  TARGET_MAIN='target-main'
+  TARGET_HELPER='target-helper'
+  TARGET_MANAGED_MODULE='target-managed-module'
+  TARGET_MAIN="$stage/wg-healthcheck"
+  TARGET_SETUP="$stage/wg-healthcheck-setup"
+  TARGET_SERVICE='target-service'
+  TARGET_TIMER='target-timer'
+  TARGET_CONFIG='target-config'
+  LIVE_INSTALL=0
+  : >"$log"
+  printf '#!/bin/sh\nexit 0\n' >"$TARGET_MAIN"
+  printf '#!/bin/sh\nexit 0\n' >"$TARGET_SETUP"
+  chmod 0755 -- "$TARGET_MAIN" "$TARGET_SETUP"
+  declare -F publish_runtime_upgrade_guard >/dev/null || {
+    fail 'installer does not expose runtime-upgrade guard publication'
+    return 1
+  }
+  declare -F publish_setup_upgrade_guard >/dev/null || {
+    fail 'installer does not expose setup-upgrade guard publication'
+    return 1
+  }
+  publish_runtime_upgrade_guard || { fail 'runtime-upgrade guard publication failed'; return 1; }
+  "$TARGET_MAIN" >/dev/null 2>&1
+  rc=$?
+  [[ $rc -eq 75 ]] || { fail "runtime guard did not exit inertly with 75: $rc"; return 1; }
+  publish_setup_upgrade_guard || { fail 'setup-upgrade guard publication failed'; return 1; }
+  "$TARGET_SETUP" >/dev/null 2>&1
+  rc=$?
+  [[ $rc -eq 75 ]] || { fail "setup guard did not exit inertly with 75: $rc"; return 1; }
+
+  : >"$log"
+  atomic_install_file() { printf '%s\n' "$2" >>"$log"; }
+  install_setup_package() { printf '%s\n' target-setup-package >>"$log"; return 1; }
+  create_layout() { return 0; }
+  install_guarded_artifacts
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail 'install continued after setup-package publication failed'; return 1; }
+  [[ "$(cat "$log")" == $'target-helper\ntarget-managed-module\ntarget-setup-package' ]] ||
+    fail "setup package failure published a launcher or later artifacts: $(cat "$log")"
+  "$TARGET_SETUP" >/dev/null 2>&1
+  rc=$?
+  [[ $rc -eq 75 ]] || { fail "real setup launcher replaced the guard after package failure: $rc"; return 1; }
+  "$TARGET_MAIN" >/dev/null 2>&1
+  rc=$?
+  [[ $rc -eq 75 ]] || fail "real runtime launcher replaced the guard after package failure: $rc"
+)
 
 test_staged_enable_never_calls_host_systemctl() {
   local stage
@@ -553,7 +1488,8 @@ test_safe_inert_environment_template() {
       { fail "not a strict health-check data assignment: $line"; return 1; }
   done <"$SOURCE_CONFIG"
 
-  if grep -En '\$\(|`|(^|[^#]);|&&|\|\|' "$SOURCE_CONFIG" >/dev/null; then
+  if grep -Ev '^[[:space:]]*(#|$)' "$SOURCE_CONFIG" |
+     grep -En '\$\(|`|;|&&|\|\|' >/dev/null; then
     fail 'configuration template contains shell execution syntax'
   fi
 }
@@ -604,6 +1540,7 @@ test_service_environment_and_hardening_contract() {
     'RuntimeDirectoryMode=0700'
     'RuntimeDirectoryPreserve=yes'
     'TimeoutStartSec=180s'
+    'LimitCORE=0'
     'NoNewPrivileges=yes'
     'PrivateTmp=yes'
     'ProtectHome=yes'
@@ -931,6 +1868,331 @@ test_ci_workflow_is_deterministic_and_smoke_isolated() {
   done
 }
 
+test_reentrant_upgrade_lock_acquisition_preserves_the_first_lease() (
+  local stage rc
+  stage="$(new_stage)" || return 1
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  IFACE=wg1
+  DESTDIR="$stage"
+  LIVE_INSTALL=1
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  acquire_upgrade_locks || { fail 'initial upgrade-lock acquisition failed'; return 1; }
+  acquire_upgrade_locks >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail 'reentrant upgrade-lock acquisition unexpectedly succeeded'; return 1; }
+
+  command flock -n "$LIVE_SETUP_GUARD" -c true >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail 'reentrant acquisition lost the original setup guard'; return 1; }
+  command flock -n "$LIVE_INTERFACE_LOCK" -c true >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail 'reentrant acquisition lost the original interface lock'; return 1; }
+
+  release_upgrade_locks || { fail 'single release after reentrant failure failed'; return 1; }
+  command flock -n "$LIVE_SETUP_GUARD" -c true >/dev/null 2>&1 ||
+    { fail 'setup guard leaked after a single release'; return 1; }
+  command flock -n "$LIVE_INTERFACE_LOCK" -c true >/dev/null 2>&1 ||
+    fail 'interface lock leaked after a single release'
+)
+
+test_upgrade_runtime_directory_rejects_an_unsafe_destdir_run_parent() (
+  local stage outside rc
+  stage="$(new_stage)" || return 1
+  outside="$TEST_TMP/unsafe-run-parent"
+  mkdir -p -- "$outside"
+  if ! ln -s -- "$outside" "$stage/run"; then
+    skip 'unsafe DESTDIR run-parent symlink test (symlinks unavailable)'
+    return 77
+  fi
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  IFACE=wg1
+  DESTDIR="$stage"
+  LIVE_INSTALL=1
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  acquire_upgrade_locks >/dev/null 2>&1
+  rc=$?
+  [[ $rc -ne 0 ]] || { fail 'upgrade locks accepted a symlinked DESTDIR/run parent'; return 1; }
+  [[ -z "$(find "$outside" -mindepth 1 -print -quit)" ]] ||
+    fail 'upgrade locks created files through a symlinked DESTDIR/run parent'
+)
+
+test_main_quiesce_failure_after_preparation_keeps_timer_disabled_and_releases_locks() (
+  local stage log="$TEST_TMP/main-quiesce-failure.log" err="$TEST_TMP/main-quiesce-failure.err"
+  local phase rc
+  local -a phases=(layout artifacts daemon_reload)
+
+  for phase in "${phases[@]}"; do
+    stage="$(new_stage)" || return 1
+    # shellcheck source=install.sh
+    source "$INSTALLER"
+    : >"$log"
+    require_commands() { return 0; }
+    validate_destdir() {
+      LIVE_INSTALL=1
+      DESTDIR="$stage"
+      INSTALL_OWNER_ARGS=()
+    }
+    preflight_sources() { return 0; }
+    preflight_targets() { return 0; }
+    require_live_commands() { return 0; }
+    resolve_systemctl() { SYSTEMCTL_BIN=systemctl-double; }
+    publish_runtime_upgrade_guard() { return 0; }
+    publish_setup_upgrade_guard() { return 0; }
+    stabilize_live_upgrade_after_guards() { return 0; }
+    publish_final_launchers() { return 0; }
+    systemctl_exec() {
+      printf 'systemctl %s\n' "$*" >>"$log"
+      case "$1" in
+        is-enabled) printf 'enabled\n'; return 0 ;;
+        disable|stop) return 0 ;;
+        is-active) return 3 ;;
+        list-units) return 0 ;;
+        daemon-reload) [[ "$phase" == daemon_reload ]] && return 1; return 0 ;;
+        enable) return 99 ;;
+      esac
+      return 0
+    }
+    case "$phase" in
+      layout)
+        install_guarded_artifacts() { return 1; }
+        ;;
+      artifacts)
+        install_guarded_artifacts() { return 1; }
+        ;;
+      daemon_reload)
+        install_guarded_artifacts() { return 0; }
+        ;;
+    esac
+
+    main --quiesce wg0 >/dev/null 2>"$err"
+    rc=$?
+    [[ $rc -ne 0 ]] || { fail "main accepted $phase failure after quiesce"; return 1; }
+    assert_contains 'disable --now wg-healthcheck@wg0.timer' "$log" || return 1
+    assert_contains 'timer remains disabled' "$err" || return 1
+    assert_not_contains 'enable ' "$log" || return 1
+    command flock -n "$LIVE_SETUP_GUARD" -c true >/dev/null 2>&1 ||
+      { fail "setup guard remained held after $phase failure"; return 1; }
+    command flock -n "$LIVE_INTERFACE_LOCK" -c true >/dev/null 2>&1 ||
+      fail "interface lock remained held after $phase failure"
+  done
+)
+
+test_dual_entrypoint_guards_publish_before_any_dependency_mutation() (
+  local stage log="$TEST_TMP/dual-guard-order.log" rc actual
+  stage="$(new_stage)" || return 1
+
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  declare -F publish_runtime_upgrade_guard >/dev/null || {
+    fail 'installer does not expose runtime-upgrade guard publication'
+    return 1
+  }
+  declare -F publish_setup_upgrade_guard >/dev/null || {
+    fail 'installer does not expose setup-upgrade guard publication'
+    return 1
+  }
+  declare -F stabilize_live_upgrade_after_guards >/dev/null || {
+    fail 'installer does not expose guarded live-upgrade stabilization'
+    return 1
+  }
+  declare -F install_guarded_artifacts >/dev/null || {
+    fail 'installer does not expose guarded artifact publication'
+    return 1
+  }
+  declare -F publish_final_launchers >/dev/null || {
+    fail 'installer does not expose final launcher publication'
+    return 1
+  }
+  : >"$log"
+  require_commands() { return 0; }
+  validate_destdir() { LIVE_INSTALL=1; DESTDIR="$stage"; INSTALL_OWNER_ARGS=(); }
+  initialize_paths() {
+    TARGET_MAIN="$stage/wg-healthcheck"
+    TARGET_SETUP="$stage/wg-healthcheck-setup"
+    LIVE_SETUP_GUARD="$stage/setup.guard"
+    LIVE_INTERFACE_LOCK="$stage/wg0.lock"
+  }
+  preflight_sources() { return 0; }
+  preflight_targets() { return 0; }
+  require_live_commands() { return 0; }
+  resolve_systemctl() { SYSTEMCTL_BIN=systemctl-double; }
+  prepare_live_upgrade() { printf 'prepare\n' >>"$log"; QUIESCE=1; QUIESCE_DISABLE_ATTEMPTED=1; QUIESCE_TIMER_DISABLED=1; }
+  publish_runtime_upgrade_guard() { printf 'runtime-guard\n' >>"$log"; printf '#!/bin/sh\nexit 75\n' >"$TARGET_MAIN"; chmod 0755 "$TARGET_MAIN"; }
+  publish_setup_upgrade_guard() { printf 'setup-guard\n' >>"$log"; printf '#!/bin/sh\nexit 75\n' >"$TARGET_SETUP"; chmod 0755 "$TARGET_SETUP"; }
+  stabilize_live_upgrade_after_guards() { printf 'stabilize\n' >>"$log"; }
+  install_guarded_artifacts() { printf 'dependencies\n' >>"$log"; }
+  systemctl_exec() { printf 'systemctl %s\n' "$*" >>"$log"; return 0; }
+  publish_final_launchers() {
+    printf 'final-launchers\n' >>"$log"
+    printf '#!/bin/sh\nexit 0\n' >"$TARGET_SETUP"
+    printf '#!/bin/sh\nexit 0\n' >"$TARGET_MAIN"
+    chmod 0755 "$TARGET_SETUP" "$TARGET_MAIN"
+  }
+  release_upgrade_locks() { printf 'release\n' >>"$log"; }
+
+  main --quiesce wg0 >/dev/null 2>&1
+  rc=$?
+  actual="$(cat "$log")"
+  [[ $rc -eq 0 ]] || { fail 'guarded live-upgrade orchestration failed'; return 1; }
+  [[ "$actual" == $'prepare\nruntime-guard\nsetup-guard\nstabilize\ndependencies\nsystemctl daemon-reload\nfinal-launchers\nrelease' ]] ||
+    fail "guarded publication order was unsafe: $actual"
+  "$TARGET_MAIN" >/dev/null 2>&1
+  rc=$?
+  [[ $rc -eq 0 ]] || fail "runtime launcher did not become real only at final commit: $rc"
+)
+
+test_guarded_publication_failures_keep_runtime_guarded_and_stop_later_actions() (
+  local stage log="$TEST_TMP/guarded-publication-failure.log" phase rc actual
+  local -a phases=(runtime_guard setup_guard stabilize dependencies daemon_reload final_setup final_runtime)
+
+  for phase in "${phases[@]}"; do
+    stage="$(new_stage)" || return 1
+    # shellcheck source=install.sh
+    source "$INSTALLER"
+    declare -F install_guarded_artifacts >/dev/null || {
+      fail 'installer does not expose guarded artifact publication'
+      return 1
+    }
+    : >"$log"
+    TARGET_MAIN="$stage/wg-healthcheck"
+    TARGET_SETUP="$stage/wg-healthcheck-setup"
+    QUIESCE=1
+    QUIESCE_DISABLE_ATTEMPTED=1
+    QUIESCE_TIMER_DISABLED=1
+    publish_runtime_upgrade_guard() {
+      printf 'runtime-guard\n' >>"$log"
+      printf '#!/bin/sh\nexit 75\n' >"$TARGET_MAIN"; chmod 0755 "$TARGET_MAIN"
+      [[ "$phase" != runtime_guard ]]
+    }
+    publish_setup_upgrade_guard() {
+      printf 'setup-guard\n' >>"$log"
+      printf '#!/bin/sh\nexit 75\n' >"$TARGET_SETUP"; chmod 0755 "$TARGET_SETUP"
+      [[ "$phase" != setup_guard ]]
+    }
+    stabilize_live_upgrade_after_guards() { printf 'stabilize\n' >>"$log"; [[ "$phase" != stabilize ]]; }
+    install_guarded_artifacts() { printf 'dependencies\n' >>"$log"; [[ "$phase" != dependencies ]]; }
+    systemctl_exec() {
+      printf 'systemctl %s\n' "$*" >>"$log"
+      [[ "$1" == daemon-reload && "$phase" == daemon_reload ]] && return 1
+      [[ "$1" == enable ]] && return 99
+      return 0
+    }
+    publish_final_launchers() {
+      printf 'final-setup\n' >>"$log"
+      [[ "$phase" != final_setup ]] || return 1
+      printf '#!/bin/sh\nexit 0\n' >"$TARGET_SETUP"; chmod 0755 "$TARGET_SETUP"
+      printf 'final-runtime\n' >>"$log"
+      [[ "$phase" != final_runtime ]] || return 1
+      printf '#!/bin/sh\nexit 0\n' >"$TARGET_MAIN"; chmod 0755 "$TARGET_MAIN"
+    }
+
+    publish_runtime_upgrade_guard || rc=$?
+    rc=${rc:-0}
+    if (( rc == 0 )); then publish_setup_upgrade_guard || rc=$?; fi
+    if (( rc == 0 )); then stabilize_live_upgrade_after_guards || rc=$?; fi
+    if (( rc == 0 )); then install_guarded_artifacts || rc=$?; fi
+    if (( rc == 0 )); then systemctl_exec daemon-reload || rc=$?; fi
+    if (( rc == 0 )); then publish_final_launchers || rc=$?; fi
+    actual="$(cat "$log")"
+    [[ $rc -ne 0 ]] || { fail "guarded publication accepted injected $phase failure"; return 1; }
+    [[ "$actual" != *'enable '* ]] || { fail "guarded $phase failure enabled a timer"; return 1; }
+    [[ -x "$TARGET_MAIN" ]] || { fail "runtime guard vanished after $phase failure"; return 1; }
+    "$TARGET_MAIN" >/dev/null 2>&1
+    rc=$?
+    [[ $rc -eq 75 ]] || { fail "runtime became callable before final commit after $phase failure"; return 1; }
+  done
+)
+
+test_installer_exit_cleanup_releases_locks_preserves_signal_and_does_not_leak_traps() (
+  local stage before_exit after_exit rc signal expected_rc
+  before_exit="$(trap -p EXIT)"
+  # shellcheck source=install.sh
+  source "$INSTALLER"
+  after_exit="$(trap -p EXIT)"
+  [[ "$after_exit" == "$before_exit" ]] || { fail 'sourcing installer leaked an EXIT trap'; return 1; }
+  declare -F installer_exit_cleanup >/dev/null || {
+    fail 'installer does not expose scoped exit cleanup'
+    return 1
+  }
+
+  stage="$(new_stage)" || return 1
+  IFACE=wg0
+  DESTDIR="$stage"
+  LIVE_INSTALL=1
+  INSTALL_OWNER_ARGS=()
+  initialize_paths
+  acquire_upgrade_locks || { fail 'cleanup fixture could not acquire upgrade locks'; return 1; }
+  QUIESCE=1
+  QUIESCE_DISABLE_ATTEMPTED=1
+  QUIESCE_TIMER_DISABLED=1
+  QUIESCE_FAILURE_REPORTED=0
+  installer_exit_cleanup 143 >/dev/null 2>"$TEST_TMP/cleanup.err"
+  rc=$?
+  [[ $rc -eq 143 ]] || { fail "cleanup did not preserve TERM status: $rc"; return 1; }
+  assert_contains 'timer remains disabled' "$TEST_TMP/cleanup.err" || return 1
+  installer_exit_cleanup 143 >/dev/null 2>>"$TEST_TMP/cleanup.err"
+  [[ "$(grep -Fc 'timer remains disabled' "$TEST_TMP/cleanup.err")" == 1 ]] ||
+    { fail 'cleanup emitted the disabled-timer diagnostic more than once'; return 1; }
+  command flock -n "$LIVE_SETUP_GUARD" -c true >/dev/null 2>&1 ||
+    { fail 'cleanup left the setup guard held'; return 1; }
+  command flock -n "$LIVE_INTERFACE_LOCK" -c true >/dev/null 2>&1 ||
+    { fail 'cleanup left the interface lock held'; return 1; }
+
+  for signal in TERM INT; do
+    case "$signal" in TERM) expected_rc=143 ;; INT) expected_rc=130 ;; esac
+    (
+      # shellcheck source=install.sh
+      source "$INSTALLER"
+      stage="$(new_stage)" || exit 1
+      IFACE=wg0
+      DESTDIR="$stage"
+      LIVE_INSTALL=1
+      INSTALL_OWNER_ARGS=()
+      initialize_paths
+      acquire_upgrade_locks || exit 1
+      QUIESCE=1
+      QUIESCE_DISABLE_ATTEMPTED=1
+      QUIESCE_TIMER_DISABLED=1
+      QUIESCE_FAILURE_REPORTED=0
+      # The trap intentionally captures the fixed per-iteration signal status now.
+      # shellcheck disable=SC2064
+      trap "installer_exit_cleanup $expected_rc; exit $expected_rc" "$signal"
+      kill -s "$signal" "$BASHPID"
+    ) >/dev/null 2>>"$TEST_TMP/cleanup.err"
+    rc=$?
+    [[ $rc -eq $expected_rc ]] || {
+      fail "scoped $signal cleanup did not preserve its signal status: $rc"
+      return 1
+    }
+  done
+
+  (
+    # shellcheck source=install.sh
+    source "$INSTALLER"
+    stage="$(new_stage)" || exit 1
+    IFACE=wg0
+    DESTDIR="$stage"
+    LIVE_INSTALL=1
+    INSTALL_OWNER_ARGS=()
+    initialize_paths
+    acquire_upgrade_locks || exit 1
+    QUIESCE=1
+    QUIESCE_DISABLE_ATTEMPTED=1
+    QUIESCE_TIMER_DISABLED=1
+    QUIESCE_FAILURE_REPORTED=0
+    trap 'installer_exit_cleanup 77' EXIT
+    exit 77
+  ) >/dev/null 2>>"$TEST_TMP/cleanup.err"
+  rc=$?
+  [[ $rc -eq 77 ]] || fail "scoped EXIT cleanup did not preserve its status: $rc"
+)
+
 run_test() {
   local name="$1" rc
   shift
@@ -954,6 +2216,9 @@ run_test() {
 }
 
 run_test default_staged_install_from_unrelated_cwd test_default_staged_install_from_unrelated_cwd
+run_test staged_managed_profile_artifacts_have_exact_content_and_modes test_staged_managed_profile_artifacts_have_exact_content_and_modes
+run_test new_sources_and_targets_are_preflighted_before_staging_mutation test_new_sources_and_targets_are_preflighted_before_staging_mutation
+run_test installer_preserves_api_credential_pre_managed_snapshot_and_state test_installer_preserves_api_credential_pre_managed_snapshot_and_state
 run_test zero_args_and_explicit_wg0_are_compatible test_zero_args_and_explicit_wg0_are_compatible
 run_test custom_interface_uses_an_exact_filename test_custom_interface_uses_an_exact_filename
 run_test invalid_cli_is_rejected_before_writes test_invalid_cli_is_rejected_before_writes
@@ -968,8 +2233,32 @@ run_test nonregular_managed_target_is_rejected_before_mutation test_nonregular_m
 run_test atomic_replacement_failure_preserves_old_file test_atomic_replacement_failure_preserves_old_file
 run_test atomic_interruption_cleans_temp_without_leaking_traps test_atomic_interruption_cleans_temp_without_leaking_traps
 run_test artifact_failure_is_ordered_and_safely_retryable test_artifact_failure_is_ordered_and_safely_retryable
+run_test managed_artifact_install_order_is_dependency_safe test_managed_artifact_install_order_is_dependency_safe
 run_test existing_managed_file_owner_is_not_blessed test_existing_managed_file_owner_is_not_blessed
 run_test systemctl_behavior_is_explicit_and_exact test_systemctl_behavior_is_explicit_and_exact
+run_test quiesce_argument_matrix_is_explicit_and_staging_is_rejected test_quiesce_argument_matrix_is_explicit_and_staging_is_rejected
+run_test ordinary_live_upgrade_refuses_an_active_worker_before_mutation test_ordinary_live_upgrade_refuses_an_active_worker_before_mutation
+run_test ordinary_live_upgrade_refuses_an_active_timer_before_mutation test_ordinary_live_upgrade_refuses_an_active_timer_before_mutation
+run_test ordinary_live_upgrade_refuses_a_held_interface_lock test_ordinary_live_upgrade_refuses_a_held_interface_lock
+run_test live_upgrade_refuses_pending_journal_or_safety_record test_live_upgrade_refuses_pending_journal_or_safety_record
+run_test quiesce_stops_waits_checks_and_leaves_timer_disabled test_quiesce_stops_waits_checks_and_leaves_timer_disabled
+run_test systemctl_inactive_query_errors_fail_closed test_systemctl_inactive_query_errors_fail_closed
+run_test inactive_status_with_stderr_diagnostic_fails_closed test_inactive_status_with_stderr_diagnostic_fails_closed
+run_test quiesce_timer_enable_state_is_exact_and_fail_closed test_quiesce_timer_enable_state_is_exact_and_fail_closed
+run_test quiesce_rejects_enabled_state_with_stderr_diagnostic_before_disable test_quiesce_rejects_enabled_state_with_stderr_diagnostic_before_disable
+run_test live_upgrade_refuses_active_or_unqueryable_shared_instances test_live_upgrade_refuses_active_or_unqueryable_shared_instances
+run_test upgrade_locks_are_retained_and_released_for_the_selected_interface test_upgrade_locks_are_retained_and_released_for_the_selected_interface
+run_test upgrade_locks_refuse_held_wg1_lock_or_unsafe_setup_guard test_upgrade_locks_refuse_held_wg1_lock_or_unsafe_setup_guard
+run_test reentrant_upgrade_lock_acquisition_preserves_the_first_lease test_reentrant_upgrade_lock_acquisition_preserves_the_first_lease
+run_test upgrade_runtime_directory_rejects_an_unsafe_destdir_run_parent test_upgrade_runtime_directory_rejects_an_unsafe_destdir_run_parent
+run_test quiesce_partial_failure_keeps_timer_disabled_and_reports_it test_quiesce_partial_failure_keeps_timer_disabled_and_reports_it
+run_test main_quiesce_failure_after_preparation_keeps_timer_disabled_and_releases_locks test_main_quiesce_failure_after_preparation_keeps_timer_disabled_and_releases_locks
+run_test state_directory_creation_failure_aborts_layout test_state_directory_creation_failure_aborts_layout
+run_test setup_package_manifest_rejects_unexpected_entries_and_links test_setup_package_manifest_rejects_unexpected_entries_and_links
+run_test setup_upgrade_guard_is_published_before_package_and_retained_on_failure test_setup_upgrade_guard_is_published_before_package_and_retained_on_failure
+run_test dual_entrypoint_guards_publish_before_any_dependency_mutation test_dual_entrypoint_guards_publish_before_any_dependency_mutation
+run_test guarded_publication_failures_keep_runtime_guarded_and_stop_later_actions test_guarded_publication_failures_keep_runtime_guarded_and_stop_later_actions
+run_test installer_exit_cleanup_releases_locks_preserves_signal_and_does_not_leak_traps test_installer_exit_cleanup_releases_locks_preserves_signal_and_does_not_leak_traps
 run_test staged_enable_never_calls_host_systemctl test_staged_enable_never_calls_host_systemctl
 run_test safe_inert_environment_template test_safe_inert_environment_template
 run_test installer_declares_exact_mode_contract test_installer_declares_exact_mode_contract
