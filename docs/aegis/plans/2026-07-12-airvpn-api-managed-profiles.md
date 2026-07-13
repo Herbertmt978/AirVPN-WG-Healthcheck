@@ -202,8 +202,10 @@ same bounded server-name grammar and are applied before deterministic scoring.
 
 ```text
 wg-healthcheck <iface>
-wg-healthcheck provision <iface> --dry-run|--apply [--credential-fd N]
-wg-healthcheck adopt <iface> --dry-run|--apply [--credential-fd N]
+wg-healthcheck provision <iface> --dry-run [--credential-fd N] [--settings-fd N]
+wg-healthcheck provision <iface> --apply [--credential-fd N]
+wg-healthcheck adopt <iface> --dry-run [--credential-fd N] [--settings-fd N]
+wg-healthcheck adopt <iface> --apply [--credential-fd N]
 wg-healthcheck rotate <iface> --dry-run|--apply
 wg-healthcheck restore-static <iface> --dry-run|--apply
 wg-healthcheck reset-api-state <iface> --dry-run|--apply
@@ -211,8 +213,9 @@ wg-healthcheck status <iface> [--json]
 wg-healthcheck --version
 ```
 
-The descriptor override is accepted only by explicit root administrative dry-run/apply
-commands and carries a descriptor number, never a secret value.
+Credential descriptor overrides are accepted only by explicit root administrative
+provision/adopt dry-run/apply commands. The non-secret settings descriptor is accepted
+only on their dry-run forms. Both carry descriptor numbers, never values.
 
 ### Setup CLI
 
@@ -519,7 +522,9 @@ only legacy no-flag path.
 
 ## Task 9: Guided setup CLI and secret input boundary
 
-**Files:** create `bin/wg-healthcheck-setup`, `tests/test_setup.py`.
+**Files:** create `bin/wg-healthcheck-setup`, `tests/test_setup.py`; modify
+`bin/wg-healthcheck`, `libexec/wg-healthcheck-managed`, `tests/test_wg_healthcheck.sh`,
+and `tests/test_wg_managed_profiles.sh`.
 
 **Why:** both modes need a two-command installation path that remains secure for humans
 and automation.
@@ -528,7 +533,7 @@ and automation.
 
 **Verification:** `python3 -m unittest tests.test_setup.SetupCliTests -v`.
 
-- [ ] **Write RED tests.** Cover exactly two interactive modes, explicit noninteractive
+- [x] **Write RED tests.** Cover exactly two interactive modes, explicit noninteractive
   mode/safety/timer decisions, API requirements, rejection of secret argv/env values,
   `RLIMIT_CORE=0` before secret read, absolute root-owned mode-0600 credential-file input,
   hidden TTY input, fixed subprocess argv/no shell, and redacted dry-run output. Add
@@ -538,17 +543,28 @@ and automation.
   `test_all_requires_explicit_selection`, and
   `test_noninteractive_countries_requires_codes_or_all`. Cover reset-state requiring a
   safety flag, rejecting timer enable, and allowing an explicit static combined
-  remove-credential/reset-state purge while preserving the pre-managed snapshot.
-- [ ] **Verify RED.** Require failures because the setup executable is absent, not because
+  remove-credential/reset-state purge while preserving the pre-managed snapshot. Add a
+  strict dry-run-only `--settings-fd` matrix, canonical three-line settings-record tests,
+  distinct-number-and-inode and early-close/inheritance tests, proposed-settings selection,
+  complete prospective API-config validation on dry-run and apply, and
+  proof that invalid settings fail before state, lock, candidate, provider, or accounting
+  effects.
+- [x] **Verify RED.** Require failures because the setup executable is absent, not because
   TTY doubles or ownership fixtures are invalid.
-- [ ] **Implement minimal setup parser.** Use `argparse`, `getpass`, `resource.setrlimit`,
+- [x] **Implement minimal setup parser.** Use `argparse`, `getpass`, `resource.setrlimit`,
   `os.open` with non-follow flags, `fstat`, inherited private FDs, and fixed-list
   `subprocess.run(..., shell=False)`. Never accept `AIRVPN_API_KEY` or a secret option.
   Before reading a secret, call credential-free `airvpn-api list-countries`, render a
   numbered code/name/count menu, normalize one-or-many selections without duplicates, and
-  display that order is a soft preference inside a hard allowlist.
-- [ ] **Verify GREEN.** Run focused/full setup tests and `python3 -m py_compile
-  bin/wg-healthcheck-setup`.
+  display that order is a soft preference inside a hard allowlist. Add the root-owned,
+  mode-0600, maximum-256-byte `version/device/countries` descriptor defined in the design;
+  runtime accepts it only for provision/adopt dry runs, captures and closes it before all
+  effects, overlays only the proposed device/country policy in memory, and treats its
+  country record as the explicit policy. Validate every prospective API-mode cross-field
+  rule after the overlay and repeat that side-effect-free validation from installed config
+  immediately before apply effects.
+- [x] **Verify GREEN.** Run focused/full setup tests, both focused Bash descriptor gates,
+  both complete Bash suites, and `python3 -m py_compile bin/wg-healthcheck-setup`.
 - [ ] **Commit.** `git commit -m "Add guided dual-mode setup"`.
 
 ## Task 10: Setup application and credential lifecycle
@@ -569,13 +585,27 @@ API behavior.
   of unrelated valid health keys, pre-managed static restoration, and timer enable only
   after `healthy|recovered` status. Add `--reset-api-state` dry-run/apply orchestration,
   refusal while timer/worker/locks/pending are active, and explicit combined credential/
-  state purge without touching the pre-managed recovery snapshot.
-- [ ] **Verify RED.** Require state snapshots to show no mutation on each failed path.
-- [ ] **Implement minimal application flow.** Pipe the proposed secret to runtime dry run,
-  stage/sync/rename the credential with one bounded previous copy, call runtime apply,
-  restore on failure, atomically update only source/device/countries, and invoke systemd
-  enable only after reading a fresh successful private status file. Route state reset to
-  the runtime owner; setup first quiesces and proves the required inactive boundary.
+  state purge without touching the pre-managed recovery snapshot. Require every setup
+  apply that can change mode, device, countries, credential, or profile to stop the timer,
+  prove worker/interface/global locks and recovery artifacts inactive, remain quiesced
+  through rollback and verification, and re-enable only after fresh healthy/recovered
+  status. Cover the first-provision inert-static recovery profile and its adoption retry.
+- [ ] **Verify RED.** Require state snapshots to show no mutation on each failed path
+  except the specified post-durable-install first-provision outcome. That outcome retains
+  only the exact root-0600 profile with static source, disabled timer, restored config and
+  credential, and no candidate, journal, or safety artifact.
+- [ ] **Implement minimal application flow.** Validate the proposed credential and strict
+  device/country settings together through distinct private FDs. After success, atomically
+  persist device/countries while retaining `AIRVPN_PROFILE_SOURCE=static`, stage/sync/
+  rename the credential with one bounded previous copy, revalidate the installed key, and
+  call runtime apply without a settings override so its existing final source flip is the
+  activation point. Restore the exact previous config and credential on every failure;
+  when first provisioning already durably installed a profile, retain it as the specified
+  inert static recovery profile instead of deleting secret material. Before any apply
+  mutation, stop the timer and worker, prove interface/global locks and all recovery
+  artifacts inactive, and keep the boundary quiesced through rollback and verification.
+  Invoke systemd enable only after reading a fresh successful private status file. Route
+  state reset to the runtime owner under the same boundary.
 - [ ] **Verify GREEN.** Run focused/full setup tests and a staged temporary-directory
   integration with fixed command doubles.
 - [ ] **Commit.** `git commit -m "Make setup changes transactional"`.

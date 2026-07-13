@@ -165,10 +165,14 @@ recovery snapshot.
 ### Runtime commands
 
 - `wg-healthcheck <iface>` keeps its existing timer behavior.
-- `wg-healthcheck provision <iface> --dry-run|--apply` handles a missing profile. `--apply`
-  refuses to overwrite an existing path.
-- `wg-healthcheck adopt <iface> --dry-run|--apply` validates and explicitly adopts an
-  existing matching static profile. It refuses a changed device identity.
+- `wg-healthcheck provision <iface> --dry-run [--credential-fd N] [--settings-fd N]`
+  validates a missing-profile plan; `provision <iface> --apply [--credential-fd N]`
+  installs the profile and refuses to overwrite an existing path.
+- `wg-healthcheck adopt <iface> --dry-run [--credential-fd N] [--settings-fd N]`
+  validates a matching static profile; `adopt <iface> --apply [--credential-fd N]`
+  explicitly adopts it and refuses a changed device identity.
+- The setup-only `--settings-fd` is rejected on apply and every other command. It validates
+  proposed device/country settings before any persistent config change.
 - `wg-healthcheck rotate <iface> --dry-run|--apply` selects and validates an alternate;
   only `--apply` may run the managed transaction.
 - `wg-healthcheck status <iface> [--json]` prints a secret-free summary of mode, timer,
@@ -180,6 +184,31 @@ recovery snapshot.
 Mutating administrative commands require exactly one of `--dry-run` or `--apply` so an
 omitted safety flag cannot cause a network change. The systemd invocation remains the
 only argument-free recovery path.
+
+The setup-only settings descriptor is a root-owned mode-0600 regular file with both a
+different descriptor number and a different `(st_dev,st_ino)` identity from the credential
+descriptor. It contains exactly three newline-terminated ASCII records:
+
+```text
+version=1
+device=<validated device name>
+countries=ALL|<CODE>[ <CODE>...]
+```
+
+The record is capped at 256 bytes. Codes are unique uppercase two-letter values, `ALL`
+must be the sole token, and no unknown, repeated, NUL/control-bearing, unterminated, or
+non-canonical field is accepted. Runtime reads bounded bytes from the already-open FD,
+requires exact size and stable pre/post metadata, and closes both private descriptors on
+every invalid-settings path before any child, log helper, config/state/lock/provider work.
+It overlays only the in-memory dry-run device/country policy and treats that validated
+country record as the explicit policy instead of requiring an installed
+`AIRVPN_COUNTRIES` occurrence. Without an override, the exact installed occurrence rule
+remains. The installed config remains authoritative for apply.
+
+Dry-run validates the complete prospective API configuration after the in-memory overlay,
+including every API-only cross-field rule while the persisted source remains `static`.
+Apply repeats that side-effect-free prospective validation from installed settings before
+provider, profile, Docker, tunnel, or source-flip effects.
 
 ## Configuration contract
 
@@ -210,6 +239,12 @@ configurable because the credential must never be sent to an operator-supplied h
 
 - **No WireGuard profile:** only explicit `provision --apply` may install the canonical
   generated IPv4 profile. The ordinary timer path still fails closed on a missing profile.
+  If the durable install succeeds but API-source activation fails or the process crashes,
+  the root-only profile is intentionally retained as an inert static recovery profile;
+  setup never deletes an installed secret profile automatically. The timer remains
+  disabled, status reports static mode, and a retry follows the matching-profile adoption
+  path, making that exact profile the pre-managed recovery snapshot. This is the only
+  intentional exception to restoring profile absence.
 - **Existing matching static profile:** `adopt --dry-run` compares the generated interface
   private key and IPv4 address without mutation. `adopt --apply` creates
   `/etc/wireguard/<iface>.conf.pre-managed`, mode `0600`, enables API source in the health
@@ -339,6 +374,14 @@ the Python helper receives credential descriptor 3 and output descriptor 4, clos
 immediately after use, and writes only a redacted manifest to the separate status channel.
 No child process inherits either descriptor. `LimitCORE=0` protects systemd runs and manual
 setup/provision paths set the equivalent process core limit before reading any secret.
+
+For first setup validation, the guide passes both the proposed credential and the strict
+non-secret settings record through distinct private descriptors. After a successful dry
+run, setup atomically persists device/country settings while source remains `static`,
+installs and revalidates the credential, and then calls runtime apply without a settings
+override. Runtime's existing final source flip is the activation point. Any failure
+restores the exact prior config and credential; every crash before apply therefore remains
+in inert static mode.
 
 ## Managed rotation transaction
 

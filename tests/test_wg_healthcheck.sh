@@ -215,10 +215,14 @@ test_runtime_cli_preserves_legacy_version_and_rejects_unknown_forms() {
   parse_cli --version || return 1
   assert_eq version "$COMMAND" "--version must remain a standalone command" || return 1
   usage_text="$(usage 2>&1)"
-  assert_contains 'wg-healthcheck provision <iface> --dry-run|--apply [--credential-fd N]' "$usage_text" \
-    "usage must document the provision descriptor override" || return 1
-  assert_contains 'wg-healthcheck adopt <iface> --dry-run|--apply [--credential-fd N]' "$usage_text" \
-    "usage must document the adopt descriptor override" || return 1
+  assert_contains 'wg-healthcheck provision <iface> --dry-run [--credential-fd N] [--settings-fd N]' "$usage_text" \
+    "usage must document the provision dry-run settings override" || return 1
+  assert_contains 'wg-healthcheck provision <iface> --apply [--credential-fd N]' "$usage_text" \
+    "usage must keep provision apply credential-only" || return 1
+  assert_contains 'wg-healthcheck adopt <iface> --dry-run [--credential-fd N] [--settings-fd N]' "$usage_text" \
+    "usage must document the adopt dry-run settings override" || return 1
+  assert_contains 'wg-healthcheck adopt <iface> --apply [--credential-fd N]' "$usage_text" \
+    "usage must keep adopt apply credential-only" || return 1
 
   for payload in '' '--version wg0' 'unknown wg0 --dry-run' 'wg0 extra' \
       'status --bad' 'rotate bad/interface --dry-run'; do
@@ -258,6 +262,11 @@ test_mutating_cli_requires_exactly_one_mode_and_scopes_options() {
   assert_eq 9 "$CREDENTIAL_FD" "provision may accept a descriptor number" || return 1
   parse_cli adopt wg0 --apply --credential-fd 10 || return 1
   assert_eq 10 "$CREDENTIAL_FD" "adopt may accept a descriptor number" || return 1
+  parse_cli provision wg0 --credential-fd 9 --settings-fd 10 --dry-run || return 1
+  assert_eq 10 "$SETTINGS_FD" "provision dry-run may accept proposed settings" || return 1
+  assert_eq 9 "$CREDENTIAL_FD" "proposed settings must preserve the credential descriptor" || return 1
+  parse_cli adopt wg0 --dry-run --settings-fd 11 --credential-fd 10 || return 1
+  assert_eq 11 "$SETTINGS_FD" "adopt dry-run may accept proposed settings in either option order" || return 1
   for payload in 'rotate wg0 --dry-run --credential-fd 9' \
       'restore-static wg0 --apply --credential-fd 9' \
       'provision wg0 --dry-run --credential-fd 2' \
@@ -271,6 +280,24 @@ test_mutating_cli_requires_exactly_one_mode_and_scopes_options() {
     set +e
     assert_eq 64 "$rc" "credential descriptor grammar must reject '$payload'" || return 1
   done
+  for payload in 'rotate wg0 --dry-run --settings-fd 9' \
+      'restore-static wg0 --dry-run --settings-fd 9' \
+      'provision wg0 --dry-run --settings-fd 9' \
+      'provision wg0 --apply --settings-fd 9' \
+      'adopt wg0 --apply --settings-fd 9' \
+      'provision wg0 --dry-run --settings-fd 2' \
+      'provision wg0 --dry-run --settings-fd 09' \
+      'adopt wg0 --dry-run --settings-fd nope' \
+      'provision wg0 --dry-run --settings-fd 10 --settings-fd 11' \
+      'provision wg0 --dry-run --credential-fd 10 --settings-fd 10' \
+      'provision wg0 --dry-run --settings-fd 10 --credential-fd 10'; do
+    read -r -a argv <<< "$payload"
+    set +e
+    parse_cli "${argv[@]}" >/dev/null 2>&1
+    rc=$?
+    set +e
+    assert_eq 64 "$rc" "settings descriptor grammar must reject '$payload'" || return 1
+  done
 
   parse_cli status wg0 || return 1
   assert_eq 0 "$STATUS_JSON" "status defaults to text" || return 1
@@ -278,6 +305,307 @@ test_mutating_cli_requires_exactly_one_mode_and_scopes_options() {
   assert_eq 1 "$STATUS_JSON" "status alone may request JSON" || return 1
   set +e; parse_cli status wg0 --dry-run >/dev/null 2>&1; rc=$?; set +e
   assert_eq 64 "$rc" "status must reject mutation flags"
+}
+
+test_settings_descriptor_is_exact_stable_private_and_canonical() {
+  local case_name metadata_case payload rc settings_fd credential_fd metadata_calls
+  source "$SCRIPT"
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  printf 'credential sentinel\n' > "$TEST_TMP/credential"
+  COMMAND=provision
+  ACTION_MODE=dry-run
+
+  # Unit fixtures run as both root and a normal user. Preserve the real descriptor
+  # identity/size while replacing only the owner field so this test exercises the
+  # production parser rather than depending on the test runner's uid.
+  if [[ "$(id -u)" != 0 ]]; then
+    settings_fd_metadata() {
+      local output_variable="${1:?}" descriptor="${2:?}" value
+      value="$(stat -Lc '600|%s|%d|%i|%y|%z|regular file' -- \
+        "/proc/$BASHPID/fd/$descriptor" {descriptor}<&- 2>/dev/null)" || return 1
+      printf -v "$output_variable" '0|%s' "$value"
+    }
+  fi
+
+  payload=$'version=1\ndevice=Device One\ncountries=GB NL\n'
+  printf '%s' "$payload" > "$TEST_TMP/settings"
+  chmod 600 -- "$TEST_TMP/settings"
+  exec 3<"$TEST_TMP/credential"
+  exec 4<"$TEST_TMP/settings"
+  credential_fd=3
+  settings_fd=4
+  CREDENTIAL_FD="$credential_fd"
+  SETTINGS_FD="$settings_fd"
+  capture_cli_settings_fd || return 1
+  assert_eq '' "$SETTINGS_FD" "capture must close and clear the original settings descriptor" || return 1
+  assert_eq 1 "$PROPOSED_SETTINGS_READY" "valid settings must arm the in-memory overlay" || return 1
+  assert_eq 'Device One' "$PROPOSED_AIRVPN_DEVICE" "device must be captured exactly" || return 1
+  assert_eq 'GB NL' "$PROPOSED_AIRVPN_COUNTRIES" "ordered country policy must be captured exactly" || return 1
+  [[ ! -e "/proc/$BASHPID/fd/$settings_fd" ]] || fail "settings descriptor must be closed after capture" || return 1
+  IFS= read -r -u "$credential_fd" _ || fail "capture must not consume the credential descriptor" || return 1
+  exec {credential_fd}<&-
+
+  printf '%s' $'version=1\ndevice=Device One\ncountries=ALL\n' > "$TEST_TMP/anonymous-settings"
+  chmod 600 -- "$TEST_TMP/anonymous-settings"
+  exec {credential_fd}<"$TEST_TMP/credential"
+  exec {settings_fd}<"$TEST_TMP/anonymous-settings"
+  rm -f -- "$TEST_TMP/anonymous-settings"
+  CREDENTIAL_FD="$credential_fd"
+  SETTINGS_FD="$settings_fd"
+  capture_cli_settings_fd || return 1
+  assert_eq '' "$PROPOSED_AIRVPN_COUNTRIES" \
+    "ALL must map to the runtime's explicit empty all-country policy" || return 1
+  [[ ! -e "/proc/$BASHPID/fd/$settings_fd" ]] ||
+    fail "capture must support and close an unlinked private temporary file" || return 1
+  exec {credential_fd}<&-
+
+  for case_name in missing_newline extra_field bad_version empty_device long_device \
+      bad_device lower_country duplicate_country mixed_all double_space too_many_countries; do
+    case "$case_name" in
+      missing_newline) payload=$'version=1\ndevice=default\ncountries=GB' ;;
+      extra_field) payload=$'version=1\ndevice=default\ncountries=GB\nextra=x\n' ;;
+      bad_version) payload=$'version=01\ndevice=default\ncountries=GB\n' ;;
+      empty_device) payload=$'version=1\ndevice=\ncountries=GB\n' ;;
+      long_device) payload="version=1"$'\n'"device=$(printf '%065d' 0)"$'\n'"countries=GB"$'\n' ;;
+      bad_device) payload=$'version=1\ndevice=-default\ncountries=GB\n' ;;
+      lower_country) payload=$'version=1\ndevice=default\ncountries=gb\n' ;;
+      duplicate_country) payload=$'version=1\ndevice=default\ncountries=GB GB\n' ;;
+      mixed_all) payload=$'version=1\ndevice=default\ncountries=ALL GB\n' ;;
+      double_space) payload=$'version=1\ndevice=default\ncountries=GB  NL\n' ;;
+      too_many_countries) payload=$'version=1\ndevice=default\ncountries=AA AB AC AD AE AF AG AH AI AJ AK AL AM AN AO AP AQ AR AS AT AU AV AW AX AY AZ BA BB BC BD BE BF BG\n' ;;
+    esac
+    printf '%s' "$payload" > "$TEST_TMP/settings"
+    exec {credential_fd}<"$TEST_TMP/credential"
+    exec {settings_fd}<"$TEST_TMP/settings"
+    SETTINGS_FD="$settings_fd"
+    CREDENTIAL_FD="$credential_fd"
+    PROPOSED_SETTINGS_READY=0
+    set +e; capture_cli_settings_fd >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$case_name settings record must fail closed" || return 1
+    assert_eq '' "$SETTINGS_FD" "$case_name refusal must still close the descriptor" || return 1
+    assert_eq 0 "$PROPOSED_SETTINGS_READY" "$case_name refusal must not arm an overlay" || return 1
+    [[ ! -e "/proc/$BASHPID/fd/$settings_fd" ]] || fail "$case_name descriptor leaked" || return 1
+    [[ ! -e "/proc/$BASHPID/fd/$credential_fd" ]] || fail "$case_name credential descriptor leaked" || return 1
+  done
+
+  payload=$'version=1\ndevice=default\ncountries=ALL\n'
+  printf '%s' "$payload" > "$TEST_TMP/settings"
+  for metadata_case in wrong_owner wrong_mode oversized nonregular; do
+    exec {credential_fd}<"$TEST_TMP/credential"
+    exec {settings_fd}<"$TEST_TMP/settings"
+    SETTINGS_FD="$settings_fd"
+    CREDENTIAL_FD="$credential_fd"
+    SETTINGS_METADATA_CASE="$metadata_case"
+    SETTINGS_METADATA_PROBE_FD="$settings_fd"
+    settings_fd_metadata() {
+      local output_variable="${1:?}" descriptor="${2:?}" base owner=0 mode=600 kind='regular file'
+      base="$(stat -Lc '%s|%d|%i' -- "/proc/$BASHPID/fd/$descriptor" {descriptor}<&-)" || return 1
+      if [[ "$descriptor" == "$SETTINGS_METADATA_PROBE_FD" ]]; then
+        case "$SETTINGS_METADATA_CASE" in
+          wrong_owner) owner=1 ;;
+          wrong_mode) mode=640 ;;
+          oversized) base="257|${base#*|}" ;;
+          nonregular) kind='fifo' ;;
+        esac
+      fi
+      printf -v "$output_variable" '%s|%s|%s|%s|%s|%s' \
+        "$owner" "$mode" "$base" '2026-07-13 12:00:00.000000001 +0000' \
+        '2026-07-13 12:00:00.000000001 +0000' "$kind"
+    }
+    set +e; capture_cli_settings_fd >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$metadata_case settings metadata must fail closed" || return 1
+    [[ ! -e "/proc/$BASHPID/fd/$credential_fd" && ! -e "/proc/$BASHPID/fd/$settings_fd" ]] ||
+      fail "$metadata_case refusal must close both private descriptors" || return 1
+  done
+
+  printf '%s' $'version=1\ndevice=default\ncountries=ALL\n' > "$TEST_TMP/settings"
+  exec {credential_fd}<"$TEST_TMP/credential"
+  exec {settings_fd}<"$TEST_TMP/settings"
+  SETTINGS_FD="$settings_fd"
+  CREDENTIAL_FD="$credential_fd"
+  metadata_calls=0
+  settings_fd_metadata() {
+    local output_variable="${1:?}" descriptor="${2:?}" value
+    metadata_calls=$((metadata_calls + 1))
+    value="$(stat -Lc '0|600|%s|%d|%i' -- \
+      "/proc/$BASHPID/fd/$descriptor" {descriptor}<&-)"
+    value+='|2026-07-13 12:00:00.000000001 +0000|2026-07-13 12:00:00.000000001 +0000|regular file'
+    if (( metadata_calls == 4 )); then
+      value="${value/12:00:00.000000001 +0000|regular file/12:00:00.000000002 +0000|regular file}"
+    fi
+    printf -v "$output_variable" '%s' "$value"
+  }
+  set +e; capture_cli_settings_fd >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "metadata drift during capture must fail closed" || return 1
+  assert_eq '' "$SETTINGS_FD" "metadata drift must still close the settings descriptor" || return 1
+
+  settings_fd_metadata() {
+    local output_variable="${1:?}" descriptor="${2:?}" value
+    value="$(stat -Lc '0|600|%s|%d|%i|%Y|%Z|regular file' -- \
+      "/proc/$BASHPID/fd/$descriptor" {descriptor}<&-)" || return 1
+    printf -v "$output_variable" '%s' "$value"
+  }
+  exec {credential_fd}<"$TEST_TMP/settings"
+  exec {settings_fd}<"$TEST_TMP/settings"
+  CREDENTIAL_FD="$credential_fd"
+  SETTINGS_FD="$settings_fd"
+  set +e; capture_cli_settings_fd >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "different descriptor numbers for one inode must be rejected" || return 1
+  [[ ! -e "/proc/$BASHPID/fd/$credential_fd" && ! -e "/proc/$BASHPID/fd/$settings_fd" ]] ||
+    fail "same-inode refusal must close both descriptors"
+}
+
+test_main_captures_settings_before_context_and_overlays_only_memory() {
+  local credential_fd settings_fd rc before_cfg events leaked=''
+  new_main_fixture
+  printf '%s\n' \
+    'MAX_AGE=180' \
+    'AIRVPN_PROFILE_SOURCE=static' \
+    'AIRVPN_DEVICE=Installed-Device' \
+    'AIRVPN_COUNTRIES=GB' > "$CFG"
+  before_cfg="$(<"$CFG")"
+  printf 'credential sentinel\n' > "$TEST_TMP/credential"
+  printf '%s' $'version=1\ndevice=Proposed Device\ncountries=NZ AU\n' > "$TEST_TMP/settings"
+  chmod 600 -- "$TEST_TMP/settings"
+  : > "$TEST_TMP/settings-events"
+  events="$TEST_TMP/settings-events"
+  settings_fd_metadata() {
+    local output_variable="${1:?}" descriptor="${2:?}" value
+    value="$(stat -Lc '0|600|%s|%d|%i|%Y|%Z|regular file' -- \
+      "/proc/$BASHPID/fd/$descriptor" {descriptor}<&- 2>/dev/null)" || return 1
+    printf -v "$output_variable" '%s' "$value"
+  }
+  load_managed_module() { :; }
+  managed_dispatch_command() {
+    [[ ! "$TEST_TMP/settings" -ef "/proc/$BASHPID/fd/$SETTINGS_PROBE_FD" ]] || return 91
+    printf 'dispatch:%s:%s\n' "$AIRVPN_DEVICE" "$AIRVPN_COUNTRIES" >> "$events"
+  }
+  eval "$(declare -f load_command_context | sed '1s/load_command_context/original_load_command_context/')"
+  load_command_context() {
+    [[ ! "$TEST_TMP/settings" -ef "/proc/$BASHPID/fd/$SETTINGS_PROBE_FD" ]] || return 92
+    [[ ! "$TEST_TMP/credential" -ef "/proc/$BASHPID/fd/$CREDENTIAL_PROBE_FD" ]] || return 93
+    original_load_command_context || return 1
+    printf 'context:%s:%s\n' "$AIRVPN_DEVICE" "$AIRVPN_COUNTRIES" >> "$events"
+  }
+
+  exec {credential_fd}<"$TEST_TMP/credential"
+  exec {settings_fd}<"$TEST_TMP/settings"
+  CREDENTIAL_PROBE_FD="$credential_fd"
+  SETTINGS_PROBE_FD="$settings_fd"
+  main provision wg0 --dry-run --credential-fd "$credential_fd" \
+    --settings-fd "$settings_fd" || return 1
+  assert_eq $'context:Proposed Device:NZ AU\ndispatch:Proposed Device:NZ AU' "$(<"$events")" \
+    "proposed settings must be overlaid after parsing and before managed dry-run" || return 1
+  assert_eq "$before_cfg" "$(<"$CFG")" "settings overlay must never rewrite installed config" || return 1
+  [[ ! "$TEST_TMP/settings" -ef "/proc/$BASHPID/fd/$settings_fd" ]] ||
+    fail "settings descriptor reached a downstream child" || return 1
+
+  : > "$events"
+  printf '%s' $'version=1\ndevice=default\ncountries=gb\n' > "$TEST_TMP/settings"
+  exec {credential_fd}<"$TEST_TMP/credential"
+  exec {settings_fd}<"$TEST_TMP/settings"
+  CREDENTIAL_PROBE_FD="$credential_fd"
+  SETTINGS_PROBE_FD="$settings_fd"
+  set +e
+  main provision wg0 --dry-run --credential-fd "$credential_fd" \
+    --settings-fd "$settings_fd" >/dev/null 2>&1
+  rc=$?
+  set +e
+  assert_eq 1 "$rc" "invalid proposed settings must fail before context" || return 1
+  assert_eq '' "$(<"$events")" "invalid settings must precede config, state, lock, and provider effects" || return 1
+  set +e; IFS= read -r -u "$credential_fd" leaked 2>/dev/null; rc=$?; set +e
+  assert_eq 1 "$rc" "invalid settings must close the credential descriptor too" || return 1
+  [[ ! -e "/proc/$BASHPID/fd/$settings_fd" ]] || fail "invalid settings descriptor leaked"
+}
+
+test_main_sanitizes_before_settings_metadata_children() {
+  local credential_fd settings_fd rc events marker
+  source "$SCRIPT"
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  events="$TEST_TMP/events"
+  marker="$TEST_TMP/hostile-stat"
+  : > "$events"
+  printf 'credential sentinel\n' > "$TEST_TMP/credential"
+  printf '%s' $'version=1\ndevice=default\ncountries=GB\n' > "$TEST_TMP/settings"
+  chmod 600 -- "$TEST_TMP/settings"
+
+  eval "$(declare -f sanitize_process_environment | sed \
+    '1s/sanitize_process_environment/original_sanitize_process_environment/')"
+  sanitize_process_environment() {
+    printf 'sanitize\n' >> "$events"
+    if ! /bin/bash -c '
+      [[ ! -e "/proc/self/fd/$1" && ! -e "/proc/self/fd/$2" ]]
+    ' bash "$credential_fd" "$settings_fd"; then
+      printf 'private descriptor reached sanitizer child\n' >> "$marker"
+    fi
+    original_sanitize_process_environment
+  }
+  eval "$(declare -f capture_cli_settings_fd | sed \
+    '1s/capture_cli_settings_fd/original_capture_cli_settings_fd/')"
+  capture_cli_settings_fd() {
+    printf 'capture\n' >> "$events"
+    [[ "$PATH" == /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin ]] || return 97
+    [[ -z "${AIRVPN_API_KEY+x}" && -z "${LD_LIBRARY_PATH+x}" ]] || return 98
+    original_capture_cli_settings_fd
+  }
+  load_command_context() { return 1; }
+  stat() { printf 'hostile stat executed\n' >> "$marker"; return 99; }
+
+  exec {credential_fd}<"$TEST_TMP/credential"
+  exec {settings_fd}<"$TEST_TMP/settings"
+  PATH="$TEST_TMP"
+  AIRVPN_API_KEY='environment sentinel'
+  LD_LIBRARY_PATH="$TEST_TMP"
+  export PATH AIRVPN_API_KEY LD_LIBRARY_PATH
+  set +e
+  main provision wg0 --dry-run --credential-fd "$credential_fd" \
+    --settings-fd "$settings_fd" >/dev/null 2>&1
+  rc=$?
+  set +e
+
+  assert_eq 1 "$rc" "the post-capture context refusal must remain visible" || return 1
+  assert_eq $'sanitize\ncapture' "$(<"$events")" \
+    "core suppression must be followed by environment sanitization before settings capture" || return 1
+  [[ ! -e "$marker" ]] || fail "settings metadata must not resolve a hostile stat function" || return 1
+  [[ -z "${AIRVPN_API_KEY+x}" && -z "${LD_LIBRARY_PATH+x}" ]] ||
+    fail "settings metadata children must receive no inherited secret or loader environment" || return 1
+  [[ ! -e "/proc/$BASHPID/fd/$credential_fd" && ! -e "/proc/$BASHPID/fd/$settings_fd" ]] ||
+    fail "failed post-capture context must close both private descriptors"
+}
+
+test_second_sanitizer_failure_closes_restored_credential_fd() {
+  local credential_fd rc read_rc leaked='' sanitizer_calls=0
+  source "$SCRIPT"
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  printf 'credential sentinel\n' > "$TEST_TMP/credential"
+
+  eval "$(declare -f sanitize_process_environment | sed \
+    '1s/sanitize_process_environment/original_sanitize_process_environment/')"
+  sanitize_process_environment() {
+    sanitizer_calls=$((sanitizer_calls + 1))
+    (( sanitizer_calls == 1 )) || return 88
+    original_sanitize_process_environment
+  }
+
+  exec {credential_fd}<"$TEST_TMP/credential"
+  set +e
+  main provision wg0 --dry-run --credential-fd "$credential_fd" >/dev/null 2>&1
+  rc=$?
+  set +e
+
+  assert_eq 1 "$rc" "second sanitizer failure must fail closed" || return 1
+  assert_eq 2 "$sanitizer_calls" "context loading must exercise the second sanitizer" || return 1
+  [[ ! -e "/proc/$BASHPID/fd/$credential_fd" ]] ||
+    fail "restored credential descriptor leaked after second sanitizer failure" || return 1
+  set +e
+  IFS= read -r -u "$credential_fd" leaked 2>/dev/null
+  read_rc=$?
+  set +e
+  assert_eq 1 "$read_rc" "restored credential descriptor must be unreadable" || return 1
+  assert_eq '' "$CREDENTIAL_FD" "failed main path must clear credential ownership"
 }
 
 test_runtime_defaults_and_fixed_paths_ignore_environment() {
@@ -1250,6 +1578,9 @@ test_explicit_lock_contention_is_busy_and_closes_credential_descriptors() {
       write_status() { printf 'unexpected-status\n' >> "$TEST_TMP/events"; return 1; }
       argv=("$command" wg0 --dry-run)
       if [[ "$command" == provision || "$command" == adopt ]]; then
+        printf '%s\n' \
+          'AIRVPN_DEVICE=Device-One' \
+          'AIRVPN_COUNTRIES=GB' >> "$CFG"
         printf 'administrative-fd-sentinel\n' > "$TEST_TMP/credential"
         exec {credential_fd}<"$TEST_TMP/credential"
         argv+=(--credential-fd "$credential_fd")
@@ -1330,7 +1661,10 @@ test_load_command_context_allows_profile_independent_commands_to_lack_profile() 
   WG_CONF="$TEST_TMP/wg0.conf"
   STATE_DIR="$TEST_TMP/state"
   LOCK="$STATE_DIR/wg0.lock"
-  printf 'AIRVPN_PROFILE_SOURCE=static\n' > "$CFG"
+  printf '%s\n' \
+    'AIRVPN_PROFILE_SOURCE=static' \
+    'AIRVPN_DEVICE=Device-One' \
+    'AIRVPN_COUNTRIES=GB' > "$CFG"
   derive_fixed_runtime_paths() { :; }
   sanitize_process_environment() { :; }
   is_root() { return 0; }
@@ -1367,6 +1701,8 @@ test_load_command_context_allows_profile_independent_commands_to_lack_profile() 
 test_static_no_marker_never_touches_credential_provider_or_managed_code() {
   local rc calls
   new_main_fixture
+  assert_eq 'MAX_AGE=180' "$(<"$CFG")" \
+    "legacy static mode must remain valid without API device or country keys" || return 1
   : > "$TEST_TMP/boundary-calls"
   validate_secure_file() { printf 'file:%s\n' "$1" >> "$TEST_TMP/boundary-calls"; return 0; }
   validate_secure_executable() { printf 'provider:%s\n' "$1" >> "$TEST_TMP/boundary-calls"; return 1; }
@@ -1746,7 +2082,7 @@ test_main_reconciles_pending_state_before_normal_health() {
 }
 
 test_interruption_handler_retains_marker_and_installs_traps() {
-  local status traps
+  local traps
   new_recovery_fixture
   declare -F record_rotation_interruption >/dev/null || fail "interruption recorder is missing" || return 1
   declare -F install_signal_handlers >/dev/null || fail "signal handler installer is missing" || return 1
@@ -1754,12 +2090,50 @@ test_interruption_handler_retains_marker_and_installs_traps() {
 
   record_rotation_interruption TERM
   install_signal_handlers
-  status="$(file_text "$STATUS_FILE")"
   traps="$(trap -p TERM HUP INT)"
 
   [[ -f "$ROTATION_PENDING" ]] || fail "interruption must retain the transaction marker" || return 1
-  assert_contains 'reason=rotation_interrupted_TERM' "$status" "interruption status must be explicit" || return 1
+  assert_file_absent "$STATUS_FILE" "the child-free signal path must not attempt a status write" || return 1
   assert_contains record_rotation_interruption "$traps" "TERM/HUP/INT traps must use the interruption recorder"
+}
+
+test_interruption_handler_is_child_free_with_untracked_private_descriptors() {
+  local credential_fd settings_fd key_fd candidate_fd
+  new_recovery_fixture
+  printf '192.0.2.10:1637\n' > "$ROTATION_PENDING"
+  printf 'credential sentinel\n' > "$TEST_TMP/credential"
+  printf 'settings sentinel\n' > "$TEST_TMP/settings"
+  printf 'credential duplicate sentinel\n' > "$TEST_TMP/key-duplicate"
+  printf 'private profile sentinel\n' > "$TEST_TMP/candidate"
+  : > "$TEST_TMP/private-fd-leak"
+  exec {credential_fd}<"$TEST_TMP/credential"
+  exec {settings_fd}<"$TEST_TMP/settings"
+  exec {key_fd}<"$TEST_TMP/key-duplicate"
+  exec {candidate_fd}<"$TEST_TMP/candidate"
+  CREDENTIAL_FD="$credential_fd"
+  SETTINGS_FD="$settings_fd"
+  write_status() {
+    (
+      if [[ -e "/proc/$BASHPID/fd/$credential_fd" ||
+            -e "/proc/$BASHPID/fd/$settings_fd" ||
+            -e "/proc/$BASHPID/fd/$key_fd" ||
+            -e "/proc/$BASHPID/fd/$candidate_fd" ]]; then
+        printf 'private descriptor inherited\n' >> "$TEST_TMP/private-fd-leak"
+      fi
+      printf 'status helper called\n' >> "$TEST_TMP/private-fd-leak"
+    )
+  }
+
+  record_rotation_interruption TERM
+
+  assert_eq '' "$(<"$TEST_TMP/private-fd-leak")" \
+    "signal handling must launch no helper while any private descriptor can exist" || return 1
+  assert_eq '' "$CREDENTIAL_FD" "signal handling must clear the credential descriptor owner" || return 1
+  assert_eq '' "$SETTINGS_FD" "signal handling must clear the settings descriptor owner" || return 1
+  [[ ! -e "/proc/$BASHPID/fd/$credential_fd" && ! -e "/proc/$BASHPID/fd/$settings_fd" ]] ||
+    fail "signal handling must close both tracked private descriptors in the parent" || return 1
+  exec {key_fd}<&-
+  exec {candidate_fd}<&-
 }
 
 test_durability_barriers_cover_transaction_and_cleanup_order() {
@@ -2387,6 +2761,10 @@ tests=(
   test_sourceable_without_executing_or_enabling_errexit
   test_runtime_cli_preserves_legacy_version_and_rejects_unknown_forms
   test_mutating_cli_requires_exactly_one_mode_and_scopes_options
+  test_settings_descriptor_is_exact_stable_private_and_canonical
+  test_main_captures_settings_before_context_and_overlays_only_memory
+  test_main_sanitizes_before_settings_metadata_children
+  test_second_sanitizer_failure_closes_restored_credential_fd
   test_runtime_defaults_and_fixed_paths_ignore_environment
   test_process_environment_is_sanitized_for_child_commands
   test_hostile_internal_paths_cannot_redirect_main_or_truncate_lock_target
@@ -2439,6 +2817,7 @@ tests=(
   test_pending_marker_prevents_backup_overwrite
   test_main_reconciles_pending_state_before_normal_health
   test_interruption_handler_retains_marker_and_installs_traps
+  test_interruption_handler_is_child_free_with_untracked_private_descriptors
   test_durability_barriers_cover_transaction_and_cleanup_order
   test_backup_barrier_failure_prevents_unmarked_mutation
   test_marker_barrier_failure_retains_recovery_state

@@ -3356,17 +3356,18 @@ managed_profile_attempt_downstream() {
 
 managed_profile_admin_config_is_valid() {
   local line country_keys=0
-  managed_device_name_is_valid "$AIRVPN_DEVICE" || return 1
-  case "$AIRVPN_WG_PORT" in 1637|47107|51820) ;; *) return 1 ;; esac
+  declare -F validate_prospective_api_settings >/dev/null || return 1
+  validate_prospective_api_settings || return 1
   validate_secure_parent_directory "$CFG" "health-check configuration directory" 700 ||
     return 1
   [[ -f "$CFG" && ! -L "$CFG" ]] || return 1
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^[[:space:]]*AIRVPN_COUNTRIES[[:space:]]*= ]] &&
-      country_keys=$((country_keys + 1))
-  done < "$CFG"
-  (( country_keys == 1 )) || return 1
-  normalize_api_countries
+  if [[ "${PROPOSED_SETTINGS_READY:-0}" != 1 ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" =~ ^[[:space:]]*AIRVPN_COUNTRIES[[:space:]]*= ]] &&
+        country_keys=$((country_keys + 1))
+    done < "$CFG"
+    (( country_keys == 1 )) || return 1
+  fi
 }
 
 managed_profile_attempt_precheck() {

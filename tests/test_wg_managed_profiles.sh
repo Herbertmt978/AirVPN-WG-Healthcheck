@@ -4799,7 +4799,8 @@ test_provision_and_adopt_commands_run_authenticated_redacted_flows() {
   : > "$TEST_TMP/provider-calls"
   managed_generate_candidate_provider() {
     local fd="${1:?}"
-    printf 'provider:%s:%s\n' "$MANAGED_PROFILE_OPERATION" "$fd" >> "$TEST_TMP/provider-calls"
+    printf 'provider:%s:%s:%s:%s\n' "$MANAGED_PROFILE_OPERATION" "$fd" \
+      "$AIRVPN_DEVICE" "$AIRVPN_COUNTRIES" >> "$TEST_TMP/provider-calls"
     write_managed_candidate_fixture
     MANAGED_PROFILE_SERVER=Candidate
     MANAGED_PROFILE_ENDPOINT=198.51.100.20:1637
@@ -4815,6 +4816,8 @@ test_provision_and_adopt_commands_run_authenticated_redacted_flows() {
   printf 'descriptor-only-test-record\n' > "$TEST_TMP/credential"
 
   rm -f -- "$WG_CONF" "$MANAGED_CANDIDATE"
+  AIRVPN_DEVICE='Proposed Device'
+  AIRVPN_COUNTRIES='NZ AU'
   exec {credential_fd}<"$TEST_TMP/credential"
   output="$(managed_command_provision dry-run "$credential_fd")" || return 1
   assert_eq $'generated\tCandidate\t198.51.100.20:1637\tpinned=1' "$output" \
@@ -4823,7 +4826,17 @@ test_provision_and_adopt_commands_run_authenticated_redacted_flows() {
     fail "provision dry-run must leave no profile or candidate" || return 1
   assert_contains 'AIRVPN_PROFILE_SOURCE=static' "$(<"$CFG")" \
     "provision dry-run must not change mode" || return 1
+  assert_contains 'provider:provision:' "$(<"$TEST_TMP/provider-calls")" \
+    "provision dry-run must reach the managed owner" || return 1
+  assert_contains ':Proposed Device:NZ AU' "$(<"$TEST_TMP/provider-calls")" \
+    "managed selection must consume the proposed in-memory device/country overlay" || return 1
+  assert_contains 'AIRVPN_DEVICE=Device-One' "$(<"$CFG")" \
+    "proposed device must never persist during validation" || return 1
+  assert_contains 'AIRVPN_COUNTRIES=GB NL' "$(<"$CFG")" \
+    "proposed country policy must never persist during validation" || return 1
 
+  AIRVPN_DEVICE=Device-One
+  AIRVPN_COUNTRIES='GB NL'
   exec {credential_fd}<"$AIRVPN_API_KEY_FILE"
   output="$(managed_command_provision apply "$credential_fd")" || return 1
   assert_contains 'generated' "$output" "provision apply may print only a redacted manifest" || return 1
@@ -6100,6 +6113,47 @@ test_linux_managed_journal_real_owner_mode_and_symlink_semantics() {
   assert_eq 1 "$rc" "real journal symlink must fail"
 }
 
+test_proposed_settings_replace_only_country_presence_and_validate_api_cross_fields() {
+  local rc before
+  source_managed_contract || return 1
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  CFG="$TEST_TMP/healthcheck.d/wg0.conf"
+  mkdir -p -- "${CFG%/*}"
+  chmod 700 -- "${CFG%/*}"
+  printf '%s\n' \
+    'AIRVPN_PROFILE_SOURCE=static' \
+    'AIRVPN_DEVICE=Installed-Device' > "$CFG"
+  chmod 600 -- "$CFG"
+  before="$(<"$CFG")"
+  AIRVPN_DEVICE='Proposed Device'
+  AIRVPN_COUNTRIES='NZ AU'
+  AIRVPN_WG_PORT=1637
+  QBITTORRENT_CONTAINER=qbittorrent
+  owner_mode() { printf '0:%s\n' "$(stat -c '%a' -- "$1")"; }
+  log() { :; }
+
+  PROPOSED_SETTINGS_READY=0
+  set +e; managed_profile_admin_config_is_valid >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "without an override the installed config must contain exactly one country key" || return 1
+  PROPOSED_SETTINGS_READY=1
+  managed_profile_admin_config_is_valid || return 1
+  assert_eq "$before" "$(<"$CFG")" "prospective validation must not rewrite installed settings" || return 1
+
+  AIRVPN_WG_PORT=443
+  set +e; managed_profile_admin_config_is_valid >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "prospective validation must enforce the managed port set" || return 1
+  AIRVPN_WG_PORT=1637
+  QBITTORRENT_CONTAINER="$(printf '%064d' 0)"
+  set +e; managed_profile_admin_config_is_valid >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "prospective validation must reject an ambiguous immutable container ID" || return 1
+  QBITTORRENT_CONTAINER=qbittorrent
+  AIRVPN_DEVICE='-invalid'
+  set +e; managed_profile_admin_config_is_valid >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "prospective validation must enforce device grammar" || return 1
+  assert_eq "$before" "$(<"$CFG")" "every prospective refusal must remain side-effect free"
+}
+
 tests=(
   test_managed_module_exports_minimal_task4_contract
   test_managed_module_validation_requires_root_owned_0644_trusted_source
@@ -6221,6 +6275,7 @@ tests=(
   test_managed_dispatch_keeps_supplied_credential_private_and_refuses_nonroot_mutation
   test_unexpected_credential_fd_is_closed_before_noncredential_dispatch
   test_linux_managed_journal_real_owner_mode_and_symlink_semantics
+  test_proposed_settings_replace_only_country_presence_and_validate_api_cross_fields
 )
 
 if [[ -n "${WG_MANAGED_TEST_ONLY:-}" ]]; then
