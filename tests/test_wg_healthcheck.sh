@@ -2329,6 +2329,59 @@ test_status_context_validates_existing_state_directory_without_repair() {
     "observational status must never chmod or repair state"
 }
 
+test_context_refuses_untrusted_config_parent_before_file_or_parse() {
+  local case_name rc real_parent
+  source "$SCRIPT"
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  IFACE=wg0
+  real_parent="$TEST_TMP/healthcheck.d"
+  mkdir -p -- "$real_parent"
+  chmod 700 -- "$real_parent"
+  CFG="$real_parent/wg0.conf"
+  WG_CONF="$TEST_TMP/wg0.conf"
+  STATE_DIR="$TEST_TMP/state"
+  printf 'AIRVPN_PROFILE_SOURCE=static\n' > "$CFG"
+  printf '%s\n' '[Interface]' '[Peer]' 'Endpoint = 192.0.2.10:1637' > "$WG_CONF"
+  chmod 600 -- "$CFG" "$WG_CONF"
+  derive_fixed_runtime_paths() { :; }
+  sanitize_process_environment() { :; }
+  is_root() { return 0; }
+  log() { :; }
+  validate_secure_file() { printf 'file-validation\n' >> "$TEST_TMP/context-events"; }
+  parse_healthcheck_config() { printf 'parse\n' >> "$TEST_TMP/context-events"; }
+  validate_settings() { printf 'settings\n' >> "$TEST_TMP/context-events"; }
+  prepare_state_dir() { printf 'state\n' >> "$TEST_TMP/context-events"; }
+
+  for case_name in mode_0755 mode_0770 wrong_owner symlink; do
+    CFG="$real_parent/wg0.conf"
+    CONFIG_PARENT_CASE="$case_name"
+    if [[ "$case_name" == symlink ]]; then
+      ln -s -- "$real_parent" "$TEST_TMP/linked-healthcheck.d"
+      CFG="$TEST_TMP/linked-healthcheck.d/wg0.conf"
+    fi
+    owner_mode() {
+      if [[ "$1" == "${CFG%/*}" ]]; then
+        case "$CONFIG_PARENT_CASE" in
+          mode_0755) printf '0:755\n' ;;
+          mode_0770) printf '0:770\n' ;;
+          wrong_owner) printf '65534:700\n' ;;
+          *) printf '0:700\n' ;;
+        esac
+      else
+        printf '0:600\n'
+      fi
+    }
+    : > "$TEST_TMP/context-events"
+    COMMAND=check
+    set +e; load_command_context >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$case_name config parent must fail closed" || return 1
+    assert_eq '' "$(<"$TEST_TMP/context-events")" \
+      "$case_name config parent refusal must precede file validation and parsing" || return 1
+    rm -f -- "$TEST_TMP/linked-healthcheck.d"
+  done
+}
+
 tests=(
   test_version_output_is_fixed_and_public
   test_sourceable_without_executing_or_enabling_errexit
@@ -2408,6 +2461,7 @@ tests=(
   test_core_dump_suppression_precedes_context_and_closes_credential_on_failure
   test_reset_context_allows_genuinely_missing_profile_but_not_symlink
   test_status_context_validates_existing_state_directory_without_repair
+  test_context_refuses_untrusted_config_parent_before_file_or_parse
 )
 
 if [[ -n "${WG_HEALTHCHECK_TEST_ONLY:-}" ]]; then

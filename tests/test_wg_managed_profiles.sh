@@ -4537,6 +4537,92 @@ test_pre_managed_snapshot_is_immutable_exact_and_durable_before_mode_change() {
   [[ -L "$PRE_MANAGED_CONF" ]] || fail "snapshot symlink must not be replaced"
 }
 
+test_adopt_retry_rebarriers_visible_snapshot_after_install_sync_failures() {
+  local failure_case rc first_events
+  for failure_case in destination_sync parent_sync; do
+    setup_managed_journal_fixture || return 1
+    PRE_MANAGED_CONF="${WG_CONF}.pre-managed"
+    CFG="$TEST_TMP/etc/wireguard/healthcheck.d/wg0.conf"
+    mkdir -p -- "${CFG%/*}"
+    chmod 700 -- "${CFG%/*}"
+    printf '%s\n' 'AIRVPN_PROFILE_SOURCE=static' 'AIRVPN_DEVICE=Device-One' \
+      'AIRVPN_COUNTRIES=GB' > "$CFG"
+    chmod 600 -- "$CFG"
+    AIRVPN_PROFILE_SOURCE=static
+    : > "$TEST_TMP/snapshot-retry-events"
+    SNAPSHOT_FAILURE_PENDING=1
+    managed_sync_file() {
+      printf 'file:%s\n' "$1" >> "$TEST_TMP/snapshot-retry-events"
+      if [[ "$failure_case" == destination_sync && "$1" == "$PRE_MANAGED_CONF" &&
+            "$SNAPSHOT_FAILURE_PENDING" == 1 ]]; then
+        SNAPSHOT_FAILURE_PENDING=0
+        return 1
+      fi
+    }
+    managed_sync_artifact_parent() {
+      printf 'parent:%s\n' "$1" >> "$TEST_TMP/snapshot-retry-events"
+      if [[ "$failure_case" == parent_sync && "$1" == "${PRE_MANAGED_CONF%/*}" &&
+            -f "$PRE_MANAGED_CONF" && "$SNAPSHOT_FAILURE_PENDING" == 1 ]]; then
+        SNAPSHOT_FAILURE_PENDING=0
+        return 1
+      fi
+    }
+    managed_sync_directory() { :; }
+    managed_unlink_path() {
+      printf 'unlink:%s\n' "$1" >> "$TEST_TMP/snapshot-retry-events"
+      rm -f -- "$1"
+    }
+
+    set +e; managed_finish_adopt apply >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$failure_case must fail the first adoption attempt" || return 1
+    [[ -f "$PRE_MANAGED_CONF" && ! -L "$PRE_MANAGED_CONF" ]] ||
+      fail "$failure_case must leave a visible regular snapshot for retry" || return 1
+    cmp -s -- "$WG_CONF" "$PRE_MANAGED_CONF" ||
+      fail "$failure_case visible snapshot must retain exact active bytes" || return 1
+    [[ -f "$MANAGED_CANDIDATE" ]] ||
+      fail "$failure_case must retain candidate until snapshot is durable" || return 1
+    assert_contains 'AIRVPN_PROFILE_SOURCE=static' "$(<"$CFG")" \
+      "$failure_case must retain static mode" || return 1
+
+    : > "$TEST_TMP/snapshot-retry-events"
+    managed_finish_adopt apply || return 1
+    first_events="$(head -n 3 "$TEST_TMP/snapshot-retry-events")"
+    assert_eq "file:$PRE_MANAGED_CONF
+parent:${PRE_MANAGED_CONF%/*}
+unlink:$MANAGED_CANDIDATE" "$first_events" \
+      "$failure_case retry must re-barrier snapshot before candidate removal" || return 1
+    [[ ! -e "$MANAGED_CANDIDATE" ]] ||
+      fail "$failure_case retry must remove candidate only after barriers" || return 1
+    assert_contains 'AIRVPN_PROFILE_SOURCE=api' "$(<"$CFG")" \
+      "$failure_case retry may select API mode only after durable snapshot"
+  done
+}
+
+test_adopt_retry_rereads_snapshot_after_rebarrier() {
+  local rc
+  setup_managed_journal_fixture || return 1
+  PRE_MANAGED_CONF="${WG_CONF}.pre-managed"
+  CFG="$TEST_TMP/etc/wireguard/healthcheck.d/wg0.conf"
+  mkdir -p -- "${CFG%/*}"
+  chmod 700 -- "${CFG%/*}"
+  printf '%s\n' 'AIRVPN_PROFILE_SOURCE=static' 'AIRVPN_DEVICE=Device-One' \
+    'AIRVPN_COUNTRIES=GB' > "$CFG"
+  chmod 600 -- "$CFG"
+  AIRVPN_PROFILE_SOURCE=static
+  cp -- "$WG_CONF" "$PRE_MANAGED_CONF"
+  chmod 600 -- "$PRE_MANAGED_CONF"
+  managed_sync_file() { :; }
+  managed_sync_artifact_parent() {
+    printf '# post-barrier drift\n' >> "$PRE_MANAGED_CONF"
+  }
+  set +e; managed_finish_adopt apply >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "post-barrier snapshot drift must fail adoption retry" || return 1
+  [[ -f "$MANAGED_CANDIDATE" ]] ||
+    fail "post-barrier drift must preserve candidate evidence" || return 1
+  assert_contains 'AIRVPN_PROFILE_SOURCE=static' "$(<"$CFG")" \
+    "post-barrier drift must not select API mode"
+}
+
 test_managed_config_rewrite_preserves_unrelated_keys_and_is_durable() {
   local before rc
   source_managed_contract || return 1
@@ -4559,6 +4645,87 @@ test_managed_config_rewrite_preserves_unrelated_keys_and_is_durable() {
   set +e; managed_rewrite_profile_source invalid >/dev/null 2>&1; rc=$?; set +e
   assert_eq 1 "$rc" "mode rewrite must reject unknown sources" || return 1
   assert_eq "$before" "$(<"$CFG")" "failed mode rewrite must preserve config"
+}
+
+test_config_rewrite_refuses_untrusted_parent_before_mutation() {
+  local case_name rc before real_parent
+  source_managed_contract || return 1
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  real_parent="$TEST_TMP/healthcheck.d"
+  mkdir -p -- "$real_parent"
+  chmod 700 -- "$real_parent"
+  CFG="$real_parent/wg0.conf"
+  printf '%s\n' 'AIRVPN_PROFILE_SOURCE=static' 'AIRVPN_COUNTRIES=GB' > "$CFG"
+  chmod 600 -- "$CFG"
+  before="$(<"$CFG")"
+  : > "$TEST_TMP/config-events"
+  managed_sync_file() { printf 'sync-file\n' >> "$TEST_TMP/config-events"; }
+  managed_sync_directory() { printf 'sync-parent\n' >> "$TEST_TMP/config-events"; }
+  for case_name in mode_0755 mode_0770 wrong_owner symlink; do
+    CFG="$real_parent/wg0.conf"
+    CONFIG_PARENT_CASE="$case_name"
+    if [[ "$case_name" == symlink ]]; then
+      ln -s -- "$real_parent" "$TEST_TMP/linked-healthcheck.d"
+      CFG="$TEST_TMP/linked-healthcheck.d/wg0.conf"
+    fi
+    owner_mode() {
+      if [[ "$1" == "${CFG%/*}" ]]; then
+        case "$CONFIG_PARENT_CASE" in
+          mode_0755) printf '0:755\n' ;;
+          mode_0770) printf '0:770\n' ;;
+          wrong_owner) printf '65534:700\n' ;;
+          *) printf '0:700\n' ;;
+        esac
+      else
+        printf '0:%s\n' "$(stat -c '%a' -- "$1")"
+      fi
+    }
+    : > "$TEST_TMP/config-events"
+    set +e; managed_rewrite_profile_source api >/dev/null 2>&1; rc=$?; set +e
+    assert_eq 1 "$rc" "$case_name config parent must be rejected" || return 1
+    assert_eq "$before" "$(<"$real_parent/wg0.conf")" \
+      "$case_name refusal must preserve config bytes" || return 1
+    assert_eq '' "$(<"$TEST_TMP/config-events")" \
+      "$case_name refusal must precede temporary/final sync" || return 1
+    rm -f -- "$TEST_TMP/linked-healthcheck.d"
+  done
+}
+
+test_config_rewrite_rechecks_parent_before_and_after_commit() {
+  local rc
+  source_managed_contract || return 1
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  mkdir -p -- "$TEST_TMP/healthcheck.d"
+  chmod 700 -- "$TEST_TMP/healthcheck.d"
+  CFG="$TEST_TMP/healthcheck.d/wg0.conf"
+  printf '%s\n' 'AIRVPN_PROFILE_SOURCE=static' 'AIRVPN_COUNTRIES=GB' > "$CFG"
+  chmod 600 -- "$CFG"
+  CONFIG_PARENT_UNSAFE=0
+  owner_mode() {
+    if [[ "$1" == "${CFG%/*}" ]]; then
+      [[ "$CONFIG_PARENT_UNSAFE" == 0 ]] && printf '0:700\n' || printf '0:770\n'
+    else
+      printf '0:%s\n' "$(stat -c '%a' -- "$1")"
+    fi
+  }
+  managed_sync_file() {
+    [[ "$1" == "$CFG" ]] || CONFIG_PARENT_UNSAFE=1
+  }
+  managed_sync_directory() { :; }
+  set +e; managed_rewrite_profile_source api >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "parent trust loss before rename must fail" || return 1
+  assert_contains 'AIRVPN_PROFILE_SOURCE=static' "$(<"$CFG")" \
+    "pre-rename trust loss must preserve original config" || return 1
+
+  CONFIG_PARENT_UNSAFE=0
+  managed_sync_file() { :; }
+  managed_sync_directory() { CONFIG_PARENT_UNSAFE=1; }
+  set +e; managed_rewrite_profile_source api >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "parent trust loss after final barrier must fail" || return 1
+  assert_contains 'AIRVPN_PROFILE_SOURCE=api' "$(<"$CFG")" \
+    "post-barrier trust loss occurs only after an atomic config commit"
 }
 
 test_adopt_dry_run_and_apply_pin_identity_snapshot_without_network_mutation() {
@@ -4776,6 +4943,155 @@ test_generator_callback_handles_reserved_fd_collisions_and_clean_child_environme
   unset AIRVPN_API_KEY
 }
 
+test_generator_failure_cleanup_closes_reserved_credential_descriptors() {
+  local supplied_fd failure_case expected_rc rc
+  setup_managed_journal_fixture || return 1
+  AIRVPN_API_HELPER="$TEST_TMP/fake-airvpn-api"
+  printf '#!/bin/sh\nexit 1\n' > "$AIRVPN_API_HELPER"
+  chmod 755 -- "$AIRVPN_API_HELPER"
+  printf 'descriptor-only-test-record\n' > "$TEST_TMP/credential"
+  MANAGED_PROFILE_SERVER=Candidate
+  MANAGED_PROFILE_ENDPOINT=198.51.100.20:1637
+  MANAGED_PROFILE_PIN=1
+  AIRVPN_DEVICE=Device-One
+  AIRVPN_API_TIMEOUT=20
+  validate_secure_executable() { return 0; }
+  managed_invoke_generator_closed() {
+    close_private_fd "$1" || return 1
+    case "$FAILURE_CASE" in
+      auth) return 4 ;;
+      rate) return 5 ;;
+      device) return 7 ;;
+      transient) return 1 ;;
+      manifest) printf 'generated\tWrong\t198.51.100.20:1637\tpinned=1\n' ;;
+      *) return 1 ;;
+    esac
+  }
+  managed_remove_generated_candidate() {
+    if python3 - "$PROBE_FD" <<'PY'
+import errno
+import os
+import sys
+
+fd = int(sys.argv[1])
+if os.path.exists(f"/proc/self/fd/{fd}"):
+    raise SystemExit(1)
+for operation in (lambda: os.lseek(fd, 0, os.SEEK_SET), lambda: os.read(fd, 1)):
+    try:
+        operation()
+    except OSError as error:
+        if error.errno != errno.EBADF:
+            raise
+    else:
+        raise SystemExit(1)
+PY
+    then
+      printf 'cleanup-closed:%s:%s\n' "$PROBE_FD" "$FAILURE_CASE" >> "$TEST_TMP/cleanup-events"
+    else
+      printf 'cleanup-leaked:%s:%s\n' "$PROBE_FD" "$FAILURE_CASE" >> "$TEST_TMP/cleanup-events"
+    fi
+    rm -f -- "$MANAGED_CANDIDATE"
+  }
+
+  for supplied_fd in 3 4 5; do
+    for failure_case in auth rate device transient manifest; do
+      FAILURE_CASE="$failure_case"
+      PROBE_FD="$supplied_fd"
+      : > "$TEST_TMP/cleanup-events"
+      : > "$MANAGED_CANDIDATE"
+      chmod 600 -- "$MANAGED_CANDIDATE"
+      case "$supplied_fd" in
+        3) exec 3<"$TEST_TMP/credential" ;;
+        4) exec 4<"$TEST_TMP/credential" ;;
+        5) exec 5<"$TEST_TMP/credential" ;;
+      esac
+      set +e; managed_generate_candidate_provider "$supplied_fd" >/dev/null 2>&1; rc=$?; set +e
+      case "$supplied_fd" in
+        3) exec 3<&- ;;
+        4) exec 4<&- ;;
+        5) exec 5<&- ;;
+      esac
+      case "$failure_case" in
+        auth) expected_rc=4 ;;
+        rate) expected_rc=5 ;;
+        device) expected_rc=7 ;;
+        transient|manifest) expected_rc=1 ;;
+      esac
+      assert_eq "$expected_rc" "$rc" "$failure_case provider result must be preserved" || return 1
+      assert_eq "cleanup-closed:$supplied_fd:$failure_case" "$(<"$TEST_TMP/cleanup-events")" \
+        "$failure_case cleanup child must not inherit supplied fd $supplied_fd" || return 1
+    done
+  done
+}
+
+test_generator_dup_failure_cleanup_closes_reserved_credential_descriptors() {
+  local supplied_fd rc
+  setup_managed_journal_fixture || return 1
+  declare -F managed_duplicate_credential_fd >/dev/null ||
+    fail "generator credential duplication seam is missing" || return 1
+  AIRVPN_API_HELPER="$TEST_TMP/fake-airvpn-api"
+  printf '#!/bin/sh\nexit 1\n' > "$AIRVPN_API_HELPER"
+  chmod 755 -- "$AIRVPN_API_HELPER"
+  printf 'descriptor-only-test-record\n' > "$TEST_TMP/credential"
+  MANAGED_PROFILE_SERVER=Candidate
+  MANAGED_PROFILE_ENDPOINT=198.51.100.20:1637
+  MANAGED_PROFILE_PIN=1
+  AIRVPN_DEVICE=Device-One
+  AIRVPN_API_TIMEOUT=20
+  validate_secure_executable() { return 0; }
+  managed_duplicate_credential_fd() { return 1; }
+  managed_invoke_generator_closed() {
+    printf 'unexpected-provider\n' >> "$TEST_TMP/cleanup-events"
+    return 1
+  }
+  managed_remove_generated_candidate() {
+    if python3 - "$PROBE_FD" <<'PY'
+import errno
+import os
+import sys
+
+fd = int(sys.argv[1])
+if os.path.exists(f"/proc/self/fd/{fd}"):
+    raise SystemExit(1)
+for operation in (lambda: os.lseek(fd, 0, os.SEEK_SET), lambda: os.read(fd, 1)):
+    try:
+        operation()
+    except OSError as error:
+        if error.errno != errno.EBADF:
+            raise
+    else:
+        raise SystemExit(1)
+PY
+    then
+      printf 'cleanup-closed:%s:dup\n' "$PROBE_FD" >> "$TEST_TMP/cleanup-events"
+    else
+      printf 'cleanup-leaked:%s:dup\n' "$PROBE_FD" >> "$TEST_TMP/cleanup-events"
+    fi
+    rm -f -- "$MANAGED_CANDIDATE"
+  }
+
+  for supplied_fd in 3 4 5; do
+    PROBE_FD="$supplied_fd"
+    : > "$TEST_TMP/cleanup-events"
+    : > "$MANAGED_CANDIDATE"
+    chmod 600 -- "$MANAGED_CANDIDATE"
+    case "$supplied_fd" in
+      3) exec 3<"$TEST_TMP/credential" ;;
+      4) exec 4<"$TEST_TMP/credential" ;;
+      5) exec 5<"$TEST_TMP/credential" ;;
+    esac
+    set +e; managed_generate_candidate_provider "$supplied_fd" >/dev/null 2>&1; rc=$?; set +e
+    case "$supplied_fd" in
+      3) exec 3<&- ;;
+      4) exec 4<&- ;;
+      5) exec 5<&- ;;
+    esac
+    assert_eq 1 "$rc" "credential duplication failure must remain nonzero" || return 1
+    assert_eq "cleanup-closed:$supplied_fd:dup" "$(<"$TEST_TMP/cleanup-events")" \
+      "dup cleanup child must not inherit supplied fd $supplied_fd" || return 1
+  done
+}
+
 test_api_administration_requires_explicit_country_policy_before_provider() {
   local credential_fd rc
   setup_managed_journal_fixture || return 1
@@ -4907,6 +5223,186 @@ test_orphan_candidate_recovery_is_durable_bounded_and_symlink_safe() {
   write_managed_candidate_fixture
   assert_eq orphan-candidate "$(managed_status_pending)" \
     "safe unowned candidate must be visible without exposing profile fields"
+}
+
+setup_profile_orphan_command_fixture() {
+  setup_managed_journal_fixture || return 1
+  PRE_MANAGED_CONF="${WG_CONF}.pre-managed"
+  CFG="$TEST_TMP/etc/wireguard/healthcheck.d/wg0.conf"
+  AIRVPN_API_KEY_FILE="$TEST_TMP/etc/wireguard/healthcheck.d/wg0.api-key"
+  mkdir -p -- "${CFG%/*}"
+  chmod 700 -- "${CFG%/*}"
+  printf '%s\n' 'AIRVPN_PROFILE_SOURCE=static' 'AIRVPN_DEVICE=Device-One' \
+    'AIRVPN_COUNTRIES=GB NL' > "$CFG"
+  chmod 600 -- "$CFG"
+  write_valid_test_key "$AIRVPN_API_KEY_FILE"
+  chmod 600 -- "$AIRVPN_API_KEY_FILE"
+  AIRVPN_PROFILE_SOURCE=static
+  AIRVPN_DEVICE=Device-One
+  AIRVPN_COUNTRIES='GB NL'
+  AIRVPN_WG_PORT=1637
+  AIRVPN_API_TIMEOUT=20
+  AIRVPN_ROTATE_ENABLED=1
+  AIRVPN_ROTATE_COOLDOWN=0
+  : > "$TEST_TMP/orphan-events"
+  : > "$TEST_TMP/orphan-sync-events"
+  managed_sync_artifact_parent() { printf 'sync\n' >> "$TEST_TMP/orphan-sync-events"; }
+  managed_run_authenticated_attempt() {
+    printf 'authenticated\n' >> "$TEST_TMP/orphan-events"
+    [[ -z "${2-}" ]] || close_private_fd "$2"
+    return 1
+  }
+  cooldown_allows() { return 0; }
+}
+
+assert_profile_dry_run_preserves_orphan() {
+  local operation="${1:?}" candidate_before rc
+  setup_profile_orphan_command_fixture || return 1
+  case "$operation" in
+    provision) rm -f -- "$WG_CONF" ;;
+    adopt) AIRVPN_PROFILE_SOURCE=static ;;
+    rotate) AIRVPN_PROFILE_SOURCE=api ;;
+    *) return 1 ;;
+  esac
+  candidate_before="$(<"$MANAGED_CANDIDATE")"
+  case "$operation" in
+    provision) set +e; managed_command_provision dry-run '' >/dev/null 2>&1; rc=$?; set +e ;;
+    adopt) set +e; managed_command_adopt dry-run '' >/dev/null 2>&1; rc=$?; set +e ;;
+    rotate) set +e; managed_command_rotate dry-run >/dev/null 2>&1; rc=$?; set +e ;;
+  esac
+  assert_eq 1 "$rc" "$operation dry-run must refuse a pre-existing safe candidate" || return 1
+  assert_eq "$candidate_before" "$(<"$MANAGED_CANDIDATE")" \
+    "$operation dry-run must preserve exact safe candidate bytes" || return 1
+  assert_eq '' "$(<"$TEST_TMP/orphan-sync-events")" \
+    "$operation dry-run must not sync candidate cleanup" || return 1
+  assert_eq '' "$(<"$TEST_TMP/orphan-events")" \
+    "$operation dry-run must refuse before authenticated accounting" || return 1
+
+  chmod 640 -- "$MANAGED_CANDIDATE"
+  case "$operation" in
+    provision) set +e; managed_command_provision dry-run '' >/dev/null 2>&1; rc=$?; set +e ;;
+    adopt) set +e; managed_command_adopt dry-run '' >/dev/null 2>&1; rc=$?; set +e ;;
+    rotate) set +e; managed_command_rotate dry-run >/dev/null 2>&1; rc=$?; set +e ;;
+  esac
+  assert_eq 1 "$rc" "$operation dry-run must refuse an unsafe candidate" || return 1
+  [[ -f "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]] ||
+    fail "$operation dry-run must preserve unsafe candidate evidence" || return 1
+  assert_eq 640 "$(stat -c '%a' -- "$MANAGED_CANDIDATE")" \
+    "$operation dry-run must not repair unsafe candidate metadata" || return 1
+  assert_eq '' "$(<"$TEST_TMP/orphan-sync-events")" \
+    "$operation unsafe refusal must remain observational" || return 1
+  assert_eq '' "$(<"$TEST_TMP/orphan-events")" \
+    "$operation unsafe refusal must precede authenticated accounting"
+}
+
+test_provision_dry_run_preserves_preexisting_orphan_candidate() {
+  assert_profile_dry_run_preserves_orphan provision
+}
+
+test_adopt_dry_run_preserves_preexisting_orphan_candidate() {
+  assert_profile_dry_run_preserves_orphan adopt
+}
+
+test_rotate_dry_run_preserves_preexisting_orphan_candidate() {
+  assert_profile_dry_run_preserves_orphan rotate
+}
+
+test_profile_apply_precheck_cleans_safe_orphan_before_accounting() {
+  local credential_fd rc
+  setup_profile_orphan_command_fixture || return 1
+  rm -f -- "$WG_CONF"
+  exec {credential_fd}<"$AIRVPN_API_KEY_FILE"
+  set +e
+  managed_command_provision apply "$credential_fd" >/dev/null 2>&1
+  rc=$?
+  set +e
+  assert_eq 1 "$rc" "apply cleanup fixture must stop in authenticated owner" || return 1
+  [[ ! -e "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]] ||
+    fail "apply precheck must bounded-clean a safe orphan candidate" || return 1
+  assert_eq sync "$(<"$TEST_TMP/orphan-sync-events")" \
+    "apply cleanup must sync the candidate parent" || return 1
+  assert_eq authenticated "$(<"$TEST_TMP/orphan-events")" \
+    "apply cleanup must then enter normal authenticated accounting"
+}
+
+test_timer_rotation_precheck_cleans_safe_orphan_before_accounting() {
+  local rc
+  setup_profile_orphan_command_fixture || return 1
+  AIRVPN_PROFILE_SOURCE=api
+  set +e; managed_rotate_profile timer_health_failure 0 >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "timer cleanup fixture must stop in authenticated owner" || return 1
+  [[ ! -e "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]] ||
+    fail "timer precheck must bounded-clean a safe orphan candidate" || return 1
+  assert_eq sync "$(<"$TEST_TMP/orphan-sync-events")" \
+    "timer cleanup must sync the candidate parent" || return 1
+  assert_eq authenticated "$(<"$TEST_TMP/orphan-events")" \
+    "timer cleanup must preserve normal authenticated accounting"
+}
+
+test_generator_provider_preserves_caller_errexit_state() {
+  local rc
+  setup_managed_journal_fixture || return 1
+  AIRVPN_API_HELPER="$TEST_TMP/fake-airvpn-api"
+  printf '#!/bin/sh\nexit 1\n' > "$AIRVPN_API_HELPER"
+  chmod 755 -- "$AIRVPN_API_HELPER"
+  printf 'descriptor-only-test-record\n' > "$TEST_TMP/credential"
+  : > "$MANAGED_CANDIDATE"
+  chmod 600 -- "$MANAGED_CANDIDATE"
+  MANAGED_PROFILE_SERVER=Candidate
+  MANAGED_PROFILE_ENDPOINT=198.51.100.20:1637
+  MANAGED_PROFILE_PIN=1
+  AIRVPN_DEVICE=Device-One
+  AIRVPN_API_TIMEOUT=20
+  validate_secure_executable() { return 0; }
+  managed_invoke_generator_closed() { close_private_fd "$1"; return 1; }
+  for expected in on off; do
+    : > "$MANAGED_CANDIDATE"
+    exec 3<"$TEST_TMP/credential"
+    if [[ "$expected" == on ]]; then set -e; else set +e; fi
+    if managed_generate_candidate_provider 3 >/dev/null 2>&1; then rc=0; else rc=$?; fi
+    assert_eq 1 "$rc" "generator failure fixture must remain nonzero" || { set +e; return 1; }
+    if [[ "$expected" == on ]]; then
+      [[ "$-" == *e* ]] || { set +e; fail "generator must preserve enabled errexit"; return 1; }
+    else
+      [[ "$-" != *e* ]] || { set +e; fail "generator must preserve disabled errexit"; return 1; }
+    fi
+    exec 3<&-
+  done
+  set +e
+}
+
+test_status_timer_preserves_caller_errexit_state() {
+  local expected
+  source_managed_contract || return 1
+  IFACE=wg0
+  managed_systemctl() { return 4; }
+  for expected in on off; do
+    if [[ "$expected" == on ]]; then set -e; else set +e; fi
+    managed_status_timer >/dev/null
+    if [[ "$expected" == on ]]; then
+      [[ "$-" == *e* ]] || { set +e; fail "status timer must preserve enabled errexit"; return 1; }
+    else
+      [[ "$-" != *e* ]] || { set +e; fail "status timer must preserve disabled errexit"; return 1; }
+    fi
+  done
+  set +e
+}
+
+test_unit_inactivity_probe_preserves_caller_errexit_state() {
+  local expected
+  source_managed_contract || return 1
+  IFACE=wg0
+  managed_systemctl() { return 3; }
+  for expected in on off; do
+    if [[ "$expected" == on ]]; then set -e; else set +e; fi
+    managed_units_are_inactive
+    if [[ "$expected" == on ]]; then
+      [[ "$-" == *e* ]] || { set +e; fail "unit probe must preserve enabled errexit"; return 1; }
+    else
+      [[ "$-" != *e* ]] || { set +e; fail "unit probe must preserve disabled errexit"; return 1; }
+    fi
+  done
+  set +e
 }
 
 test_real_preflight_backoff_is_nonincrementing_and_local_staging_precedes_network() {
@@ -5410,6 +5906,46 @@ test_reset_api_state_rejects_unknown_units_and_unsafe_state_metadata_but_absent_
   done
 }
 
+test_reset_apply_retry_syncs_parent_after_unlink_sync_failure() {
+  local rc
+  setup_managed_journal_fixture || return 1
+  AIRVPN_API_STATE_FILE="$TEST_TMP/var/lib/wg-healthcheck/wg0.api-state"
+  mkdir -p -- "${AIRVPN_API_STATE_FILE%/*}"
+  chmod 700 -- "${AIRVPN_API_STATE_FILE%/*}"
+  printf 'corrupt\n' > "$AIRVPN_API_STATE_FILE"
+  chmod 600 -- "$AIRVPN_API_STATE_FILE"
+  managed_systemctl() { return 3; }
+  managed_reset_global_lock_acquire() { MANAGED_RESET_LOCK_FD=19; }
+  managed_reset_global_lock_release() { MANAGED_RESET_LOCK_FD=''; }
+  managed_unlink_path() {
+    printf 'unlink:%s\n' "$1" >> "$TEST_TMP/reset-retry-events"
+    rm -f -- "$1"
+  }
+  RESET_SYNC_FAILURE_PENDING=1
+  managed_sync_directory() {
+    printf 'sync:%s\n' "$1" >> "$TEST_TMP/reset-retry-events"
+    if [[ "$RESET_SYNC_FAILURE_PENDING" == 1 ]]; then
+      RESET_SYNC_FAILURE_PENDING=0
+      return 1
+    fi
+  }
+  : > "$TEST_TMP/reset-retry-events"
+  set +e; managed_reset_api_state apply >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "post-unlink parent-sync failure must remain nonzero" || return 1
+  [[ ! -e "$AIRVPN_API_STATE_FILE" && ! -L "$AIRVPN_API_STATE_FILE" ]] ||
+    fail "successful unlink must leave state visibly absent" || return 1
+
+  : > "$TEST_TMP/reset-retry-events"
+  managed_reset_api_state apply || return 1
+  assert_eq "sync:${AIRVPN_API_STATE_FILE%/*}" "$(<"$TEST_TMP/reset-retry-events")" \
+    "apply retry must sync trusted state parent even when state is absent" || return 1
+
+  : > "$TEST_TMP/reset-retry-events"
+  managed_reset_api_state dry-run || return 1
+  assert_eq '' "$(<"$TEST_TMP/reset-retry-events")" \
+    "reset dry-run must not sync or mutate an absent state path"
+}
+
 test_reset_rejects_unsafe_state_parent_and_global_lock_swap_without_mutation() {
   local rc victim real_parent
   setup_managed_journal_fixture || return 1
@@ -5647,14 +6183,28 @@ tests=(
   test_managed_qb_config_drift_restores_network_but_retains_safety
   test_managed_provision_install_is_atomic_durable_and_no_clobber
   test_pre_managed_snapshot_is_immutable_exact_and_durable_before_mode_change
+  test_adopt_retry_rebarriers_visible_snapshot_after_install_sync_failures
+  test_adopt_retry_rereads_snapshot_after_rebarrier
   test_managed_config_rewrite_preserves_unrelated_keys_and_is_durable
+  test_config_rewrite_refuses_untrusted_parent_before_mutation
+  test_config_rewrite_rechecks_parent_before_and_after_commit
   test_adopt_dry_run_and_apply_pin_identity_snapshot_without_network_mutation
   test_provision_and_adopt_commands_run_authenticated_redacted_flows
   test_generator_callback_handles_reserved_fd_collisions_and_clean_child_environment
+  test_generator_failure_cleanup_closes_reserved_credential_descriptors
+  test_generator_dup_failure_cleanup_closes_reserved_credential_descriptors
   test_api_administration_requires_explicit_country_policy_before_provider
   test_apply_requires_installed_credential_and_override_identity_match
   test_selector_and_candidate_staging_failures_do_not_consume_authenticated_attempts
   test_orphan_candidate_recovery_is_durable_bounded_and_symlink_safe
+  test_provision_dry_run_preserves_preexisting_orphan_candidate
+  test_adopt_dry_run_preserves_preexisting_orphan_candidate
+  test_rotate_dry_run_preserves_preexisting_orphan_candidate
+  test_profile_apply_precheck_cleans_safe_orphan_before_accounting
+  test_timer_rotation_precheck_cleans_safe_orphan_before_accounting
+  test_generator_provider_preserves_caller_errexit_state
+  test_status_timer_preserves_caller_errexit_state
+  test_unit_inactivity_probe_preserves_caller_errexit_state
   test_real_preflight_backoff_is_nonincrementing_and_local_staging_precedes_network
   test_six_argument_attempt_uses_one_preflight_epoch_across_second_boundary
   test_managed_attempt_stages_close_key_everywhere_except_exact_provider
@@ -5666,6 +6216,7 @@ tests=(
   test_status_pending_enums_strictly_distinguish_owned_orphan_and_invalid_states
   test_reset_api_state_is_quiesced_exact_durable_and_preserves_every_other_artifact
   test_reset_api_state_rejects_unknown_units_and_unsafe_state_metadata_but_absent_is_idempotent
+  test_reset_apply_retry_syncs_parent_after_unlink_sync_failure
   test_reset_rejects_unsafe_state_parent_and_global_lock_swap_without_mutation
   test_managed_dispatch_keeps_supplied_credential_private_and_refuses_nonroot_mutation
   test_unexpected_credential_fd_is_closed_before_noncredential_dispatch

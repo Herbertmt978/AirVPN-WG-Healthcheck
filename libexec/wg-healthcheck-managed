@@ -3035,8 +3035,14 @@ managed_cleanup_orphan_candidate() {
 managed_create_pre_managed_snapshot() {
   local digest endpoint
   managed_journal_paths_are_fixed || return 1
+  managed_journal_parent_is_secure || return 1
   managed_profile_file_is_secure "$WG_CONF" || return 1
   if [[ -e "$PRE_MANAGED_CONF" || -L "$PRE_MANAGED_CONF" ]]; then
+    managed_profile_file_is_secure "$PRE_MANAGED_CONF" || return 1
+    managed_profiles_are_identical "$WG_CONF" "$PRE_MANAGED_CONF" || return 1
+    managed_sync_file "$PRE_MANAGED_CONF" || return 1
+    managed_sync_artifact_parent "${PRE_MANAGED_CONF%/*}" || return 1
+    managed_journal_parent_is_secure || return 1
     managed_profile_file_is_secure "$PRE_MANAGED_CONF" || return 1
     managed_profiles_are_identical "$WG_CONF" "$PRE_MANAGED_CONF"
     return
@@ -3067,9 +3073,10 @@ managed_stage_pre_managed_candidate() {
 managed_rewrite_profile_source() {
   local new_source="${1:?}" parent base temporary metadata
   [[ "$new_source" == static || "$new_source" == api ]] || return 1
+  validate_secure_parent_directory "$CFG" "health-check configuration directory" 700 ||
+    return 1
   managed_profile_file_is_secure "$CFG" || return 1
   parent="${CFG%/*}"; base="${CFG##*/}"
-  [[ -d "$parent" && ! -L "$parent" ]] || return 1
   umask 077
   temporary="$(mktemp "$parent/.${base}.rewrite.XXXXXX")" || return 1
   if ! command awk -v source="$new_source" '
@@ -3094,13 +3101,18 @@ managed_rewrite_profile_source() {
   }
   if [[ "$metadata" != 0:600 ]] ||
       ! managed_sync_file "$temporary" ||
+      ! validate_secure_parent_directory "$CFG" \
+          "health-check configuration directory" 700 ||
       ! command mv -fT -- "$temporary" "$CFG"; then
     rm -f -- "$temporary"
     return 1
   fi
   managed_profile_file_is_secure "$CFG" || return 1
   managed_sync_file "$CFG" || return 1
-  managed_sync_directory "$parent"
+  managed_sync_directory "$parent" || return 1
+  validate_secure_parent_directory "$CFG" "health-check configuration directory" 700 ||
+    return 1
+  managed_profile_file_is_secure "$CFG"
 }
 
 managed_open_candidate_exclusive() {
@@ -3218,6 +3230,14 @@ managed_finalize_generated_candidate_closed() {
   managed_sync_artifact_parent "${WG_CONF%/*}"
 }
 
+managed_duplicate_credential_fd() {
+  local output_variable="${1:?}" source_fd="${2:?}" duplicated_fd
+  managed_output_variable_is_valid "$output_variable" || return 1
+  validate_credential_fd_number "$source_fd" || return 1
+  exec {duplicated_fd}<&"$source_fd" || return 1
+  printf -v "$output_variable" '%s' "$duplicated_fd"
+}
+
 managed_generate_candidate_provider() {
   local credential_fd="${1:?}" candidate_fd key_fd
   local manifest provider_rc expected_pin
@@ -3230,19 +3250,22 @@ managed_generate_candidate_provider() {
     exec {candidate_fd}>&-
     return 1
   }
-  exec {key_fd}<&"$credential_fd" || {
+  managed_duplicate_credential_fd key_fd "$credential_fd" || {
     exec {candidate_fd}>&-
-    managed_remove_generated_candidate >/dev/null 2>&1 || true
+    managed_call_without_private_fd "$credential_fd" \
+      managed_remove_generated_candidate >/dev/null 2>&1 || true
     return 1
   }
-  set +e
-  manifest="$(managed_invoke_generator_closed "$credential_fd" "$key_fd" "$candidate_fd" \
-    "$MANAGED_PROFILE_PIN" 2>/dev/null)"
-  provider_rc=$?
-  set +e
+  if manifest="$(managed_invoke_generator_closed "$credential_fd" "$key_fd" "$candidate_fd" \
+      "$MANAGED_PROFILE_PIN" 2>/dev/null)"; then
+    provider_rc=0
+  else
+    provider_rc=$?
+  fi
   exec {key_fd}<&- {candidate_fd}>&-
   if (( provider_rc != 0 )); then
-    managed_remove_generated_candidate >/dev/null 2>&1 || true
+    managed_call_without_private_fd "$credential_fd" \
+      managed_remove_generated_candidate >/dev/null 2>&1 || true
     case "$provider_rc" in
       4) MANAGED_API_PROVIDER_FAILURE_CLASS=auth; return 4 ;;
       5) return 5 ;;
@@ -3255,7 +3278,8 @@ managed_generate_candidate_provider() {
   fi
   expected_pin="$MANAGED_PROFILE_PIN"
   [[ "$manifest" == $'generated\t'"$MANAGED_PROFILE_SERVER"$'\t'"$MANAGED_PROFILE_ENDPOINT"$'\tpinned='"$expected_pin" ]] || {
-    managed_remove_generated_candidate >/dev/null 2>&1 || true
+    managed_call_without_private_fd "$credential_fd" \
+      managed_remove_generated_candidate >/dev/null 2>&1 || true
     return 1
   }
   managed_call_without_private_fd "$credential_fd" managed_finalize_generated_candidate_closed ||
@@ -3334,6 +3358,8 @@ managed_profile_admin_config_is_valid() {
   local line country_keys=0
   managed_device_name_is_valid "$AIRVPN_DEVICE" || return 1
   case "$AIRVPN_WG_PORT" in 1637|47107|51820) ;; *) return 1 ;; esac
+  validate_secure_parent_directory "$CFG" "health-check configuration directory" 700 ||
+    return 1
   [[ -f "$CFG" && ! -L "$CFG" ]] || return 1
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ ^[[:space:]]*AIRVPN_COUNTRIES[[:space:]]*= ]] &&
@@ -3344,9 +3370,20 @@ managed_profile_admin_config_is_valid() {
 }
 
 managed_profile_attempt_precheck() {
-  local operation="${1:?}" rc
+  local operation="${1:?}" action="${2:?}" rc
+  [[ "$action" == dry-run || "$action" == apply ]] || return 1
   managed_profile_admin_config_is_valid || return 1
-  managed_cleanup_orphan_candidate || return 1
+  if [[ -e "$MANAGED_CANDIDATE" || -L "$MANAGED_CANDIDATE" ]]; then
+    if [[ "$action" == dry-run ]]; then
+      if managed_orphan_candidate_is_safe; then
+        log "Managed candidate recovery requires an apply operation"
+      else
+        log "Managed candidate is unsafe and requires operator repair"
+      fi
+      return 1
+    fi
+    managed_cleanup_orphan_candidate || return 1
+  fi
   case "$operation" in
     provision) [[ ! -e "$WG_CONF" && ! -L "$WG_CONF" ]] ;;
     adopt) [[ "$AIRVPN_PROFILE_SOURCE" == static ]] && managed_profile_file_is_secure "$WG_CONF" ;;
@@ -3391,7 +3428,8 @@ managed_run_profile_attempt() {
       return 1
     fi
   fi
-  if managed_call_without_private_fd "$credential_fd" managed_profile_attempt_precheck "$operation"; then
+  if managed_call_without_private_fd "$credential_fd" \
+      managed_profile_attempt_precheck "$operation" "$action"; then
     rc=0
   else
     rc=$?
@@ -3470,10 +3508,11 @@ managed_systemctl() {
 
 managed_status_timer() {
   local rc output
-  set +e
-  output="$(managed_systemctl is-enabled "wg-healthcheck@${IFACE}.timer" 2>/dev/null)"
-  rc=$?
-  set +e
+  if output="$(managed_systemctl is-enabled "wg-healthcheck@${IFACE}.timer" 2>/dev/null)"; then
+    rc=0
+  else
+    rc=$?
+  fi
   if [[ "$rc" == 0 && "$output" == enabled ]]; then
     printf 'enabled\n'
   elif [[ "$rc" == 1 && "$output" == disabled ]]; then
@@ -3593,7 +3632,11 @@ managed_render_status() {
 managed_units_are_inactive() {
   local unit rc
   for unit in "wg-healthcheck@${IFACE}.timer" "wg-healthcheck@${IFACE}.service"; do
-    set +e; managed_systemctl is-active --quiet "$unit" >/dev/null 2>&1; rc=$?; set +e
+    if managed_systemctl is-active --quiet "$unit" >/dev/null 2>&1; then
+      rc=0
+    else
+      rc=$?
+    fi
     case "$rc" in
       3) ;;
       0) return 75 ;;
@@ -3687,8 +3730,10 @@ managed_reset_api_state() {
       [[ "$metadata" == 0:600 ]] || rc=1
     fi
   fi
-  if (( rc == 0 )) && [[ "$action" == apply ]] && [[ -e "$AIRVPN_API_STATE_FILE" ]]; then
-    managed_unlink_path "$AIRVPN_API_STATE_FILE" || rc=1
+  if (( rc == 0 )) && [[ "$action" == apply ]]; then
+    if [[ -e "$AIRVPN_API_STATE_FILE" ]]; then
+      managed_unlink_path "$AIRVPN_API_STATE_FILE" || rc=1
+    fi
     (( rc != 0 )) || managed_sync_directory "$parent" || rc=1
   fi
   managed_reset_global_lock_release || release_rc=1

@@ -472,6 +472,21 @@ path_is_symlink() { [[ -L "$1" ]]; }
 path_is_regular() { [[ -f "$1" ]]; }
 path_is_directory() { [[ -d "$1" ]]; }
 owner_mode() { stat -c '%u:%a' -- "$1" 2>/dev/null; }
+validate_secure_parent_directory() {
+  local path="${1:?}" label="${2:?}" required_mode="${3:-700}"
+  local parent metadata
+  parent="${path%/*}"
+  [[ "$parent" != "$path" && "$required_mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  if [[ ! -d "$parent" || -L "$parent" ]]; then
+    log "$label must be a regular non-symlink directory"
+    return 1
+  fi
+  metadata="$(owner_mode "$parent")" || return 1
+  if [[ "$metadata" != "0:$required_mode" ]]; then
+    log "$label must be root-owned with mode $required_mode"
+    return 1
+  fi
+}
 validate_secure_executable() {
   local path="${1:?}" parent file_meta parent_meta parent_mode
   parent="${path%/*}"; [[ "$parent" != "$path" ]] || parent=.
@@ -1291,6 +1306,8 @@ load_command_context() {
     log "wg-healthcheck must run as root"
     return 1
   fi
+  validate_secure_parent_directory "$CFG" "health-check configuration directory" 700 ||
+    return 1
   validate_secure_file "$CFG" "health-check configuration" 600 || return 1
   if [[ ( "$COMMAND" == provision || "$COMMAND" == status ||
           "$COMMAND" == reset-api-state ) &&
