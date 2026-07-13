@@ -117,9 +117,7 @@ def _validate_port(value):
         try:
             port = int(value.strip())
         except (ValueError, OverflowError) as exc:
-            raise AirVPNAPIError(
-                "port must be an integer between 1 and 65535"
-            ) from exc
+            raise AirVPNAPIError("port must be an integer between 1 and 65535") from exc
     else:
         raise AirVPNAPIError("port must be an integer between 1 and 65535")
 
@@ -137,7 +135,10 @@ def parse_endpoint_ip(endpoint):
     endpoint = endpoint.strip()
     if endpoint.startswith("["):
         closing_bracket = endpoint.find("]")
-        if closing_bracket < 0 or endpoint[closing_bracket + 1 : closing_bracket + 2] != ":":
+        if (
+            closing_bracket < 0
+            or endpoint[closing_bracket + 1 : closing_bracket + 2] != ":"
+        ):
             raise AirVPNAPIError("IPv6 endpoint must use [address]:port form")
         host = endpoint[1:closing_bracket]
         port_text = endpoint[closing_bracket + 2 :]
@@ -166,9 +167,7 @@ def _profile_lines(payload):
     if not isinstance(payload, bytes):
         raise AirVPNAPIError("WireGuard profile payload must be bytes")
     if len(payload) > MAX_PROFILE_BYTES:
-        raise AirVPNAPIError(
-            f"WireGuard profile exceeds {MAX_PROFILE_BYTES} bytes"
-        )
+        raise AirVPNAPIError(f"WireGuard profile exceeds {MAX_PROFILE_BYTES} bytes")
 
     normalized = payload.replace(b"\r\n", b"\n")
     if b"\r" in normalized:
@@ -180,9 +179,7 @@ def _profile_lines(payload):
     if normalized.endswith(b"\n"):
         raw_lines.pop()
     if len(raw_lines) > MAX_PROFILE_LINES:
-        raise AirVPNAPIError(
-            f"WireGuard profile exceeds {MAX_PROFILE_LINES} lines"
-        )
+        raise AirVPNAPIError(f"WireGuard profile exceeds {MAX_PROFILE_LINES} lines")
     if any(len(line) > MAX_PROFILE_LINE_BYTES for line in raw_lines):
         raise AirVPNAPIError(
             f"WireGuard profile line exceeds {MAX_PROFILE_LINE_BYTES} bytes"
@@ -192,11 +189,7 @@ def _profile_lines(payload):
         lines = [line.decode("utf-8") for line in raw_lines]
     except UnicodeDecodeError as exc:
         raise AirVPNAPIError("WireGuard profile must be UTF-8") from exc
-    if any(
-        not character.isprintable()
-        for line in lines
-        for character in line
-    ):
+    if any(not character.isprintable() for line in lines for character in line):
         raise AirVPNAPIError("WireGuard profile contains a control character")
     return lines
 
@@ -231,9 +224,7 @@ def _profile_address(value):
         or address.network.prefixlen != 32
         or str(address) != value
     ):
-        raise AirVPNAPIError(
-            "WireGuard profile Address must be one canonical IPv4 /32"
-        )
+        raise AirVPNAPIError("WireGuard profile Address must be one canonical IPv4 /32")
     return address
 
 
@@ -246,9 +237,7 @@ def _profile_dns(value):
     for item in values:
         item = item.strip()
         if not item or "%" in item:
-            raise AirVPNAPIError(
-                "WireGuard profile DNS must contain numeric addresses"
-            )
+            raise AirVPNAPIError("WireGuard profile DNS must contain numeric addresses")
         try:
             address = ipaddress.ip_address(item)
         except ValueError as exc:
@@ -359,13 +348,9 @@ def parse_wireguard_profile(
     if interface["MTU"] != "1320":
         raise AirVPNAPIError("WireGuard profile MTU must be exactly 1320")
     if peer["PersistentKeepalive"] != "15":
-        raise AirVPNAPIError(
-            "WireGuard profile PersistentKeepalive must be exactly 15"
-        )
+        raise AirVPNAPIError("WireGuard profile PersistentKeepalive must be exactly 15")
     if peer["AllowedIPs"] != "0.0.0.0/0":
-        raise AirVPNAPIError(
-            "WireGuard profile AllowedIPs must be exactly 0.0.0.0/0"
-        )
+        raise AirVPNAPIError("WireGuard profile AllowedIPs must be exactly 0.0.0.0/0")
 
     endpoint = _profile_endpoint(peer["Endpoint"])
     if expected_endpoint is not None:
@@ -555,9 +540,7 @@ def validate_status_payload(data):
     if not isinstance(servers, list):
         raise AirVPNAPIError("status servers must be a list")
     if len(servers) > MAX_SERVERS:
-        raise AirVPNAPIError(
-            f"status payload contains more than {MAX_SERVERS} servers"
-        )
+        raise AirVPNAPIError(f"status payload contains more than {MAX_SERVERS} servers")
     for index, server in enumerate(servers):
         if not isinstance(server, dict):
             raise AirVPNAPIError(f"status server {index} must be an object")
@@ -581,9 +564,7 @@ def _server_text(server, index, field, *, default=""):
     if value is None:
         return default
     if not isinstance(value, str):
-        raise AirVPNAPIError(
-            f"status server {index} field {field} must be text"
-        )
+        raise AirVPNAPIError(f"status server {index} field {field} must be text")
     return _sanitize_tsv(value, default=default)
 
 
@@ -595,21 +576,15 @@ def _validate_decimal_bounds(number, context):
     if exponent > MAX_NUMERIC_EXPONENT or exponent < -MAX_NUMERIC_SCALE:
         raise AirVPNAPIError(f"{context} has an unreasonable exponent or scale")
     if number > MAX_NUMERIC_MAGNITUDE:
-        raise AirVPNAPIError(
-            f"{context} magnitude exceeds {MAX_NUMERIC_MAGNITUDE}"
-        )
+        raise AirVPNAPIError(f"{context} magnitude exceeds {MAX_NUMERIC_MAGNITUDE}")
 
 
 def _decimal_field(server, index, field, *, integer=False):
     value = server.get(field)
     if isinstance(value, bool) or value is None:
-        raise AirVPNAPIError(
-            f"status server {index} field {field} must be numeric"
-        )
+        raise AirVPNAPIError(f"status server {index} field {field} must be numeric")
     if not isinstance(value, (int, float, str, Decimal)):
-        raise AirVPNAPIError(
-            f"status server {index} field {field} must be numeric"
-        )
+        raise AirVPNAPIError(f"status server {index} field {field} must be numeric")
 
     try:
         numeric_text = str(value).strip()
@@ -669,9 +644,7 @@ def _normalize_allowed_countries(allowed_countries):
     seen = set()
     for value in values:
         if not isinstance(value, str) or not value.strip():
-            raise AirVPNAPIError(
-                "allowed countries must be non-empty text values"
-            )
+            raise AirVPNAPIError("allowed countries must be non-empty text values")
         country = value.strip().upper()
         if country not in seen:
             normalized.append(country)
@@ -687,16 +660,13 @@ def _normalize_excluded_servers(excluded_servers):
     try:
         values = iter(excluded_servers)
     except TypeError as exc:
-        raise AirVPNAPIError(
-            "server exclusions must be a collection"
-        ) from exc
+        raise AirVPNAPIError("server exclusions must be a collection") from exc
 
     normalized = set()
     for index, value in enumerate(values):
         if index >= MAX_SERVER_EXCLUSIONS:
             raise AirVPNAPIError(
-                "server exclusions must contain at most "
-                f"{MAX_SERVER_EXCLUSIONS} names"
+                f"server exclusions must contain at most {MAX_SERVER_EXCLUSIONS} names"
             )
         if not isinstance(value, str) or not _SERVER_NAME.fullmatch(value):
             raise AirVPNAPIError("excluded server name is invalid")
@@ -755,12 +725,9 @@ def _server_entry_ips(server, index):
 def _country_name(server, index):
     value = server.get("country_name")
     if not isinstance(value, str):
-        raise AirVPNAPIError(
-            f"status server {index} field country_name must be text"
-        )
+        raise AirVPNAPIError(f"status server {index} field country_name must be text")
     if any(
-        character not in "\t\r\n" and not character.isprintable()
-        for character in value
+        character not in "\t\r\n" and not character.isprintable() for character in value
     ):
         raise AirVPNAPIError(
             f"status server {index} field country_name contains a control character"
@@ -780,9 +747,7 @@ def list_eligible_countries(data):
     for index, server in enumerate(validate_status_payload(data)):
         health = server.get("health")
         if not isinstance(health, str):
-            raise AirVPNAPIError(
-                f"status server {index} field health must be text"
-            )
+            raise AirVPNAPIError(f"status server {index} field health must be text")
         if health != "ok":
             continue
 
@@ -804,9 +769,7 @@ def list_eligible_countries(data):
 
         existing = countries.get(country_code)
         if existing is not None and existing[0] != country_name:
-            raise AirVPNAPIError(
-                f"status country {country_code} has conflicting names"
-            )
+            raise AirVPNAPIError(f"status country {country_code} has conflicting names")
         if existing is None:
             countries[country_code] = [country_name, 1]
         else:
@@ -844,9 +807,7 @@ def select_candidate(
 
         health = server.get("health")
         if not isinstance(health, str):
-            raise AirVPNAPIError(
-                f"status server {index} field health must be text"
-            )
+            raise AirVPNAPIError(f"status server {index} field health must be text")
         if health != "ok":
             continue
 
@@ -976,22 +937,32 @@ def _load_json_stream(stream, source):
 
 def _validate_https_url(url):
     if not isinstance(url, str) or not url:
-        raise AirVPNAPIError("status URL must be HTTPS without credentials or whitespace")
-    if "\\" in url or any(character.isspace() or ord(character) < 32 for character in url):
-        raise AirVPNAPIError("status URL must be HTTPS without credentials or whitespace")
+        raise AirVPNAPIError(
+            "status URL must be HTTPS without credentials or whitespace"
+        )
+    if "\\" in url or any(
+        character.isspace() or ord(character) < 32 for character in url
+    ):
+        raise AirVPNAPIError(
+            "status URL must be HTTPS without credentials or whitespace"
+        )
     try:
         parsed = urllib.parse.urlsplit(url)
         hostname = parsed.hostname
         parsed.port
     except ValueError as exc:
-        raise AirVPNAPIError("status URL must be HTTPS without credentials or whitespace") from exc
+        raise AirVPNAPIError(
+            "status URL must be HTTPS without credentials or whitespace"
+        ) from exc
     if (
         parsed.scheme.lower() != "https"
         or not hostname
         or parsed.username is not None
         or parsed.password is not None
     ):
-        raise AirVPNAPIError("status URL must be HTTPS without credentials or whitespace")
+        raise AirVPNAPIError(
+            "status URL must be HTTPS without credentials or whitespace"
+        )
     return url
 
 
@@ -1010,9 +981,7 @@ def _fetch_json(url, timeout):
             safe_url, headers={"User-Agent": "wg-healthcheck/airvpn"}
         )
         opener = urllib.request.build_opener(_HTTPSOnlyRedirectHandler())
-        response = opener.open(
-            request, timeout=_validate_timeout(timeout)
-        )
+        response = opener.open(request, timeout=_validate_timeout(timeout))
     except ValueError as exc:
         raise AirVPNAPIError(f"invalid status URL: {exc}") from exc
 
@@ -1112,11 +1081,7 @@ def _single_header(headers, name):
 
 def _retry_after(headers):
     value = _single_header(headers, "Retry-After")
-    if (
-        value is None
-        or len(value) > 5
-        or not re.fullmatch(r"0|[1-9][0-9]*", value)
-    ):
+    if value is None or len(value) > 5 or not re.fullmatch(r"0|[1-9][0-9]*", value):
         return None
     retry_after = int(value)
     if retry_after > 86400:
@@ -1334,7 +1299,11 @@ def _write_private_profile(stream, payload):
     try:
         while offset < len(payload):
             written = stream.write(payload[offset:])
-            if not isinstance(written, int) or isinstance(written, bool) or written <= 0:
+            if (
+                not isinstance(written, int)
+                or isinstance(written, bool)
+                or written <= 0
+            ):
                 failed = True
                 break
             offset += written
@@ -1475,14 +1444,10 @@ def generate_profile(server, device, expected_endpoint, timeout, pin_identity):
     if outcome.kind == "rate":
         raise GeneratorRateLimitError(outcome.retry_after) from None
     if outcome.kind == "permanent":
-        raise GeneratorPermanentError(
-            "authenticated generation was rejected"
-        ) from None
+        raise GeneratorPermanentError("authenticated generation was rejected") from None
     if outcome.kind == "contract":
         raise AirVPNAPIError("authenticated generator input was rejected") from None
-    raise GeneratorTransientError(
-        "authenticated provider request failed"
-    ) from None
+    raise GeneratorTransientError("authenticated provider request failed") from None
 
 
 def _build_parser():

@@ -277,14 +277,13 @@ class GeneratorBoundaryTests(unittest.TestCase):
 
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with mock.patch.object(
-            airvpn_api, "os", wraps=os, create=True
-        ) as helper_os, mock.patch.object(
-            airvpn_api.urllib.request, "build_opener", return_value=opener
-        ) as build_opener, mock.patch.object(
-            sys, "stdout", stdout
-        ), mock.patch.object(
-            sys, "stderr", stderr
+        with (
+            mock.patch.object(airvpn_api, "os", wraps=os, create=True) as helper_os,
+            mock.patch.object(
+                airvpn_api.urllib.request, "build_opener", return_value=opener
+            ) as build_opener,
+            mock.patch.object(sys, "stdout", stdout),
+            mock.patch.object(sys, "stderr", stderr),
         ):
             helper_os.fdopen.side_effect = fake_fdopen
             return_code = airvpn_api.main(list(args or self.BASE_ARGS))
@@ -326,10 +325,11 @@ class GeneratorBoundaryTests(unittest.TestCase):
             opener.open.return_value = response or _Response(_generator_profile())
 
         caught = None
-        with mock.patch.object(
-            airvpn_api, "os", wraps=os, create=True
-        ) as helper_os, mock.patch.object(
-            airvpn_api.urllib.request, "build_opener", return_value=opener
+        with (
+            mock.patch.object(airvpn_api, "os", wraps=os, create=True) as helper_os,
+            mock.patch.object(
+                airvpn_api.urllib.request, "build_opener", return_value=opener
+            ),
         ):
             helper_os.fdopen.side_effect = fake_fdopen
             try:
@@ -433,9 +433,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
             "&wireguard_mtu=1320"
             "&wireguard_persistent_keepalive=15",
         )
-        headers = {
-            name.lower(): value for name, value in request.header_items()
-        }
+        headers = {name.lower(): value for name, value in request.header_items()}
         self.assertEqual(headers["api-key"], self.API_KEY[:-1].decode("ascii"))
         self.assertEqual(headers["user-agent"], "wg-healthcheck/airvpn")
         self.assertEqual(result.opener.open.call_args.kwargs, {"timeout": 1.0})
@@ -493,9 +491,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
                 result = self._run_generator(
                     args=args,
                     response=_Response(
-                        _generator_profile(
-                            endpoint=f"198.51.100.10:{port}"
-                        )
+                        _generator_profile(endpoint=f"198.51.100.10:{port}")
                     ),
                 )
                 self.assertEqual(result.return_code, 0, result.stderr)
@@ -821,9 +817,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
     def test_secret_failures_raise_only_from_secret_free_module_frames(self):
         payload_marker = b"fd5-invalid-payload-marker"
         installed = _wireguard_profile() + b"\xff" + payload_marker
-        profile_keys = tuple(
-            _dummy_wireguard_key(value) for value in range(1, 4)
-        )
+        profile_keys = tuple(_dummy_wireguard_key(value) for value in range(1, 4))
 
         caught, opener, _streams = self._direct_generator_error(
             installed_profile=installed
@@ -1043,7 +1037,9 @@ class ProfileParsingTests(unittest.TestCase):
             "PreUp": _wireguard_profile(interface_extra=("PreUp = /usr/bin/true",)),
             "PostUp": _wireguard_profile(interface_extra=("PostUp = /usr/bin/true",)),
             "PreDown": _wireguard_profile(interface_extra=("PreDown = /usr/bin/true",)),
-            "PostDown": _wireguard_profile(interface_extra=("PostDown = /usr/bin/true",)),
+            "PostDown": _wireguard_profile(
+                interface_extra=("PostDown = /usr/bin/true",)
+            ),
             "unknown": _wireguard_profile(interface_extra=("Unknown = value",)),
             "shell syntax": _wireguard_profile(table="$(touch /tmp/provider-command)"),
         }
@@ -1098,12 +1094,8 @@ class ProfileParsingTests(unittest.TestCase):
             "wrong MTU": _wireguard_profile(mtu="1321"),
             "noncanonical MTU": _wireguard_profile(mtu="01320"),
             "wrong keepalive": _wireguard_profile(persistent_keepalive="14"),
-            "noncanonical keepalive": _wireguard_profile(
-                persistent_keepalive="015"
-            ),
-            "additional route": _wireguard_profile(
-                allowed_ips="0.0.0.0/0, ::/0"
-            ),
+            "noncanonical keepalive": _wireguard_profile(persistent_keepalive="015"),
+            "additional route": _wireguard_profile(allowed_ips="0.0.0.0/0, ::/0"),
             "unexpected route": _wireguard_profile(allowed_ips="10.0.0.0/8"),
         }
 
@@ -1271,9 +1263,7 @@ class ProfileRenderingTests(unittest.TestCase):
         key_changed = self._parse(
             _wireguard_profile(private_key=_dummy_wireguard_key(6))
         )
-        address_changed = self._parse(
-            _wireguard_profile(address="10.20.30.41/32")
-        )
+        address_changed = self._parse(_wireguard_profile(address="10.20.30.41/32"))
         self.assertTrue(
             hasattr(airvpn_api, "profiles_have_same_identity"),
             "profiles_have_same_identity is not implemented",
@@ -1535,12 +1525,15 @@ class CountryListingTests(unittest.TestCase):
         opener.open.return_value = response
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with mock.patch(
-            "builtins.open", side_effect=AssertionError("credential opened")
-        ), mock.patch.object(
-            airvpn_api.urllib.request, "build_opener", return_value=opener
-        ), mock.patch.object(sys, "stdout", stdout), mock.patch.object(
-            sys, "stderr", stderr
+        with (
+            mock.patch(
+                "builtins.open", side_effect=AssertionError("credential opened")
+            ),
+            mock.patch.object(
+                airvpn_api.urllib.request, "build_opener", return_value=opener
+            ),
+            mock.patch.object(sys, "stdout", stdout),
+            mock.patch.object(sys, "stderr", stderr),
         ):
             return_code = airvpn_api.main(
                 [
@@ -1635,8 +1628,9 @@ class CountryListingTests(unittest.TestCase):
                 )
 
         for country_name in (None, "United\x00Kingdom"):
-            with self.subTest(country_name=repr(country_name)), self.assertRaises(
-                ValueError
+            with (
+                self.subTest(country_name=repr(country_name)),
+                self.assertRaises(ValueError),
             ):
                 self._eligible(
                     _status(
@@ -1655,9 +1649,7 @@ class StatusValidationTests(unittest.TestCase):
         payload = {"result": "ok", "servers": []}
 
         self.assertEqual(airvpn_api.validate_status_payload(payload), [])
-        self.assertIsNone(
-            airvpn_api.select_candidate(payload, ["GB"], 1637, "")
-        )
+        self.assertIsNone(airvpn_api.select_candidate(payload, ["GB"], 1637, ""))
 
     def test_malformed_result_and_server_list_are_rejected(self):
         cases = (
@@ -1718,9 +1710,7 @@ class CandidateSelectionTests(unittest.TestCase):
         )
 
         legacy = airvpn_api.select_candidate(payload, ["GB"], 1637, "")
-        explicitly_empty = airvpn_api.select_candidate(
-            payload, ["GB"], 1637, "", []
-        )
+        explicitly_empty = airvpn_api.select_candidate(payload, ["GB"], 1637, "", [])
 
         self.assertEqual(explicitly_empty, legacy)
 
@@ -1781,9 +1771,7 @@ class CandidateSelectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     ValueError, "exclude|exclusion|server name"
                 ):
-                    airvpn_api.select_candidate(
-                        payload, ["GB"], 1637, "", exclusions
-                    )
+                    airvpn_api.select_candidate(payload, ["GB"], 1637, "", exclusions)
 
         sixteen = [f"Server-{index}" for index in range(16)]
         self.assertEqual(
@@ -1795,12 +1783,8 @@ class CandidateSelectionTests(unittest.TestCase):
         alpha = _server("Alpha", "198.51.100.20")
         zulu = _server("Zulu", "198.51.100.10")
 
-        first = airvpn_api.select_candidate(
-            _status(zulu, alpha), ["GB"], 1637, ""
-        )
-        second = airvpn_api.select_candidate(
-            _status(alpha, zulu), ["GB"], 1637, ""
-        )
+        first = airvpn_api.select_candidate(_status(zulu, alpha), ["GB"], 1637, "")
+        second = airvpn_api.select_candidate(_status(alpha, zulu), ["GB"], 1637, "")
 
         self.assertEqual(first[0], "Alpha")
         self.assertEqual(second, first)
@@ -1827,12 +1811,8 @@ class CandidateSelectionTests(unittest.TestCase):
         )
 
     def test_warning_health_is_skipped(self):
-        warning = _server(
-            "Warning", "198.51.100.10", load=0, users=0, health="warning"
-        )
-        healthy = _server(
-            "Healthy", "198.51.100.11", load=50, users=100, health="ok"
-        )
+        warning = _server("Warning", "198.51.100.10", load=0, users=0, health="warning")
+        healthy = _server("Healthy", "198.51.100.11", load=50, users=100, health="ok")
 
         candidate = airvpn_api.select_candidate(
             _status(warning, healthy), ["GB"], 1637, ""
@@ -1864,12 +1844,8 @@ class CandidateSelectionTests(unittest.TestCase):
         balanced = _server(
             "BalancedUsers", "198.51.100.20", bw_max=0, load=0.4, users=50
         )
-        no_users = _server(
-            "NoUsers", "198.51.100.21", bw_max=0, load=0.91, users=0
-        )
-        low_load = _server(
-            "LowLoad", "198.51.100.22", bw_max=0, load=0, users=100
-        )
+        no_users = _server("NoUsers", "198.51.100.21", bw_max=0, load=0.91, users=0)
+        low_load = _server("LowLoad", "198.51.100.22", bw_max=0, load=0, users=100)
 
         candidate = airvpn_api.select_candidate(
             _status(no_users, low_load, balanced), ["GB"], 1637, ""
@@ -1910,12 +1886,8 @@ class CandidateSelectionTests(unittest.TestCase):
         self.assertEqual(candidate[0], "MiddlePenalty")
 
     def test_bandwidth_bonus_coefficient_and_cap_change_the_winner(self):
-        at_cap = _server(
-            "AtCap", "198.51.100.40", bw_max=20000, load=0.15, users=0
-        )
-        over_cap = _server(
-            "OverCap", "198.51.100.41", bw_max=40000, load=0.16, users=0
-        )
+        at_cap = _server("AtCap", "198.51.100.40", bw_max=20000, load=0.15, users=0)
+        over_cap = _server("OverCap", "198.51.100.41", bw_max=40000, load=0.16, users=0)
         no_bandwidth = _server(
             "NoBandwidth", "198.51.100.42", bw_max=0, load=0, users=0
         )
@@ -1948,9 +1920,7 @@ class CandidateSelectionTests(unittest.TestCase):
 
 class NumericValidationTests(unittest.TestCase):
     def test_extreme_negative_exponent_is_rejected_before_formatting(self):
-        payload = _status(
-            _server("TinyLoad", "198.51.100.50", load="1e-10000")
-        )
+        payload = _status(_server("TinyLoad", "198.51.100.50", load="1e-10000"))
 
         with self.assertRaisesRegex(ValueError, "exponent or scale"):
             airvpn_api.select_candidate(payload, ["GB"], 1637, "")
@@ -1965,9 +1935,7 @@ class NumericValidationTests(unittest.TestCase):
 
     def test_overlong_numeric_text_is_rejected_before_decimal_parsing(self):
         overlong_zero = "0" * (MAX_NUMERIC_TEXT_CHARS + 1)
-        payload = _status(
-            _server("LongUsers", "198.51.100.52", users=overlong_zero)
-        )
+        payload = _status(_server("LongUsers", "198.51.100.52", users=overlong_zero))
 
         with self.assertRaisesRegex(ValueError, "at most 64 characters"):
             airvpn_api.select_candidate(payload, ["GB"], 1637, "")
@@ -2038,7 +2006,9 @@ class InputBoundaryTests(unittest.TestCase):
                 airvpn_api._fetch_json("https://example.test/status", 1)
 
     def test_non_https_status_urls_are_rejected_before_open(self):
-        with mock.patch.object(airvpn_api.urllib.request, "build_opener") as build_opener:
+        with mock.patch.object(
+            airvpn_api.urllib.request, "build_opener"
+        ) as build_opener:
             for url in (
                 "http://example.test/status",
                 "file:///tmp/status.json",
@@ -2068,12 +2038,14 @@ class InputBoundaryTests(unittest.TestCase):
         for error_type in (RuntimeError, TypeError):
             stderr = io.StringIO()
             with self.subTest(error_type=error_type.__name__):
-                with mock.patch.object(
-                    airvpn_api,
-                    "validate_egress",
-                    side_effect=error_type("programmer defect"),
-                ), mock.patch.object(sys, "stdin", io.StringIO("{}")), mock.patch.object(
-                    sys, "stderr", stderr
+                with (
+                    mock.patch.object(
+                        airvpn_api,
+                        "validate_egress",
+                        side_effect=error_type("programmer defect"),
+                    ),
+                    mock.patch.object(sys, "stdin", io.StringIO("{}")),
+                    mock.patch.object(sys, "stderr", stderr),
                 ):
                     with self.assertRaises(error_type):
                         airvpn_api.main(["verify-egress"])
@@ -2100,8 +2072,10 @@ class InputBoundaryTests(unittest.TestCase):
 
         for argv, boundary_patch, _unused in cases:
             stderr = io.StringIO()
-            with self.subTest(command=argv[0]), boundary_patch, mock.patch.object(
-                sys, "stderr", stderr
+            with (
+                self.subTest(command=argv[0]),
+                boundary_patch,
+                mock.patch.object(sys, "stderr", stderr),
             ):
                 return_code = airvpn_api.main(argv)
 
@@ -2130,10 +2104,10 @@ class CliTests(unittest.TestCase):
         )
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with mock.patch.object(
-            airvpn_api, "_fetch_json", return_value=payload
-        ) as fetch, mock.patch.object(sys, "stdout", stdout), mock.patch.object(
-            sys, "stderr", stderr
+        with (
+            mock.patch.object(airvpn_api, "_fetch_json", return_value=payload) as fetch,
+            mock.patch.object(sys, "stdout", stdout),
+            mock.patch.object(sys, "stderr", stderr),
         ):
             return_code = airvpn_api.main(
                 [
@@ -2159,9 +2133,11 @@ class CliTests(unittest.TestCase):
             for name in exclusions:
                 argv.extend(("--exclude-server", name))
             stderr = io.StringIO()
-            with self.subTest(exclusions=exclusions), mock.patch.object(
-                airvpn_api, "_fetch_json"
-            ) as fetch, mock.patch.object(sys, "stderr", stderr):
+            with (
+                self.subTest(exclusions=exclusions),
+                mock.patch.object(airvpn_api, "_fetch_json") as fetch,
+                mock.patch.object(sys, "stderr", stderr),
+            ):
                 return_code = airvpn_api.main(argv)
             self.assertEqual(return_code, 2)
             self.assertRegex(stderr.getvalue(), r"^ERROR:")
@@ -2217,9 +2193,11 @@ class CliTests(unittest.TestCase):
 
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with mock.patch.object(airvpn_api, "_fetch_json", return_value=payload), mock.patch.object(
-            sys, "stdout", stdout
-        ), mock.patch.object(sys, "stderr", stderr):
+        with (
+            mock.patch.object(airvpn_api, "_fetch_json", return_value=payload),
+            mock.patch.object(sys, "stdout", stdout),
+            mock.patch.object(sys, "stderr", stderr),
+        ):
             return_code = airvpn_api.main(
                 [
                     "select",
