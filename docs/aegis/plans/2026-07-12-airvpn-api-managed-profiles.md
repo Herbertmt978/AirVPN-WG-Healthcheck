@@ -722,18 +722,18 @@ device lifecycle scope.
 
 **Verification:** complete command bundle and clean diff/status.
 
-- [ ] **Write review assertions.** Check every approved spec heading against a task/commit;
+- [x] **Write review assertions.** Check every approved spec heading against a task/commit;
   scan for placeholders, stale no-credential/no-license claims, duplicate owners, files over
   800 lines, blocks over roughly 80 lines, and unretired fallbacks. Record actionable gaps.
-- [ ] **Verify the assertions fail or pass honestly.** Run the complete verification bundle;
+- [x] **Verify the assertions fail or pass honestly.** Run the complete verification bundle;
   any failure becomes a focused RED regression before correction.
-- [ ] **Implement only verified corrections and ADR.** Record canonical provider/runtime/
+- [x] **Implement only verified corrections and ADR.** Record canonical provider/runtime/
   setup owners, alternatives rejected, static compatibility, device-lifecycle exclusion,
   and retirement trigger. Split code owners if complexity gates are crossed rather than
   accepting an unjustified monolith.
-- [ ] **Verify GREEN.** Rerun the full bundle, secret scans, archive extraction scans,
+- [x] **Verify GREEN.** Rerun the full bundle, secret scans, archive extraction scans,
   workspace/index checks, staged install, and independent code/security reviews.
-- [ ] **Commit.** `git commit -m "Record managed-profile architecture"`.
+- [x] **Commit.** `git commit -m "Record managed-profile architecture"` (`a57b535`).
 
 ## Task 15: Download VM authenticated acceptance and rollback drill
 

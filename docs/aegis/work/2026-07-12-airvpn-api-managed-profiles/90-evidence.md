@@ -390,6 +390,48 @@
   or repository-visibility mutation occurred. Task 14 remains mandatory because the named
   runtime/test owners exceed the approved review threshold.
 
+### Task 14: managed-profile architecture and release-candidate evidence
+
+- Commit `a57b535` records ADR 0001 and resolves the mandatory bounded-owner gate. The
+  installed runtime remains a single root-validated `libexec/wg-healthcheck-managed` file;
+  nine fixed development fragments under `libexec/wg-healthcheck-managed.d/` are assembled
+  by a manifest-driven builder and are never sourced by runtime, installer, or package.
+  `--check` proves the generated artifact is exact and rejects missing, extra, non-regular,
+  symlinked, reordered, drifting, or unsafe output inputs.
+- The provider suite is a 48-line compatibility loader plus bounded support and four fixed
+  groups; health, managed, and installer shell suites use explicit fixed registries and
+  bounded support/groups. Architecture tests prove each test definition or provider class
+  is registered exactly once, runners use no globs, code owners are UTF-8 without BOMs,
+  and all non-exception owners remain at or below 800 lines.
+- ADR 0001 records static and API-managed ownership, the country-selection boundary,
+  rejected runtime-fragment and device-lifecycle alternatives, the status-only exception,
+  trust boundaries, and retirement criteria. It documents the three reviewed production
+  exceptions (`bin/wg-healthcheck`, `libexec/airvpn-api`, and `install.sh`); architecture
+  tests lock those exceptions and the 13 reviewed production blocks over 80 lines.
+- Luna's adversarial review reproduced a mismatch between the ADR and executable trust
+  validation: the healthcheck previously validated only a helper/module and its immediate
+  parent. A focused RED regression now proves every ancestor is absolute, root-owned,
+  non-symlinked, and not group/world writable except for a root-owned sticky directory.
+  The shared validator preserves exact helper/module mode checks and passed real-root tests.
+- Fresh release-candidate verification:
+  - architecture assertions: 11/11 passed;
+  - Python discovery as root: 189/189 passed, including the unchanged 65-test provider
+    registry;
+  - static/runtime Bash: root 89/89 and non-root 89/89 passed;
+  - managed Bash: root 122/122; non-root 118 passed with four expected root-only skips;
+  - installer: root 57 passed with one expected non-root skip; non-root 58/58 passed;
+  - Bash syntax, exact Bash-dialect ShellCheck style, actionlint, generated equivalence,
+    whitespace/diff integrity, and targeted root trust regressions passed.
+- A fresh native-Linux detached clone of exact commit `a57b535` verified both deterministic
+  release formats and their exact 27-file manifest. Pinned Gitleaks 8.30.1 found no leaks
+  in the 2.68 MB current tree, 48 branch commits (~2.34 MB), or either extracted 467.25 KB
+  archive. SHA-256 verification passed for both generated assets.
+- Independent Terra and Luna architecture/security reviews returned READY after closing
+  extensionless-owner, BOM, symlink-root/entry, registry-completeness, generated-order,
+  Bash-dialect, ADR-status, and ancestor-validation findings.
+- No API credential, provider mutation, VM change, tag, push, release, history rewrite, or
+  repository-visibility mutation occurred in Task 14.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.

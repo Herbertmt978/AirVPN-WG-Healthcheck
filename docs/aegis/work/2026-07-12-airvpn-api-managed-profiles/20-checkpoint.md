@@ -4,8 +4,8 @@ Updated: 2026-07-13
 
 ## TodoCheckpointDraft
 
-- **Current todo:** complete Task 14 architecture review, ADR, bounded-owner decision,
-  release-candidate verification, and independent code/security reviews.
+- **Current todo:** complete Task 15 download-VM authenticated acceptance, rollback drill,
+  final credential removal, and static/API-mode handoff.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -27,7 +27,10 @@ Updated: 2026-07-13
   retained cross-instance locks, and signal-safe cleanup; Task 12 dual-mode public
   documentation, MIT licensing, exact country/setup guidance, and safe operator lifecycle;
   Task 13 synchronized v1.1.0 release owners, exact deterministic tar/ZIP packaging,
-  Ubuntu 22.04/24.04 CI, installed-layout verification, and release/history secret scans.
+  Ubuntu 22.04/24.04 CI, installed-layout verification, and release/history secret scans;
+  Task 14 canonical generated-runtime ownership, bounded source/test splits, architecture
+  assertions, full-ancestor root trust validation, ADR acceptance, and exact-commit release
+  verification.
 - **Completed evidence slice:** green Windows-compatible checks plus a complete Ubuntu
   24.04 container baseline, including POSIX modes and ShellCheck. Task 1 independently
   cleared specification and code-quality/security review. Task 2 cleared both reviews
@@ -52,18 +55,22 @@ Updated: 2026-07-13
   reproduced and fixed. Task 12 cleared specification/usability and adversarial security
   review after unsafe persistent-mask rollback, unchecked installer failure, incomplete
   uninstall, missing prerequisites, stale anchors, and ambiguous `ALL` serialization were
-  reproduced and corrected.
-- **Active slice:** Task 14 full architecture/complexity review and release-candidate evidence.
-- **Pending:** implementation Tasks 14-16 from the approved plan.
-- **Evidence refs:** Task 13 commits `66f8a57` and `c99c472`. Native Linux verification:
-  Python root 179/179; static/runtime root and non-root 89/89 each; managed root 122/122 and
+  reproduced and corrected. Task 14 cleared independent architecture/security review after
+  extensionless-owner, symlink-root, registry-completeness, generated-order, Bash-dialect,
+  ADR-status, and full-ancestor trust gaps were reproduced and corrected.
+- **Active slice:** Task 15 download-VM authenticated acceptance and rollback evidence.
+- **Pending:** implementation Tasks 15-16 from the approved plan.
+- **Evidence refs:** Task 14 implementation commit `a57b535`. Native Linux verification:
+  Python root 189/189; static/runtime root and non-root 89/89 each; managed root 122/122 and
   non-root 118 passed with four intentional root-only skips; installer root 57 passed with
-  one intentional skip and non-root 58/58; release tar/ZIP 27-file checks passed. Bash
-  syntax, ShellCheck, actionlint, public documentation 12/12, diff integrity, pinned
-  Gitleaks over 56 commits, the 2.41 MB tree, and both 465.15 KB extracted archives passed.
+  one intentional skip and non-root 58/58; architecture 11/11; release tar/ZIP 27-file
+  checks passed from a clean detached clone of the exact commit. Bash syntax, ShellCheck,
+  actionlint, generated-runtime equivalence, diff integrity, and independent Terra/Luna
+  reviews passed. Pinned Gitleaks found no leaks in 48 branch commits (~2.34 MB), the
+  2.68 MB source tree, or either 467.25 KB extracted archive.
 - **Blocked on:** nothing at this checkpoint.
-- **Next step:** write the Task 14 ADR and architecture assertions, resolve the mandatory
-  oversized-owner decision without widening runtime trust, then run independent reviews.
+- **Next step:** capture redacted VM preflight and rollback material, quiesce the timer and
+  worker, then execute the authenticated dry-run and controlled rollback drill.
 
 ## ResumeStateHint
 
@@ -71,8 +78,8 @@ Updated: 2026-07-13
 - Implementation worktree:
   `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `c99c472`; Task 13 is committed and the worktree is
-  clean before Task 13 evidence-record updates.
+- Last accepted implementation commit: `a57b535`; Task 14 is committed and the worktree is
+  clean before Task 14 evidence-record updates.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -85,13 +92,13 @@ Updated: 2026-07-13
 - **New owners:** managed Bash module and setup Python tool are explicit and bounded.
 - **Fallbacks:** static mode is an explicit product choice, not a managed-error fallback.
 - **Retirement:** only obsolete "no credentials anywhere" assertions retire in v1.1.
-- **Complexity:** `libexec/airvpn-api` is 1,563 lines, `tests/test_airvpn_api.py` is
-  2,241 lines, `bin/wg-healthcheck` is 2,218 lines,
-  `libexec/wg-healthcheck-managed` is 3,792 lines, `tests/test_wg_healthcheck.sh` is 3,206
-  lines, `tests/test_wg_managed_profiles.sh` is 6,407 lines, `install.sh` is 1,111 lines,
-  and `tests/test_install.sh` is 2,248 lines. The setup owner is a 62-line launcher plus
-  focused Python modules, each at or below 723 lines. The remaining Bash/provider/installer
-  owners exceed the review threshold; Task 14's split/ownership decision remains mandatory
-  and cannot be waived before release.
-- **Evidence decision:** `continue` to Task 14; Tasks 1-13 are accepted, while release and
+- **Complexity:** the three reviewed production exceptions are `bin/wg-healthcheck` at
+  2,214 lines, `libexec/airvpn-api` at 1,563 lines, and `install.sh` at 1,111 lines. The
+  generated managed runtime remains one 3,792-line installed owner, assembled from nine
+  fixed development fragments no longer than 581 lines. Provider tests use a 48-line
+  compatibility loader plus bounded support/groups; health, managed, and installer runners
+  are 133, 182, and 101 lines, with every split owner at or below 752 lines. Architecture
+  tests enforce the exact owner exceptions, 13 reviewed long blocks, registries, encodings,
+  symlink boundaries, and generated-source manifest.
+- **Evidence decision:** `continue` to Task 15; Tasks 1-14 are accepted, while release and
   live VM completion remain unclaimed.
