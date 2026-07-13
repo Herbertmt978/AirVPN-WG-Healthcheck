@@ -1225,9 +1225,14 @@ def _read_generator_response(response):
         with response:
             status = response.getcode()
             if status != 200:
+                phase = (
+                    GeneratorTransientPhase.TRANSPORT
+                    if status == 408 or 300 <= status < 400 or status >= 500
+                    else GeneratorTransientPhase.RESPONSE
+                )
                 classified_error = GeneratorTransientError(
                     "authenticated provider response was rejected",
-                    GeneratorTransientPhase.RESPONSE,
+                    phase,
                 )
             else:
                 media_type = _response_media_type(response.headers)
@@ -1412,14 +1417,22 @@ def _generate_profile_secret_body(
             expected_endpoint,
         )
 
-        if installed_profile is not None:
-            if not profiles_have_same_identity(installed_profile, generated):
-                raise IdentityMismatchError(
-                    "generated WireGuard profile identity does not match"
-                )
-            generated = _compose_pinned_profile(installed_profile, generated)
+        try:
+            if installed_profile is not None:
+                if not profiles_have_same_identity(installed_profile, generated):
+                    raise IdentityMismatchError(
+                        "generated WireGuard profile identity does not match"
+                    )
+                generated = _compose_pinned_profile(installed_profile, generated)
 
-        rendered = render_wireguard_profile(generated)
+            rendered = render_wireguard_profile(generated)
+        except IdentityMismatchError:
+            raise
+        except (AirVPNAPIError, UnicodeError, ValueError):
+            raise GeneratorTransientError(
+                "generated WireGuard profile was rejected",
+                GeneratorTransientPhase.PROFILE,
+            ) from None
         _write_private_profile(output_stream, rendered)
         _close_private_stream(output_stream)
         output_stream = None

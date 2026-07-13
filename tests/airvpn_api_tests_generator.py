@@ -338,6 +338,11 @@ class GeneratorBoundaryTests(unittest.TestCase):
 
         wrong_status = _Response(_generator_profile())
         wrong_status.status = 201
+        transport_statuses = []
+        for status in (302, 408, 500, 503):
+            response = _Response(_generator_profile())
+            response.status = status
+            transport_statuses.append(response)
         rejected = (
             _Response(_generator_profile(), content_type=None),
             _Response(_generator_profile(), content_type="text/html"),
@@ -357,6 +362,12 @@ class GeneratorBoundaryTests(unittest.TestCase):
                 self.assertEqual(result.stdout, "failure\ttransient\tphase=response\n")
                 self.assertEqual(result.output_stream.write_calls, [])
                 self.assertTrue(response.closed)
+
+        for response in transport_statuses:
+            with self.subTest(status=response.status):
+                result = self._run_generator(response=response)
+                self.assertEqual(result.return_code, 6)
+                self.assertEqual(result.stdout, "failure\ttransient\tphase=transport\n")
 
     def test_json_error_on_http_200_is_classified_without_remote_text(self):
         remote_secret = "provider-secret-detail-should-not-escape"
@@ -650,6 +661,22 @@ class GeneratorBoundaryTests(unittest.TestCase):
         self.assertNotIn(marker, repr(error))
         self.assertNotIn(marker, str(error))
         self.assertNotIn(marker, repr(vars(error)))
+
+    def test_generated_profile_contract_failure_is_profile_phase(self):
+        marker = "generated-profile-contract-marker"
+        with mock.patch.object(
+            airvpn_api,
+            "render_wireguard_profile",
+            side_effect=airvpn_api.AirVPNAPIError(marker),
+        ):
+            result = self._run_generator(response=_Response(_generator_profile()))
+        self.assertEqual(result.return_code, 6)
+        self.assertEqual(result.stdout, "failure\ttransient\tphase=profile\n")
+        self.assertEqual(
+            result.stderr,
+            "ERROR: authenticated provider request failed\n",
+        )
+        self.assertNotIn(marker, result.stderr)
 
     def test_secret_failures_raise_only_from_secret_free_module_frames(self):
         payload_marker = b"fd5-invalid-payload-marker"
