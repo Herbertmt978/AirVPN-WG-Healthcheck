@@ -354,6 +354,42 @@
   both archives, and extends CI/release scanning.
 - No VM, tag, release, history rewrite, push, or repository-visibility mutation occurred.
 
+### Task 13: v1.1.0 release surface and deterministic packaging
+
+- Commit `66f8a57` synchronizes `VERSION` and the runtime at `1.1.0`, adds release notes and
+  changelog Added/Changed/Security sections, updates public issue redaction guidance, and
+  introduces Ubuntu 22.04/24.04 branch-cancelling CI plus non-cancelling tag publication.
+- The curated source release contains exactly 27 files. Tar and ZIP payloads are generated
+  deterministically from the requested Git tree, normalize regular-file modes to `0644`
+  and the four launchers/helpers to `0755`, reject duplicate or unexpected members, and
+  install every runtime, setup-package, configuration, and systemd owner from both formats.
+- Release contracts require the checked-out packager/test to match the requested ref,
+  validate static defaults plus offline API country selection, reject runtime artifacts,
+  labelled key/profile assignments, bare 64-hex key records, and serialized host IDs, and
+  verify exact installed contents and private modes.
+- The new non-root managed CI lane reproduced one stale test-fixture failure: the
+  descriptor-privacy test simulated root for the interface lock but still executed the
+  real root-only setup-guard metadata owner. Commit `c99c472` keeps the production check
+  unchanged, substitutes only that fixture seam, and now proves the credential descriptor
+  is closed inside the guard metadata child before reaching the exact managed owner.
+- Fresh native Linux verification:
+  - Python discovery as root: 179/179 passed;
+  - static/runtime Bash: root 89/89 and non-root 89/89 passed;
+  - managed Bash: root 122/122; non-root 118 passed with four expected root-only skips;
+  - installer: root 57 passed with one expected non-root skip; non-root 58/58 passed;
+  - release contract: 27 files verified; deterministic tar/ZIP installation checks passed;
+  - public documentation: 12/12 passed;
+  - Bash syntax, ShellCheck style, actionlint, and diff integrity passed.
+- Pinned Gitleaks 8.30.1 found no leak across 56 commits (~2.53 MB), the current source tree
+  (~2.41 MB), the extracted tar (~465.15 KB), or the extracted ZIP (~465.15 KB).
+- Luna adversarial release review found and closed ref/worktree packager skew, a broken
+  offline v1.0 link, incomplete archive-install assertions, duplicate-member/mode gaps,
+  raw-key scanning, and missing extracted country-selection coverage. Terra workflow review
+  established the exact root/non-root execution and sanitized Python path requirements.
+- No API credential, live provider mutation, VM change, tag, push, release, history rewrite,
+  or repository-visibility mutation occurred. Task 14 remains mandatory because the named
+  runtime/test owners exceed the approved review threshold.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.

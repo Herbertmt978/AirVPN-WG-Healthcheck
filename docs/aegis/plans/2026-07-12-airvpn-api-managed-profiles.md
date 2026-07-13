@@ -692,20 +692,20 @@ are pushed.
 
 **Verification:** release tests, reproducible double build, workflow lint, and secret scans.
 
-- [ ] **Write RED tests.** Require synchronized `1.1.0`; release notes; MIT/setup/managed
+- [x] **Write RED tests.** Require synchronized `1.1.0`; release notes; MIT/setup/managed
   module/operations in exact tar+ZIP contents and modes; absence of keys/profiles/candidates/
   markers/state/host IDs; Ubuntu 22.04+24.04 deterministic CI matrix; branch concurrency;
   credential-free smoke; and non-cancelling release concurrency.
-- [ ] **Verify RED.** Run `bash tests/test_release.sh --ref HEAD` and public doc tests; require
+- [x] **Verify RED.** Run `bash tests/test_release.sh --ref HEAD` and public doc tests; require
   precise failures for old version/missing artifacts.
-- [ ] **Implement release surface.** Update version owners, changelog Added/Changed/Security
+- [x] **Implement release surface.** Update version owners, changelog Added/Changed/Security
   sections and non-ancestry v1.1 link, curated notes, archive allowlists, installer-from-
   archive assertions, CI matrix/concurrency, syntax/ShellCheck lists, and setup/provider
   installation in systemd verification.
-- [ ] **Verify GREEN.** Run release tests twice into separate dirs and compare all three
+- [x] **Verify GREEN.** Run release tests twice into separate dirs and compare all three
   assets, actionlint, full deterministic checks, and pinned redacted Gitleaks on history
   plus extracted archives.
-- [ ] **Commit.** `git commit -m "Prepare the 1.1.0 release"`.
+- [x] **Commit.** `git commit -m "Prepare the 1.1.0 release"`.
 
 ## Task 14: Full review, ADR, and release-candidate evidence
 

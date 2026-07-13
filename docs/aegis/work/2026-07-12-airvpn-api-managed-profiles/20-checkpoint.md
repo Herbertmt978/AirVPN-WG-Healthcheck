@@ -4,8 +4,8 @@ Updated: 2026-07-13
 
 ## TodoCheckpointDraft
 
-- **Current todo:** implement Task 13 versioning, release notes, exact archive contents,
-  Ubuntu 22.04/24.04 CI, and release artifact/history secret scans.
+- **Current todo:** complete Task 14 architecture review, ADR, bounded-owner decision,
+  release-candidate verification, and independent code/security reviews.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -25,7 +25,9 @@ Updated: 2026-07-13
   timer commit ordering, and setup-only candidate cleanup; Task 11 exact managed-artifact
   installation, fail-closed live/quiesced upgrades, dual inert entrypoint publication,
   retained cross-instance locks, and signal-safe cleanup; Task 12 dual-mode public
-  documentation, MIT licensing, exact country/setup guidance, and safe operator lifecycle.
+  documentation, MIT licensing, exact country/setup guidance, and safe operator lifecycle;
+  Task 13 synchronized v1.1.0 release owners, exact deterministic tar/ZIP packaging,
+  Ubuntu 22.04/24.04 CI, installed-layout verification, and release/history secret scans.
 - **Completed evidence slice:** green Windows-compatible checks plus a complete Ubuntu
   24.04 container baseline, including POSIX modes and ShellCheck. Task 1 independently
   cleared specification and code-quality/security review. Task 2 cleared both reviews
@@ -51,18 +53,17 @@ Updated: 2026-07-13
   review after unsafe persistent-mask rollback, unchecked installer failure, incomplete
   uninstall, missing prerequisites, stale anchors, and ambiguous `ALL` serialization were
   reproduced and corrected.
-- **Active slice:** Task 13 version, changelog, release notes, packaging, and CI.
-- **Pending:** implementation Tasks 13-16 from the approved plan.
-- **Evidence refs:** Task 12 commit `0e3f74a`. Public documentation: 12/12 passed; native
-  Linux installer contracts: root 57 passed with one intentional non-root skip and non-root
-  58/58; Bash syntax, ShellCheck 0.11.0, local-link checks, diff integrity, and pinned
-  Gitleaks over the 2.38 MB current tree passed. Independent Terra and Luna reviews returned
-  READY for Task 12. They explicitly retain Task 13 blockers for version synchronization,
-  v1.1 notes, complete installable archives, dual-version CI, and artifact scans before any
-  tag or publication.
+- **Active slice:** Task 14 full architecture/complexity review and release-candidate evidence.
+- **Pending:** implementation Tasks 14-16 from the approved plan.
+- **Evidence refs:** Task 13 commits `66f8a57` and `c99c472`. Native Linux verification:
+  Python root 179/179; static/runtime root and non-root 89/89 each; managed root 122/122 and
+  non-root 118 passed with four intentional root-only skips; installer root 57 passed with
+  one intentional skip and non-root 58/58; release tar/ZIP 27-file checks passed. Bash
+  syntax, ShellCheck, actionlint, public documentation 12/12, diff integrity, pinned
+  Gitleaks over 56 commits, the 2.41 MB tree, and both 465.15 KB extracted archives passed.
 - **Blocked on:** nothing at this checkpoint.
-- **Next step:** write and verify Task 13 RED release contracts, then make the v1.1 archives
-  complete, deterministic, installable, and secret-scanned on both supported Ubuntu lines.
+- **Next step:** write the Task 14 ADR and architecture assertions, resolve the mandatory
+  oversized-owner decision without widening runtime trust, then run independent reviews.
 
 ## ResumeStateHint
 
@@ -70,7 +71,7 @@ Updated: 2026-07-13
 - Implementation worktree:
   `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `0e3f74a`; Task 12 is committed and the worktree is
+- Last accepted implementation commit: `c99c472`; Task 13 is committed and the worktree is
   clean before Task 13 evidence-record updates.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
@@ -87,10 +88,10 @@ Updated: 2026-07-13
 - **Complexity:** `libexec/airvpn-api` is 1,563 lines, `tests/test_airvpn_api.py` is
   2,241 lines, `bin/wg-healthcheck` is 2,218 lines,
   `libexec/wg-healthcheck-managed` is 3,792 lines, `tests/test_wg_healthcheck.sh` is 3,206
-  lines, `tests/test_wg_managed_profiles.sh` is 6,404 lines, `install.sh` is 1,111 lines,
-  and `tests/test_install.sh` is 2,238 lines. The setup owner is a 62-line launcher plus
+  lines, `tests/test_wg_managed_profiles.sh` is 6,407 lines, `install.sh` is 1,111 lines,
+  and `tests/test_install.sh` is 2,248 lines. The setup owner is a 62-line launcher plus
   focused Python modules, each at or below 723 lines. The remaining Bash/provider/installer
   owners exceed the review threshold; Task 14's split/ownership decision remains mandatory
   and cannot be waived before release.
-- **Evidence decision:** `continue` to Task 13; Tasks 1-12 are accepted, while release and
+- **Evidence decision:** `continue` to Task 14; Tasks 1-13 are accepted, while release and
   live VM completion remain unclaimed.
