@@ -25,7 +25,7 @@ MANAGED_FRAGMENTS = (
 REVIEW_LINE_LIMIT = 800
 REVIEW_EXCEPTIONS = {
     Path("bin/wg-healthcheck"): 2214,
-    Path("libexec/airvpn-api"): 1631,
+    Path("libexec/airvpn-api"): 1718,
     Path("install.sh"): 1154,
 }
 CODE_SUFFIXES = {".bash", ".py", ".sh"}
@@ -155,6 +155,7 @@ class ArchitectureContractTests(unittest.TestCase):
             "### Block-level review",
             "persistent record version",
             "provider transport",
+            "trusted installed profile",
             "installer artifact",
         ):
             self.assertIn(required, text)

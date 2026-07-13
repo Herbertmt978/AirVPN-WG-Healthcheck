@@ -202,6 +202,8 @@ managed_journal_file_is_secure() {
 
 managed_profile_file_is_secure() {
   local wgmanaged_path="${1:?}" wgmanaged_metadata wgmanaged_size
+  validate_secure_parent_directory "$wgmanaged_path" "WireGuard profile directory" 700 ||
+    return 1
   [[ -f "$wgmanaged_path" && ! -L "$wgmanaged_path" ]] || return 1
   wgmanaged_metadata="$(owner_mode "$wgmanaged_path")" || return 1
   [[ "$wgmanaged_metadata" == 0:600 ]] || return 1

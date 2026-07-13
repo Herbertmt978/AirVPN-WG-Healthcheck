@@ -27,6 +27,10 @@ Interactive setup lists countries that currently have eligible WireGuard servers
 
 API mode uses a fixed device name. It can refresh profile peer material, but does not create, renew, revoke, or delete a device. A generated profile must match the installed interface identity before setup can adopt it.
 
+### Installed WireGuard hooks
+
+Provider-generated profiles reject every hook. The fixed fd5 adoption path may preserve only repeated `PostUp` and `PostDown` commands from the validated root-owned installed profile, in their original order. These commands already run as root through `wg-quick`; review them before enabling API mode. The profile must be a root-owned mode-`0600` regular file, and its immediate directory (normally `/etc/wireguard`) must be a root-owned, non-symlinked directory with exact mode `0700`. `PreUp`, `PreDown`, `SaveConfig`, hooks under `[Peer]`, and unknown directives fail before the authenticated request or profile mutation. The pre-managed snapshot still retains the exact original file for static rollback.
+
 ## Credential lifecycle
 
 The credential location is `/etc/wireguard/healthcheck.d/<iface>.api-key`. It is root-owned mode `0600` beneath a root-owned mode-`0700` directory. Never provide a key in an argument, command line, or environment variable. Interactive setup uses a hidden terminal prompt; automation accepts only `--credential-file` pointing at a root-owned file.

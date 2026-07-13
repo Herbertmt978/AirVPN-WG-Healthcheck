@@ -47,6 +47,7 @@ _API_KEY = re.compile(rb"[0-9a-f]{64}\n\Z")
 _SERVER_NAME = re.compile(r"[A-Za-z0-9-]{1,64}\Z")
 _DEVICE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}\Z")
 _INTERFACE_FIELDS = frozenset(("Address", "PrivateKey", "MTU", "DNS", "Table"))
+_TRUSTED_INSTALLED_HOOKS = frozenset(("PostUp", "PostDown"))
 _PEER_FIELDS = frozenset(
     ("PublicKey", "PresharedKey", "Endpoint", "AllowedIPs", "PersistentKeepalive")
 )
@@ -128,6 +129,14 @@ class WireGuardProfile:
     endpoint: str
     allowed_ips: str
     persistent_keepalive: int
+
+
+@dataclass(frozen=True)
+class _TrustedInstalledProfile:
+    """Strict profile plus root-owned hooks that never enter the provider model."""
+
+    profile: WireGuardProfile = field(repr=False)
+    interface_hooks: tuple[str, ...] = field(repr=False)
 
 
 def _validate_port(value):
@@ -396,7 +405,33 @@ def parse_wireguard_profile(
     )
 
 
+def _parse_trusted_installed_profile(payload: bytes) -> _TrustedInstalledProfile:
+    """Parse fixed-fd installed bytes while retaining only local post hooks."""
+
+    retained = []
+    hooks = []
+    section = None
+    for line in _profile_lines(payload):
+        stripped = line.strip()
+        if stripped in ("[Interface]", "[Peer]"):
+            section = stripped[1:-1]
+        if section == "Interface" and "=" in line:
+            name, value = (part.strip() for part in line.split("=", 1))
+            if name in _TRUSTED_INSTALLED_HOOKS:
+                if not value:
+                    raise AirVPNAPIError("installed WireGuard hook must not be empty")
+                hooks.append(line)
+                continue
+        retained.append(line)
+    strict_payload = ("\n".join(retained) + "\n").encode("utf-8")
+    return _TrustedInstalledProfile(
+        profile=parse_wireguard_profile(strict_payload),
+        interface_hooks=tuple(hooks),
+    )
+
+
 _INVALID_PROFILE_OBJECT = object()
+_INVALID_TRUSTED_INSTALLED_PROFILE = object()
 
 
 def _try_normalize_wireguard_profile(profile):
@@ -470,6 +505,31 @@ def _try_normalize_wireguard_profile(profile):
         return _INVALID_PROFILE_OBJECT
 
 
+def _try_normalize_trusted_installed_profile(installed):
+    try:
+        if type(installed) is not _TrustedInstalledProfile:
+            return _INVALID_TRUSTED_INSTALLED_PROFILE
+        profile = _try_normalize_wireguard_profile(installed.profile)
+        if profile is _INVALID_PROFILE_OBJECT or type(installed.interface_hooks) is not tuple:
+            return _INVALID_TRUSTED_INSTALLED_PROFILE
+        hooks = []
+        for hook in installed.interface_hooks:
+            if type(hook) is not str or "=" not in hook:
+                return _INVALID_TRUSTED_INSTALLED_PROFILE
+            name, command = (part.strip() for part in hook.split("=", 1))
+            if (
+                name not in _TRUSTED_INSTALLED_HOOKS
+                or not command
+                or any(not character.isprintable() for character in hook)
+                or len(hook.encode("utf-8")) > MAX_PROFILE_LINE_BYTES
+            ):
+                return _INVALID_TRUSTED_INSTALLED_PROFILE
+            hooks.append(hook)
+        return _TrustedInstalledProfile(profile=profile, interface_hooks=tuple(hooks))
+    except Exception:
+        return _INVALID_TRUSTED_INSTALLED_PROFILE
+
+
 def _normalize_wireguard_profile(profile: WireGuardProfile) -> WireGuardProfile:
     """Validate model fields without retaining secret-bearing failure details."""
 
@@ -479,9 +539,7 @@ def _normalize_wireguard_profile(profile: WireGuardProfile) -> WireGuardProfile:
     return normalized
 
 
-def render_wireguard_profile(profile: WireGuardProfile) -> bytes:
-    """Render validated profile data in the canonical managed-profile format."""
-
+def _render_wireguard_profile(profile, interface_hooks):
     profile = _normalize_wireguard_profile(profile)
     lines = [
         _GENERATED_PROFILE_HEADER,
@@ -494,6 +552,7 @@ def render_wireguard_profile(profile: WireGuardProfile) -> bytes:
         lines.append(f"DNS = {', '.join(profile.dns)}")
     if profile.table is not None:
         lines.append(f"Table = {profile.table}")
+    lines.extend(interface_hooks)
     lines.extend(
         (
             "",
@@ -506,6 +565,12 @@ def render_wireguard_profile(profile: WireGuardProfile) -> bytes:
         )
     )
     return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def render_wireguard_profile(profile: WireGuardProfile) -> bytes:
+    """Render validated provider data without any executable local hooks."""
+
+    return _render_wireguard_profile(profile, ())
 
 
 def _normalized_profiles_have_same_identity(expected, candidate):
@@ -549,6 +614,29 @@ def _compose_pinned_profile(
             persistent_keepalive=generated.persistent_keepalive,
         )
     )
+
+
+def _render_trusted_pinned_profile(installed, generated):
+    """Render generated peer data plus hooks retained from fixed fd 5 only."""
+
+    installed = _try_normalize_trusted_installed_profile(installed)
+    if installed is _INVALID_TRUSTED_INSTALLED_PROFILE:
+        raise AirVPNAPIError("trusted installed WireGuard profile is invalid")
+    if not profiles_have_same_identity(installed.profile, generated):
+        raise IdentityMismatchError(
+            "generated WireGuard profile identity does not match"
+        )
+    pinned = _compose_pinned_profile(installed.profile, generated)
+    base = _render_wireguard_profile(pinned, ())
+    hook_bytes = sum(
+        len(hook.encode("utf-8")) + 1 for hook in installed.interface_hooks
+    )
+    if (
+        len(base.splitlines()) + len(installed.interface_hooks) > MAX_PROFILE_LINES
+        or len(base) + hook_bytes > MAX_PROFILE_BYTES
+    ):
+        raise AirVPNAPIError("trusted installed WireGuard profile is invalid")
+    return _render_wireguard_profile(pinned, installed.interface_hooks)
 
 
 def validate_status_payload(data):
@@ -1401,7 +1489,7 @@ def _generate_profile_secret_body(
             )
             _close_private_stream(installed_stream)
             installed_stream = None
-            installed_profile = parse_wireguard_profile(installed_payload)
+            installed_profile = _parse_trusted_installed_profile(installed_payload)
 
         request = urllib.request.Request(
             _generator_url(server, device, port),
@@ -1419,13 +1507,12 @@ def _generate_profile_secret_body(
 
         try:
             if installed_profile is not None:
-                if not profiles_have_same_identity(installed_profile, generated):
-                    raise IdentityMismatchError(
-                        "generated WireGuard profile identity does not match"
-                    )
-                generated = _compose_pinned_profile(installed_profile, generated)
-
-            rendered = render_wireguard_profile(generated)
+                rendered = _render_trusted_pinned_profile(
+                    installed_profile,
+                    generated,
+                )
+            else:
+                rendered = render_wireguard_profile(generated)
         except IdentityMismatchError:
             raise
         except (AirVPNAPIError, UnicodeError, ValueError):

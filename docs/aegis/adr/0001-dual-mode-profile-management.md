@@ -88,7 +88,7 @@ equivalence. Three production files remain a frozen review-size exception for v1
 
 - `bin/wg-healthcheck` (2,214 lines), because splitting descriptor capture, static dispatch,
   and secure managed admission would add a source or process boundary to the static path;
-- `libexec/airvpn-api` (1,631 lines), because splitting its isolated executable would alter
+- `libexec/airvpn-api` (1,718 lines), because splitting its isolated executable would alter
   the fixed private-descriptor, import, installation, and archive contract;
 - `install.sh` (1,154 lines), because its inert-guard-to-final-launcher publication order is
   one linear rollback invariant.
@@ -116,6 +116,24 @@ of shell variables while still rejecting any byte-level difference. The hasher e
 and its fixed-path ancestors are revalidated after every credential and candidate descriptor
 is closed in that subprocess. A future provider feature still triggers extraction or a
 superseding decision; this diagnostic exception is not a general growth allowance.
+
+The next authenticated dry run exposed a different live compatibility boundary: the
+trusted installed profile uses root-owned routing commands in repeated `PostUp` and
+`PostDown` directives. Rejecting those local directives prevented identity pinning before
+the authenticated request, while dropping them would have overwritten operator routing.
+The accepted increase from 1,631 to 1,718 lines is limited to a private trusted installed
+profile wrapper, strict extraction and redacted validation of those two directive names,
+and a private pinned renderer. The public/provider `WireGuardProfile` model, parser, and
+renderer remain hook-free. Provider `PreUp`, `PostUp`, `PreDown`, `PostDown`, `SaveConfig`,
+peer hooks, and unknown directives are still rejected; trusted fd5 input still rejects
+`PreUp`, `PreDown`, `SaveConfig`, peer hooks, and unknown directives. Existing 64-KiB,
+64-line, and 1-KiB-line limits remain in force, each raw directive and its repetitions
+retain exact installed text and order, and hook values are omitted from representations
+and errors. This path is reachable only after the runtime validates the fixed profile as a
+root-owned mode-`0600` regular file in its root-owned, non-symlinked mode-`0700` immediate
+directory and supplies it on fixed fd5. No provider field can be reclassified as a trusted
+installed hook. This compatibility repair does not authorize another helper increase or
+relax the future extraction/superseding-decision trigger.
 
 ### Block-level review
 

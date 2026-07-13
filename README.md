@@ -53,6 +53,8 @@ Static mode keeps the existing `/etc/wireguard/<iface>.conf` under operator cont
 
 API-managed mode is an explicit `AIRVPN_PROFILE_SOURCE=api` choice. It uses one **fixed device** and rejects a generated profile whose interface identity differs from the installed profile. The service may repair peer material and change server selection, but it does not create, renew, revoke, or delete a device.
 
+Generated provider profiles always reject every executable hook. During identity-pinned adoption and rotation, a validated root-owned installed profile may retain repeated `PostUp` and `PostDown` commands in their original order; these remain local code executed as root by `wg-quick`. Review them before setup. `PreUp`, `PreDown`, `SaveConfig`, peer hooks, and unknown directives block API adoption without changing the installed profile.
+
 For API mode, setup shows eligible countries from public status data before asking for the key:
 
 - One country is a strict single-country policy.
@@ -132,7 +134,7 @@ sudo ./install.sh wg0
 sudoedit /etc/wireguard/healthcheck.d/wg0.conf
 ```
 
-The health-check configuration is data, not shell code. It must be root-owned, mode `0600`, and not a symlink. Unknown and duplicate keys are rejected; do not add `export`, command substitutions, variable expansions, or shell commands. The WireGuard profile must also be a root-owned mode-`0600` regular file with exactly one `[Peer]` and numeric endpoint address.
+The health-check configuration is data, not shell code. It must be root-owned, mode `0600`, and not a symlink. Unknown and duplicate keys are rejected; do not add `export`, command substitutions, variable expansions, or shell commands. The WireGuard profile must also be a root-owned mode-`0600` regular file with exactly one `[Peer]` and numeric endpoint address. API-managed adoption and rotation additionally require its immediate directory (normally `/etc/wireguard`) to be a root-owned, non-symlinked directory with exact mode `0700`.
 
 `sudo ./install.sh --enable wg0` is for an already-reviewed configuration only. It enables and starts the timer after installation; the ordinary installer does not.
 

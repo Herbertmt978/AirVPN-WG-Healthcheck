@@ -22,6 +22,8 @@ All notable changes to this project are documented here. Release numbers follow
   quiesced live upgrades, an MIT license, and a complete operator guide.
 - Secret-free authenticated failure phases that distinguish transport, response-contract,
   generated-profile, and contained internal failures without exposing provider material.
+- Compatibility-safe retention of ordered, repeated `PostUp` and `PostDown` commands from
+  the validated root-owned installed profile; provider profiles remain hook-free.
 
 ### Changed
 
@@ -57,6 +59,8 @@ All notable changes to this project are documented here. Release numbers follow
   device.
 - Provider failure diagnostics cross the secret boundary only as one fixed allowlisted
   phase; malformed, additional, or provider-controlled output is discarded.
+- Local hook provenance stays separate from the provider profile model and renderer;
+  `PreUp`, `PreDown`, `SaveConfig`, peer hooks, and unknown directives remain rejected.
 
 ## [1.0.0] - 2026-07-12
 

@@ -371,9 +371,9 @@ Required structure:
 - numeric endpoint matching the selected server and configured WireGuard port;
 - MTU `1320`, keepalive `15`, and exactly `0.0.0.0/0` for `AllowedIPs`.
 
-Rejected content includes unknown sections, duplicate security fields, additional peers,
-`SaveConfig`, `PreUp`, `PostUp`, `PreDown`, `PostDown`, shell syntax, control characters,
-hostnames, unexpected routes, and oversized responses.
+Rejected provider content includes unknown sections, duplicate security fields, additional
+peers, `SaveConfig`, `PreUp`, `PostUp`, `PreDown`, `PostDown`, shell syntax, control
+characters, hostnames, unexpected routes, and oversized responses.
 
 Managed mode uses a canonical allowlist rather than preserving arbitrary local text. The
 rendered `[Interface]` contains `Address`, `PrivateKey`, `MTU`, optional `DNS`, and optional
@@ -382,11 +382,16 @@ only `PublicKey`, `PresharedKey`, `Endpoint`, `AllowedIPs`, and `PersistentKeepa
 Comments are replaced by a fixed generated header; the exact pre-managed file retains the
 operator's original formatting and comments for rollback.
 
-Existing managed adoption rejects every hook, `SaveConfig`, unknown directive, additional
-address, or additional peer. Runtime rotation requires the generated interface private key
-and IPv4 address to equal the current values before any qBittorrent or tunnel mutation.
-Candidate rendering uses those unchanged interface values, the validated optional local
-`Table`, and the newly generated AirVPN peer fields.
+The provider model and public renderer remain unable to carry hooks. The fixed fd5 pinning
+path parses the already validated root-owned installed profile into a private wrapper and
+may retain only ordered, repeated Interface `PostUp` and `PostDown` commands, including
+their exact original directive text and significant whitespace. `PreUp`,
+`PreDown`, `SaveConfig`, peer hooks, unknown directives, an additional address, or an
+additional peer still block adoption before HTTP or mutation. Runtime rotation requires the
+generated interface private key and IPv4 address to equal the current values before any
+qBittorrent or tunnel mutation. Candidate rendering uses those unchanged interface values,
+the validated optional local `Table`, retained local post hooks, and newly generated AirVPN
+peer fields. Generated/provider hooks can never cross into that private wrapper.
 
 For first provisioning without an existing profile, only the canonical allowlisted
 generated profile is installed. The installer itself never provisions implicitly.
@@ -719,8 +724,10 @@ Automated tests must prove:
 - a sentinel key is absent from arguments, environment, URLs, output, errors, logs, status,
   state, release archives, and process listings;
 - authenticated requests reject redirects and never echo headers or response bodies;
-- malicious profiles with hooks, duplicates, extra peers, malformed keys, hostnames,
-  changed identity, or unexpected routes are rejected before tunnel-down;
+- malicious provider profiles with hooks, duplicates, extra peers, malformed keys,
+  hostnames, changed identity, or unexpected routes are rejected before tunnel-down;
+- only bounded, ordered `PostUp`/`PostDown` commands from the trusted installed fd5 profile
+  survive pinning; forged wrappers and every other installed directive fail redacted;
 - active-to-candidate and backup-to-candidate identity checks reject changed private key,
   canonical IPv4 `/32`, or optional `Table` without exposing a key through output, logs,
   tracing, process arguments, or helper pipelines;

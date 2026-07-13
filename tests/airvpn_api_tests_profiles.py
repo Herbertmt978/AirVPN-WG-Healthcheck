@@ -64,6 +64,44 @@ class ProfileParsingTests(unittest.TestCase):
             with self.subTest(label=label), self.assertRaises(ValueError):
                 self._parse(payload)
 
+    def test_trusted_installed_post_hooks_are_preserved_in_order_and_redacted(self):
+        hooks = (
+            "  PostUp  = /usr/local/sbin/route-enable %i\\ ",
+            "PostUp=/usr/local/sbin/route-confirm %i",
+            "PostDown = /usr/local/sbin/route-remove %i",
+        )
+        payload = _wireguard_profile(interface_extra=hooks)
+
+        self.assertTrue(
+            hasattr(airvpn_api, "_parse_trusted_installed_profile"),
+            "trusted installed-profile parser is not implemented",
+        )
+        installed = airvpn_api._parse_trusted_installed_profile(payload)
+
+        self.assertEqual(installed.interface_hooks, hooks)
+        self.assertEqual(
+            installed.profile,
+            self._parse(_wireguard_profile()),
+        )
+        for hook in hooks:
+            self.assertNotIn(hook, repr(installed))
+
+    def test_trusted_installed_parser_rejects_every_other_extra_directive(self):
+        cases = {
+            "PreUp": _wireguard_profile(interface_extra=("PreUp = /usr/bin/true",)),
+            "PreDown": _wireguard_profile(
+                interface_extra=("PreDown = /usr/bin/true",)
+            ),
+            "SaveConfig": _wireguard_profile(interface_extra=("SaveConfig = true",)),
+            "unknown": _wireguard_profile(interface_extra=("Unknown = value",)),
+            "peer hook": _wireguard_profile(peer_extra=("PostUp = /usr/bin/true",)),
+            "empty hook": _wireguard_profile(interface_extra=("PostUp = ",)),
+        }
+
+        for label, payload in cases.items():
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                airvpn_api._parse_trusted_installed_profile(payload)
+
     def test_noncanonical_or_zero_wireguard_keys_are_rejected(self):
         zero_key = base64.b64encode(bytes([0]) * 32).decode("ascii")
         short_key = base64.b64encode(bytes([4]) * 31).decode("ascii")
@@ -457,6 +495,102 @@ class ProfileRenderingTests(unittest.TestCase):
                     generated,
                     forged,
                 )
+
+    def test_pinning_renders_only_trusted_installed_hooks_with_repeats_and_order(self):
+        hooks = (
+            "  PostUp  = /usr/local/sbin/enable %i\\ ",
+            "PostUp=/usr/local/sbin/confirm %i",
+            "PostDown = /usr/local/sbin/remove %i",
+        )
+        installed = airvpn_api._parse_trusted_installed_profile(
+            _wireguard_profile(
+                table="123",
+                interface_extra=hooks,
+            )
+        )
+        generated = self._parse(
+            _wireguard_profile(
+                table="auto",
+                public_key=_dummy_wireguard_key(4),
+                preshared_key=_dummy_wireguard_key(5),
+                endpoint="198.51.100.11:47107",
+            )
+        )
+
+        self.assertTrue(
+            hasattr(airvpn_api, "_render_trusted_pinned_profile"),
+            "trusted pinned-profile renderer is not implemented",
+        )
+        pinned = self._compose(installed.profile, generated)
+        rendered = airvpn_api._render_trusted_pinned_profile(installed, generated)
+
+        expected_hook_lines = tuple(hook.encode("utf-8") for hook in hooks)
+        rendered_hook_lines = tuple(
+            line
+            for line in rendered.splitlines()
+            if line.strip().startswith((b"PostUp", b"PostDown"))
+        )
+        self.assertEqual(rendered_hook_lines, expected_hook_lines)
+        reparsed = airvpn_api._parse_trusted_installed_profile(rendered)
+        self.assertEqual(reparsed.profile, pinned)
+        self.assertEqual(reparsed.interface_hooks, hooks)
+        with self.assertRaises(airvpn_api.AirVPNAPIError):
+            self._parse(rendered)
+
+    def test_trusted_installed_hook_objects_are_strict_and_error_redacted(self):
+        marker = "private-local-hook-marker"
+        installed = airvpn_api._parse_trusted_installed_profile(
+            _wireguard_profile(interface_extra=(f"PostUp = {marker}",))
+        )
+        generated = self._parse(_wireguard_profile())
+        cases = {
+            "hook collection type": replace(
+                installed,
+                interface_hooks=list(installed.interface_hooks),
+            ),
+            "hook line type": replace(
+                installed,
+                interface_hooks=(f"PostUp = {marker}".encode("ascii"),),
+            ),
+            "missing equals": replace(
+                installed,
+                interface_hooks=(f"PostUp {marker}",),
+            ),
+            "hook name": replace(
+                installed,
+                interface_hooks=(f"PreUp = {marker}",),
+            ),
+            "empty hook": replace(
+                installed,
+                interface_hooks=("PostUp = ",),
+            ),
+            "control character": replace(
+                installed,
+                interface_hooks=(f"PostDown = {marker}\n/usr/bin/id",),
+            ),
+            "oversized hook": replace(
+                installed,
+                interface_hooks=("PostUp = " + marker + ("x" * 1024),),
+            ),
+            "too many hooks": replace(
+                installed,
+                interface_hooks=tuple(f"PostUp = {marker}" for _ in range(64)),
+            ),
+            "profile type": replace(installed, profile=object()),
+        }
+
+        for label, forged in cases.items():
+            with self.subTest(label=label):
+                caught = self._assert_redacted_profile_error(
+                    lambda forged=forged: airvpn_api._render_trusted_pinned_profile(
+                        forged,
+                        generated,
+                    ),
+                    installed.profile,
+                    generated,
+                )
+                self.assertNotIn(marker, repr(forged))
+                self.assertNotIn(marker, self._exception_chain_text(caught))
 
     def test_profile_and_manifest_repr_are_redacted(self):
         profile = self._parse(_wireguard_profile())

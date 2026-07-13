@@ -520,9 +520,14 @@ class GeneratorBoundaryTests(unittest.TestCase):
         self.assertNotIn("retry_after=", result.stderr)
         self.assertNotIn(huge_value, result.stderr)
 
-    def test_pin_identity_reads_fd5_and_preserves_only_local_table(self):
+    def test_pin_identity_reads_fd5_and_preserves_local_table_and_post_hooks(self):
         private_key = _random_wireguard_key()
         address = "10.20.30.40/32"
+        hooks = (
+            "  PostUp  = /usr/local/sbin/route-enable %i\\ ",
+            "PostUp=/usr/local/sbin/route-confirm %i",
+            "PostDown = /usr/local/sbin/route-remove %i",
+        )
         generated = _generator_profile(
             private_key=private_key,
             address=address,
@@ -534,6 +539,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
             address=address,
             table="123",
             endpoint="198.51.100.9:1637",
+            interface_extra=hooks,
         )
         args = self.BASE_ARGS + ("--pin-identity",)
 
@@ -548,13 +554,13 @@ class GeneratorBoundaryTests(unittest.TestCase):
             result.stdout,
             "generated\tMensa-1\t198.51.100.10:1637\tpinned=1\n",
         )
-        rendered = airvpn_api.parse_wireguard_profile(
-            result.output_stream.snapshot,
-            expected_endpoint="198.51.100.10:1637",
-        )
-        self.assertEqual(rendered.private_key, private_key)
-        self.assertEqual(str(rendered.address), address)
-        self.assertEqual(rendered.table, "123")
+        rendered = airvpn_api._parse_trusted_installed_profile(result.output_stream.snapshot)
+        self.assertEqual(rendered.profile.private_key, private_key)
+        self.assertEqual(str(rendered.profile.address), address)
+        self.assertEqual(rendered.profile.table, "123")
+        self.assertEqual(rendered.interface_hooks, hooks)
+        with self.assertRaises(airvpn_api.AirVPNAPIError):
+            airvpn_api.parse_wireguard_profile(result.output_stream.snapshot)
         self.assertEqual(result.installed_stream.read_calls, [(64 * 1024) + 1])
         self.assertTrue(result.installed_stream.closed)
         self.assertEqual(
@@ -563,8 +569,12 @@ class GeneratorBoundaryTests(unittest.TestCase):
         )
 
     def test_identity_mismatch_never_writes_candidate_and_returns_seven(self):
+        hook_marker = "mismatched-fd5-hook-marker"
         generated = _generator_profile(endpoint="198.51.100.10:1637")
-        installed = _generator_profile(endpoint="198.51.100.9:1637")
+        installed = _generator_profile(
+            endpoint="198.51.100.9:1637",
+            interface_extra=(f"PostUp = {hook_marker}",),
+        )
         result = self._run_generator(
             args=self.BASE_ARGS + ("--pin-identity",),
             response=_Response(generated),
@@ -577,8 +587,11 @@ class GeneratorBoundaryTests(unittest.TestCase):
         self.assertTrue(result.key_stream.closed)
         self.assertTrue(result.output_stream.closed)
         self.assertTrue(result.installed_stream.closed)
-        for profile in (generated, installed):
-            parsed = airvpn_api.parse_wireguard_profile(profile)
+        self.assertNotIn(hook_marker, result.stderr)
+        for parsed in (
+            airvpn_api.parse_wireguard_profile(generated),
+            airvpn_api._parse_trusted_installed_profile(installed).profile,
+        ):
             for secret in (
                 parsed.private_key,
                 parsed.public_key,
@@ -587,7 +600,11 @@ class GeneratorBoundaryTests(unittest.TestCase):
                 self.assertNotIn(secret, result.stderr)
 
     def test_validation_failure_writes_no_partial_candidate_or_secret_output(self):
-        profile = _generator_profile(endpoint="198.51.100.11:1637")
+        strict_profile = _generator_profile(endpoint="198.51.100.10:1637")
+        profile = strict_profile.replace(
+            b"\n\n[Peer]",
+            b"\nPostUp = provider-hook-must-not-run\n\n[Peer]",
+        )
         sentinel = self.API_KEY[:-1].decode("ascii")
         result = self._run_generator(response=_Response(profile))
 
@@ -597,15 +614,21 @@ class GeneratorBoundaryTests(unittest.TestCase):
         self.assertEqual(result.output_stream.snapshot, b"")
         self.assertNotIn(sentinel, result.stderr)
         for secret in (
-            airvpn_api.parse_wireguard_profile(profile).private_key,
-            airvpn_api.parse_wireguard_profile(profile).public_key,
-            airvpn_api.parse_wireguard_profile(profile).preshared_key,
+            airvpn_api.parse_wireguard_profile(strict_profile).private_key,
+            airvpn_api.parse_wireguard_profile(strict_profile).public_key,
+            airvpn_api.parse_wireguard_profile(strict_profile).preshared_key,
         ):
             self.assertNotIn(secret, result.stderr)
 
     def test_secret_failures_raise_only_from_secret_free_module_frames(self):
         payload_marker = b"fd5-invalid-payload-marker"
-        installed = _wireguard_profile() + b"\xff" + payload_marker
+        hook_marker = b"fd5-private-hook-marker"
+        installed = _wireguard_profile(
+            interface_extra=(
+                f"PostUp = {hook_marker.decode('ascii')}",
+                f"Unknown = {payload_marker.decode('ascii')}",
+            )
+        )
         profile_keys = tuple(_dummy_wireguard_key(value) for value in range(1, 4))
 
         caught, opener, _streams = self._direct_generator_error(
@@ -617,6 +640,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
         self._assert_module_error_graph_redacted(
             caught,
             payload_marker,
+            hook_marker,
             *profile_keys,
         )
 

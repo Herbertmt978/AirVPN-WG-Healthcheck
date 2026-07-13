@@ -78,6 +78,24 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertRegex(text, r"(?is)(order|first).{0,100}soft.{0,100}preference")
         self.assertRegex(text, r"(?is)\bALL\b.{0,120}(eligible|every).{0,120}countr")
 
+    def test_docs_explain_the_trusted_installed_hook_boundary(self) -> None:
+        text = self.readme + "\n" + read_text(OPERATIONS)
+        self.assertIn("`PostUp`", text)
+        self.assertIn("`PostDown`", text)
+        self.assertIn("`PreUp`", text)
+        self.assertIn("`PreDown`", text)
+        self.assertIn("`SaveConfig`", text)
+        self.assertRegex(text, r"(?is)(provider|generated).{0,180}reject.{0,100}hook")
+        self.assertRegex(text, r"(?is)(root|installed).{0,180}(retain|preserv).{0,100}PostUp")
+
+    def test_docs_state_exact_api_managed_profile_directory_permissions(self) -> None:
+        text = self.readme + "\n" + read_text(OPERATIONS)
+        self.assertRegex(
+            text,
+            r"(?is)immediate directory.{0,180}root-owned.{0,180}(?:exact mode|mode)[- `]*0700",
+        )
+        self.assertRegex(text, r"(?is)immediate directory.{0,180}non-symlinked")
+
     def test_operations_explain_safe_authenticated_failure_phases(self) -> None:
         text = read_text(OPERATIONS)
         for phase in ("transport", "response", "profile", "internal"):

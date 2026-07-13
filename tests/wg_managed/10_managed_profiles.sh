@@ -45,3 +45,21 @@ test_proposed_settings_replace_only_country_presence_and_validate_api_cross_fiel
   assert_eq 1 "$rc" "prospective validation must enforce device grammar" || return 1
   assert_eq "$before" "$(<"$CFG")" "every prospective refusal must remain side-effect free"
 }
+
+test_managed_profile_requires_a_private_root_owned_parent() {
+  local rc
+  if [[ "$(uname -s)" != Linux || "$(id -u)" != 0 ]]; then return 77; fi
+  source_managed_contract || return 1
+  TEST_TMP="$(mktemp -d)"
+  trap "rm -rf -- '$TEST_TMP'" EXIT
+  WG_CONF="$TEST_TMP/etc/wireguard/wg0.conf"
+  mkdir -p -- "${WG_CONF%/*}"
+  chmod 700 -- "${WG_CONF%/*}"
+  printf 'bounded profile\n' > "$WG_CONF"
+  chmod 600 -- "$WG_CONF"
+
+  managed_profile_file_is_secure "$WG_CONF" || return 1
+  chmod 750 -- "${WG_CONF%/*}"
+  set +e; managed_profile_file_is_secure "$WG_CONF" >/dev/null 2>&1; rc=$?; set +e
+  assert_eq 1 "$rc" "a non-private WireGuard parent must fail before fd5 admission"
+}

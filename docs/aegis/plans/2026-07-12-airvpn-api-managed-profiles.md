@@ -98,8 +98,9 @@ verified rollback on the download VM.
 
 - The API-managed path uses an existing fixed AirVPN device and IPv4 entry address 1.
 - Runtime rotation must preserve the interface private key and IPv4 `/32` address.
-- Managed profiles permit only the canonical provider fields and optional validated
-  `Table`; hooks and `SaveConfig` are rejected.
+- Provider profiles permit only canonical fields and optional validated `Table`; every
+  provider hook and `SaveConfig` are rejected. A private fixed-fd installed-profile path
+  may retain only ordered `PostUp`/`PostDown` commands already owned by root.
 - The supplied API key is for acceptance testing only. A fresh key not shared in chat is
   required before leaving the VM in production API mode.
 
@@ -108,8 +109,9 @@ verified rollback on the download VM.
 - The live generator content type and exact response headers are captured only as a
   redacted shape fixture. A contradiction with the approved MIME allowlist stops the live
   test and requires a spec amendment before code accepts another type.
-- The VM's root-only profile may contain unsupported hooks. Adoption detects this without
-  mutation; unsupported content keeps the VM in static mode until deliberately migrated.
+- The VM's root-only profile may contain routing hooks. Adoption retains validated repeated
+  `PostUp`/`PostDown` commands without admitting hooks from provider output; other hooks or
+  unsupported content keep the VM in static mode without mutation.
 - Public torrent peers may be absent during the acceptance window. After 60 seconds, the
   deterministic substitute is process-owned TCP/UDP binding plus a process-bound route and
   AirVPN egress probe, with the absence reported.
@@ -799,7 +801,8 @@ downloaded assets.
 ## Risks and rollback
 
 - A generator contract mismatch blocks API mode before mutation; static mode remains usable.
-- Unsupported hooks or changed identity block adoption and preserve the current profile.
+- Unsupported hooks or changed identity block adoption and preserve the current profile;
+  only validated local `PostUp`/`PostDown` commands survive identity-pinned generation.
 - Digest/journal/safety mismatch leaves qBittorrent stopped and state intact for operator
   repair.
 - Authentication/device failures back off persistently; they do not affect static health.

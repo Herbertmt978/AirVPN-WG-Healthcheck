@@ -148,6 +148,7 @@ tests=(
   test_unexpected_credential_fd_is_closed_before_noncredential_dispatch
   test_linux_managed_journal_real_owner_mode_and_symlink_semantics
   test_proposed_settings_replace_only_country_presence_and_validate_api_cross_fields
+  test_managed_profile_requires_a_private_root_owned_parent
 )
 
 if [[ -n "${WG_MANAGED_TEST_ONLY:-}" ]]; then
