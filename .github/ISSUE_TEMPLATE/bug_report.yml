@@ -7,13 +7,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        Do not paste WireGuard keys, complete configuration files, public IPs, real endpoints, hostnames, or unredacted journals. Follow SECURITY.md for vulnerabilities.
+        Do not paste WireGuard private keys, AirVPN API keys, generated profiles, complete configuration files, public IPs, real endpoints, hostnames, or unredacted journals. Redact secrets and follow SECURITY.md for vulnerabilities.
   - type: input
     id: version
     attributes:
       label: Version
       description: Output of `wg-healthcheck --version`, or the exact commit for a development build.
-      placeholder: wg-healthcheck 1.0.0
+      placeholder: wg-healthcheck 1.1.0
     validations:
       required: true
   - type: input
@@ -41,7 +41,7 @@ body:
     attributes:
       label: Privacy check
       options:
-        - label: I removed credentials, private keys, public IPs, real endpoints, hostnames, private network layouts, and unredacted logs.
+        - label: I removed API keys, credentials, private keys, generated profiles, public IPs, real endpoints, hostnames, private network layouts, and unredacted logs.
           required: true
         - label: This is not a vulnerability report; security reports follow SECURITY.md.
           required: true

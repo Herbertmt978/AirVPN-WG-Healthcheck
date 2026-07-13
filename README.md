@@ -150,7 +150,7 @@ sudo ./install.sh --quiesce wg0
 
 Read [SECURITY.md](SECURITY.md) before reporting a vulnerability and [CONTRIBUTING.md](CONTRIBUTING.md) before sharing diagnostics. Never submit private keys, API keys, tokens, passwords, complete configuration files, or unredacted logs.
 
-For operations, troubleshooting, rollback, and removal, see [docs/operations.md](docs/operations.md). For release history, see [CHANGELOG.md](CHANGELOG.md) and the immutable [v1.0.0 release note](docs/releases/v1.0.0.md).
+For operations, troubleshooting, rollback, and removal, see [docs/operations.md](docs/operations.md). For release history, see [CHANGELOG.md](CHANGELOG.md) and the immutable [v1.0.0 release note](https://github.com/Herbertmt978/airvpn-wg-healthcheck/blob/v1.0.0/docs/releases/v1.0.0.md).
 
 Use [GitHub Issues](https://github.com/Herbertmt978/airvpn-wg-healthcheck/issues) for reproducible bugs and narrowly scoped feature requests. Questions about AirVPN accounts or subscriptions belong with AirVPN; this independent project cannot provide account support.
 

@@ -1,6 +1,6 @@
 #!/bin/bash -p
 
-WG_HEALTHCHECK_VERSION='1.0.0'
+WG_HEALTHCHECK_VERSION='1.1.0'
 IFACE=''
 CFG=''
 WG_CONF=''

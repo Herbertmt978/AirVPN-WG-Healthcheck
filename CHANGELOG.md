@@ -6,10 +6,46 @@ All notable changes to this project are documented here. Release numbers follow
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-13
+
+### Added
+
+- Two explicit profile choices: the credential-free static default and opt-in
+  API-managed profiles for one existing, fixed AirVPN device.
+- Guided `wg-healthcheck-setup` flows for country selection, authenticated dry runs,
+  transactional application, timer decisions, credential replacement, static restore,
+  and API-state maintenance.
+- Strict generated-profile parsing and canonical rendering, interface identity pinning,
+  persistent bounded retry state, failed-server exclusions, and digest-bound recovery
+  journals for managed full-profile rotation.
+- qBittorrent containment during managed switches, a preserved pre-managed profile,
+  quiesced live upgrades, an MIT license, and a complete operator guide.
+
 ### Changed
 
+- Static endpoint-only rotation remains supported and is never an implicit fallback from
+  API mode. One country is strict, multiple countries are a hard allowlist, order is a
+  soft preference, and explicit `ALL` permits every currently eligible country.
+- Setup and upgrades preserve operator files, require explicit apply and timer decisions,
+  leave quiesced timers disabled for manual verification, and install every managed/setup
+  runtime owner through inert upgrade guards.
+- Release archives and CI now cover the complete v1.1 runtime on Ubuntu 22.04 and 24.04,
+  with reproducible tar/ZIP assets and exact installed-layout checks.
 - Updated the SHA-pinned GitHub artifact actions used by future release workflows
   to their Node 24 versions.
+
+### Security
+
+- API credentials are accepted only from a hidden terminal or a root-owned mode-`0600`
+  file and cross process boundaries only through private descriptors, never arguments,
+  environment variables, logs, or status output.
+- HTTPS-only public requests, non-redirecting fixed-origin authenticated requests,
+  bounded response/profile grammars, root-only state, identity-pinned adoption,
+  qBittorrent stop/start barriers, and fail-closed rollback prevent untrusted provider
+  data or ambiguous recovery state from being accepted.
+- Static mode opens no credential, makes no authenticated request, and remains isolated
+  from AirVPN device lifecycle; this project does not create, renew, revoke, or delete a
+  device.
 
 ## [1.0.0] - 2026-07-12
 
@@ -40,5 +76,6 @@ All notable changes to this project are documented here. Release numbers follow
 - Existing deployments using retired command hooks or authenticated telemetry must
   follow the migration procedure in the README before enabling the timer.
 
-[Unreleased]: https://github.com/Herbertmt978/airvpn-wg-healthcheck/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Herbertmt978/airvpn-wg-healthcheck/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Herbertmt978/airvpn-wg-healthcheck/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Herbertmt978/airvpn-wg-healthcheck/releases/tag/v1.0.0

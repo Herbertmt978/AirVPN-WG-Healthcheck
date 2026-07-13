@@ -24,7 +24,7 @@ SECURITY_FILE="$ROOT/SECURITY.md"
 CONTRIBUTING_FILE="$ROOT/CONTRIBUTING.md"
 CHANGELOG_FILE="$ROOT/CHANGELOG.md"
 VERSION_FILE="$ROOT/VERSION"
-RELEASE_NOTES_FILE="$ROOT/docs/releases/v1.0.0.md"
+RELEASE_NOTES_FILE="$ROOT/docs/releases/v1.1.0.md"
 CI_WORKFLOW="$ROOT/.github/workflows/ci.yml"
 
 TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/wg-healthcheck-install.XXXXXX")" || exit 1
@@ -1779,6 +1779,8 @@ test_public_repository_docs_are_sanitized_and_complete() {
 
 test_ci_workflow_is_deterministic_and_smoke_isolated() {
   local expected forbidden smoke
+  # Literal workflow expressions and shell variables must not expand in this test.
+  # shellcheck disable=SC2016
   local -a required=(
     'push:'
     'pull_request:'
@@ -1786,7 +1788,10 @@ test_ci_workflow_is_deterministic_and_smoke_isolated() {
     'schedule:'
     'permissions:'
     'contents: read'
-    'runs-on: ubuntu-24.04'
+    'runs-on: ubuntu-${{ matrix.ubuntu }}'
+    "ubuntu: ['22.04', '24.04']"
+    'group: ci-${{ github.workflow }}-${{ github.ref }}'
+    'cancel-in-progress: true'
     'timeout-minutes:'
     "if: github.event_name != 'schedule'"
     "if: github.event_name == 'schedule'"
@@ -1794,14 +1799,19 @@ test_ci_workflow_is_deterministic_and_smoke_isolated() {
     'uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0'
     'persist-credentials: false'
     'uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0'
-    "python3 -m unittest discover -s tests -p 'test_*.py' -v"
-    'bash tests/test_wg_healthcheck.sh'
-    'bash tests/test_install.sh'
-    'bash tests/test_release.sh'
-    'bash -n bin/wg-healthcheck install.sh scripts/*.sh tests/*.sh'
-    'shellcheck -x -S style bin/wg-healthcheck install.sh scripts/*.sh tests/*.sh'
+    'PYTHON_BIN="${pythonLocation:?}/bin/python"'
+    '"$PYTHON_BIN" -m unittest discover -s tests -p '\''test_*.py'\'' -v'
+    '/bin/bash tests/test_wg_healthcheck.sh'
+    '/bin/bash tests/test_wg_managed_profiles.sh'
+    '/bin/bash tests/test_install.sh'
+    '/bin/bash tests/test_release.sh'
+    'bash -n bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh'
+    'shellcheck -x -S style bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh'
     'sudo install -D -m 0755 bin/wg-healthcheck /usr/local/sbin/wg-healthcheck'
+    'sudo install -D -m 0755 bin/wg-healthcheck-setup /usr/local/sbin/wg-healthcheck-setup'
     'sudo install -D -m 0755 libexec/airvpn-api /usr/local/libexec/wg-healthcheck/airvpn-api'
+    'sudo install -D -m 0644 libexec/wg-healthcheck-managed /usr/local/libexec/wg-healthcheck/wg-healthcheck-managed'
+    'sudo install -D -m 0644 libexec/wg_healthcheck_setup/*.py /usr/local/libexec/wg-healthcheck/wg_healthcheck_setup/'
     'systemd-analyze verify systemd/wg-healthcheck@.service systemd/wg-healthcheck@.timer'
     'timeout --signal=TERM 45s python3 libexec/airvpn-api select'
     "--url 'https://airvpn.org/api/status/?format=json'"
@@ -1814,7 +1824,7 @@ test_ci_workflow_is_deterministic_and_smoke_isolated() {
     assert_contains "$expected" "$CI_WORKFLOW" || return 1
   done
 
-  for forbidden in pull_request_target 'secrets.' AIRVPN_API_KEY AIRVPN_USERINFO_URL AIRVPN_API_ENV; do
+  for forbidden in pull_request_target 'secrets.' 'sudo -E' 'sudo --preserve-env' AIRVPN_API_KEY AIRVPN_USERINFO_URL AIRVPN_API_ENV; do
     assert_not_contains "$forbidden" "$CI_WORKFLOW" || return 1
   done
 
