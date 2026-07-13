@@ -3,6 +3,7 @@
 import unittest
 
 from tests.airvpn_api_tests_cli import CliTests, InputBoundaryTests
+from tests.airvpn_api_tests_diagnostics import GeneratorDiagnosticsTests
 from tests.airvpn_api_tests_generator import GeneratorBoundaryTests
 from tests.airvpn_api_tests_profiles import (
     ProfileParsingTests,
@@ -25,6 +26,7 @@ _TEST_CLASSES = (
     EgressValidationTests,
     EndpointParsingTests,
     GeneratorBoundaryTests,
+    GeneratorDiagnosticsTests,
     InputBoundaryTests,
     NumericValidationTests,
     ProfileParsingTests,
