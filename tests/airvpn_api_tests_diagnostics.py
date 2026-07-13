@@ -1,16 +1,16 @@
 """Adversarial tests for secret-free transient generator diagnostics."""
 
 from tests.airvpn_api_test_support import *
-from tests.airvpn_api_tests_generator import GeneratorBoundaryTests
+import tests.airvpn_api_tests_generator as _generator
 
 
 class _GeneratorHarness:
     """Reuse generator descriptor fixtures without inheriting its test methods."""
 
-    API_KEY = GeneratorBoundaryTests.API_KEY
-    BASE_ARGS = GeneratorBoundaryTests.BASE_ARGS
-    _run_generator = GeneratorBoundaryTests._run_generator
-    _direct_generator_error = GeneratorBoundaryTests._direct_generator_error
+    API_KEY = _generator.GeneratorBoundaryTests.API_KEY
+    BASE_ARGS = _generator.GeneratorBoundaryTests.BASE_ARGS
+    _run_generator = _generator.GeneratorBoundaryTests._run_generator
+    _direct_generator_error = _generator.GeneratorBoundaryTests._direct_generator_error
 
 
 class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
