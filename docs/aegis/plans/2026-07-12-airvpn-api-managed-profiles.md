@@ -637,18 +637,18 @@ incompatible with `--enable`/`DESTDIR`.
 
 **Verification:** `bash tests/test_install.sh`.
 
-- [ ] **Write RED tests.** Cover staged managed module/setup/state directory; artifact
+- [x] **Write RED tests.** Cover staged managed module/setup/state directory; artifact
   order; preservation of key/pre-managed/state; refusal of active worker, held lock, or
   pending journal or safety record; `--quiesce` stop/wait/leave-disabled behavior; invalid
   flag combinations; root/modes; and `LimitCORE=0`.
-- [ ] **Verify RED.** Require new install contracts to fail while every current preservation
+- [x] **Verify RED.** Require new install contracts to fail while every current preservation
   and atomic-install test stays green.
-- [ ] **Implement minimal installer changes.** Validate/install provider helper, managed
+- [x] **Implement minimal installer changes.** Validate/install provider helper, managed
   module 0644, main/setup 0755, units/template; create live/staged persistent directory
   0700; implement checked quiesce; preserve operator files; add core limit to systemd.
-- [ ] **Verify GREEN.** Run installer tests, Bash syntax, ShellCheck, and
+- [x] **Verify GREEN.** Run installer tests, Bash syntax, ShellCheck, and
   `systemd-analyze verify` against staged installed executables.
-- [ ] **Commit.** `git commit -m "Harden managed-profile installation"`.
+- [x] **Commit.** `git commit -m "Harden managed-profile installation"`.
 
 ## Task 12: Public documentation, MIT license, and operator guide
 

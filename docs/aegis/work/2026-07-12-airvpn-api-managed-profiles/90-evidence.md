@@ -300,6 +300,34 @@
 - No live API credential, VM mutation, installer change, or public release action occurred.
   Task 11 owns installation/upgrade safety and Task 14 remains a mandatory complexity gate.
 
+### Task 11: installer and systemd upgrade safety
+
+- Commit `ae71fa4` installs the provider, managed runtime module, guided setup launcher and
+  package, persistent state directory, and systemd owners with exact modes while preserving
+  the API credential, pre-managed profile, API state, and existing health configuration.
+- Live upgrades fail closed on ambiguous systemd output or return codes, active instances,
+  unsafe runtime paths, held setup/interface/global locks, and pending journal or safety
+  records. `--quiesce` disables and stops the selected instance, never re-enables it, and
+  reports incomplete post-disable work.
+- Runtime and setup entrypoints are atomically replaced with inert exit-75 guards before
+  any shared dependency changes. The installer then rechecks all instances and newly
+  appeared locks, installs dependencies/package/units/config, reloads systemd, publishes
+  setup and runtime launchers with runtime last, releases every retained descriptor, and
+  only then honors an explicit `--enable`.
+- Exact setup-package manifests reject missing, extra, linked, directory, or bytecode-cache
+  entries. Lock creation uses a private umask plus lstat/open-descriptor identity and exact
+  ownership/mode/link checks. Scoped HUP/INT/TERM/EXIT cleanup preserves status, releases
+  locks, and emits the disabled-timer diagnostic once.
+- Fresh final-tree verification:
+  - root-path installer suite: 57 passed, one intentional non-root check skipped;
+  - non-root installer suite: 58 passed, no skips;
+  - Bash syntax, ShellCheck 0.11.0, staged `systemd-analyze verify`, and diff checks passed;
+  - pinned Gitleaks 8.30.1 scanned 2.13 MB and found no leaks.
+- Independent specification/quality and adversarial security re-reviews returned READY.
+  The mandatory Task 14 complexity split remains open because installer and test owners now
+  exceed the approved review threshold.
+- No VM, release, remote-history, or repository-visibility mutation occurred in Task 11.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.

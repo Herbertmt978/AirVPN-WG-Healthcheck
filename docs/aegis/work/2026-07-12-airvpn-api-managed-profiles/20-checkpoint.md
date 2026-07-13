@@ -4,8 +4,8 @@ Updated: 2026-07-13
 
 ## TodoCheckpointDraft
 
-- **Current todo:** implement Task 11 installer and systemd upgrade safety over the
-  accepted transactional setup boundary.
+- **Current todo:** implement Task 12 public documentation, MIT license, and operator guide
+  over the accepted dual-mode runtime and installer boundary.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -22,7 +22,9 @@ Updated: 2026-07-13
   settings descriptors, prospective configuration validation, and redacted dry runs;
   Task 10 exclusive setup leasing, transactional config/credential persistence, strict
   crash journals and fixed staging, deterministic recovery/rollback, fresh health proof,
-  timer commit ordering, and setup-only candidate cleanup.
+  timer commit ordering, and setup-only candidate cleanup; Task 11 exact managed-artifact
+  installation, fail-closed live/quiesced upgrades, dual inert entrypoint publication,
+  retained cross-instance locks, and signal-safe cleanup.
 - **Completed evidence slice:** green Windows-compatible checks plus a complete Ubuntu
   24.04 container baseline, including POSIX modes and ShellCheck. Task 1 independently
   cleared specification and code-quality/security review. Task 2 cleared both reviews
@@ -41,21 +43,22 @@ Updated: 2026-07-13
   descriptor inheritance, pre-sanitization metadata, signal-handler inheritance, and
   nested-redirection cleanup defects were reproduced and repaired. Task 10 cleared
   specification and adversarial reviews after abandoned credential staging and impossible
-  journal semantics were reproduced and fixed.
-- **Active slice:** Task 11 installer and systemd upgrade safety.
-- **Pending:** implementation Tasks 11-16 from the approved plan.
-- **Evidence refs:** Task 10 implementation commit `eae0504` and pinned-format follow-up
-  `f6d3359`. Exact final-tree evidence: Python 167/167, runtime Linux 89/89, managed Linux
-  122/122 with no skips, focused setup/recovery 74/74, Bash syntax, ShellCheck 0.11.0,
-  pinned Ruff 0.12.3 check/format, diff integrity, and Gitleaks over the 2.33 MB tree are
-  green. Independent specification and adversarial reviewers returned READY. Tests prove
-  static mode never opens a key; exclusive lease and lock ordering; private fixed staging
-  recovery; strict v1/v2/v3 journal semantics; exact config/key rollback; inert first
-  provisioning; fresh-health commit; timer post-commit containment; and lease-scoped lone
-  candidate cleanup.
+  journal semantics were reproduced and fixed. Task 11 cleared specification/quality and
+  adversarial security re-reviews after systemd-query, cross-interface, TOCTOU, partial-
+  package, reentrant-lock, runtime-parent, dual-entrypoint, and signal-cleanup defects were
+  reproduced and fixed.
+- **Active slice:** Task 12 public documentation, MIT license, and operator guide.
+- **Pending:** implementation Tasks 12-16 from the approved plan.
+- **Evidence refs:** Task 11 implementation commit `ae71fa4`. Exact installer evidence:
+  root 57 passed with one intentional non-root skip, non-root 58/58, Bash syntax, ShellCheck
+  0.11.0, staged systemd verification, diff integrity, and pinned Gitleaks over the 2.13 MB
+  tree are green. Independent specification/quality and adversarial security reviewers
+  returned READY. Tests prove strict manifest/mode/preservation rules, fail-closed systemd
+  status, dual exit-75 publication guards, post-guard lock stabilization, runtime-last
+  commit, release-before-enable ordering, and idempotent signal/EXIT cleanup.
 - **Blocked on:** nothing at this checkpoint.
-- **Next step:** execute Task 11 RED-to-GREEN for staged/live installation, quiesced
-  upgrades, artifact preservation, root/mode ownership, and `LimitCORE=0`.
+- **Next step:** execute Task 12 RED-to-GREEN from the 12-test public-documentation contract,
+  then verify links, installer repository assertions, hygiene, and exact MIT text.
 
 ## ResumeStateHint
 
@@ -63,8 +66,8 @@ Updated: 2026-07-13
 - Implementation worktree:
   `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `f6d3359`; the Task 10 checkpoint documentation is
-  the next commit before Task 11 begins.
+- Last accepted implementation commit: `ae71fa4`; Task 12 RED tests are present but remain
+  uncommitted until the documentation implementation is complete.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -80,9 +83,10 @@ Updated: 2026-07-13
 - **Complexity:** `libexec/airvpn-api` is 1,563 lines, `tests/test_airvpn_api.py` is
   2,241 lines, `bin/wg-healthcheck` is 2,218 lines,
   `libexec/wg-healthcheck-managed` is 3,792 lines, `tests/test_wg_healthcheck.sh` is 3,206
-  lines, and `tests/test_wg_managed_profiles.sh` is 6,404 lines. The setup owner is now a
-  62-line launcher plus focused Python modules, each at or below 723 lines. The remaining
-  Bash/provider owners exceed the review threshold; Task 14's split/ownership decision
-  remains mandatory and cannot be waived before release.
-- **Evidence decision:** `continue` to Task 11; Tasks 1-10 are accepted, while release and
+  lines, `tests/test_wg_managed_profiles.sh` is 6,404 lines, `install.sh` is 1,111 lines,
+  and `tests/test_install.sh` is 2,278 lines. The setup owner is a 62-line launcher plus
+  focused Python modules, each at or below 723 lines. The remaining Bash/provider/installer
+  owners exceed the review threshold; Task 14's split/ownership decision remains mandatory
+  and cannot be waived before release.
+- **Evidence decision:** `continue` to Task 12; Tasks 1-11 are accepted, while release and
   live VM completion remain unclaimed.
