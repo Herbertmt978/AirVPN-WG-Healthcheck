@@ -30,6 +30,10 @@ sudo ./install.sh wg0
 sudo wg-healthcheck-setup --mode api wg0
 ```
 
+Before starting API mode, activate a key in [AirVPN API settings](https://airvpn.org/apisettings/)
+and choose an existing AirVPN device. Copy the key directly from the account page into the
+hidden setup prompt; if it is exposed anywhere else, revoke it and create a replacement.
+
 The interactive API path asks for a non-secret device name, country selection, and the key through a hidden terminal prompt. It never accepts a secret value in an argument or environment variable.
 
 After either path, inspect the secret-free status, run one controlled health check, then explicitly decide whether to enable the timer:
@@ -52,6 +56,14 @@ Leave the timer disabled if the manual result is not healthy or recovered. The [
 Static mode keeps the existing `/etc/wireguard/<iface>.conf` under operator control. `AIRVPN_ROTATE_ENABLED=0` disables endpoint rotation; tunnel restart, configured speed recovery, and configured qBittorrent repair can still run. Enabling rotation permits credential-free endpoint selection from AirVPN's public status data.
 
 API-managed mode is an explicit `AIRVPN_PROFILE_SOURCE=api` choice. It uses one **fixed device** and rejects a generated profile whose interface identity differs from the installed profile. The service may repair peer material and change server selection, but it does not create, renew, revoke, or delete a device.
+
+Version 1.1 calls AirVPN's credential-free `status` service for server selection, the
+authenticated `generator` service for one raw profile, and the credential-free
+`whatismyip` service for tunnel egress proof. It does not call `userinfo`, `devices`,
+`disconnect`, `notification`, or `dns_lists`; account, device, session, notification, and
+DNS policy remain operator-owned. AirVPN documents a global limit of 600 API requests per
+10 minutes and warns that exceeding it can ban the source IP. This project deliberately
+uses a much stricter persistent retry ledger; do not reset that state to force a retry.
 
 Generated provider profiles always reject every executable hook. During identity-pinned adoption and rotation, a validated root-owned installed profile may retain repeated `PostUp` and `PostDown` commands in their original order; these remain local code executed as root by `wg-quick`. Review them before setup. `PreUp`, `PreDown`, `SaveConfig`, peer hooks, and unknown directives block API adoption without changing the installed profile.
 

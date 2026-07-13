@@ -452,5 +452,49 @@ the actual release contract successfully.
 
 ## Release and live evidence
 
-No release or VM acceptance claim exists yet. The supplied API key has not been committed
-or intentionally transmitted during design/planning.
+### Task 15: live acceptance in progress
+
+- The supplied test key was never committed, logged, placed in an argument/environment,
+  or transmitted to browsers, search, CI, review tooling, or repositories. It was
+  transferred privately to one root-owned mode-0600 temporary VM file, supplied to the
+  provider helper through its fixed descriptor, and sent only to the helper's fixed AirVPN
+  HTTPS origin.
+- Authenticated, read-only `userinfo` and `devices` schema probes returned `result=ok`.
+  Only allowlisted field names and success state were retained; account, session, device,
+  address, identifier, and key values were discarded. This proves the credential itself is
+  valid without adding either endpoint to the unattended runtime.
+- The first authenticated generator dry run reached AirVPN but returned the safe transient
+  `phase=response` classification. It changed no active profile, configuration, interface,
+  installed credential, candidate, journal, safety record, timer, or qBittorrent state.
+  No response body or complete header set was retained, so its exact media type is not
+  asserted.
+- Public AirVPN raw-configuration examples use `system=other`; exact request tests first
+  failed with the production `system=linux` value and then passed after the minimal change.
+  Commit `4acdf432fe840dd6b40e78b5b815212c5cdb485a` requests the raw form while retaining the
+  fixed origin, `API-KEY` header, redirect refusal, size/MIME/encoding bounds, strict parser,
+  identity pinning, and archive rejection. Independent Terra/Luna reviews returned READY.
+- Exact-commit verification from a complete Git bundle passed Python root 201/201,
+  healthcheck root/non-root 89/89, managed root 125/125, managed non-root 120 with five
+  intentional root-only skips, installer root 58 with one intentional skip, installer
+  non-root 59/59, Python 3.10 provider 71/71, generated-runtime equivalence, Bash syntax,
+  ShellCheck 0.9 and pinned 0.11, installed modes, systemd verification, actionlint, and the
+  27-file release contract.
+- Two exact-commit package builds were byte-identical. SHA-256 values are
+  `25cb58870b775881d6c3ca88e2cda23f14df38267eee51334b4dfbed0ee6fcae` for the tar,
+  `aaf773e670f937bc13b6f5c82e64cd1eaa0da067c2be8f189f77d781ba56d435` for the ZIP, and
+  `ba8ef697cbfa26d67c1a230b347025178790958a0b5a84aa7d00b5604fff7738` for `SHA256SUMS`.
+  Pinned Gitleaks 8.30.1 found no leaks in 57 exact-history commits, the exact tree, or
+  either extracted archive.
+- The exact tar was transferred and hash-verified on the VM, then installed with
+  `--quiesce`. Installed program bytes match the package; the active profile and health
+  configuration remained byte-identical to preflight, the timer remained runtime-masked,
+  and WireGuard plus qBittorrent remained active. No installed API key, candidate, journal,
+  or safety record exists.
+- The persistent provider ledger remains intact at five attempts. The final slot will be
+  used only after natural backoff for a non-mutating proof of the corrected raw response.
+  Apply, rollback, and successful rotation remain unclaimed until the rolling window opens
+  again; the ledger will not be reset or bypassed.
+
+No release/tag/publication completion claim exists yet. The test key must be removed, and
+the VM must return to verified static mode unless a fresh production key that was not
+shared in chat is supplied through a private channel.

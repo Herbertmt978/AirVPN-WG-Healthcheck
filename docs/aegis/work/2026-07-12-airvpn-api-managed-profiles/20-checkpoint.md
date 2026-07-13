@@ -57,20 +57,28 @@ Updated: 2026-07-13
   uninstall, missing prerequisites, stale anchors, and ambiguous `ALL` serialization were
   reproduced and corrected. Task 14 cleared independent architecture/security review after
   extensionless-owner, symlink-root, registry-completeness, generated-order, Bash-dialect,
-  ADR-status, and full-ancestor trust gaps were reproduced and corrected.
+  ADR-status, and full-ancestor trust gaps were reproduced and corrected. Task 15 preparation
+  then preserved trusted installed `PostUp`/`PostDown` routing hooks without admitting
+  provider hooks, tightened managed-profile parent permissions, and corrected the AirVPN
+  generator request from OS-packaged output to the raw single-profile form.
 - **Active slice:** Task 15 download-VM authenticated acceptance and rollback evidence.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
-- **Evidence refs:** Task 14 implementation commit `a57b535`. Native Linux verification:
-  Python root 189/189; static/runtime root and non-root 89/89 each; managed root 122/122 and
-  non-root 118 passed with four intentional root-only skips; installer root 57 passed with
-  one intentional skip and non-root 58/58; architecture 11/11; release tar/ZIP 27-file
-  checks passed from a clean detached clone of the exact commit. Bash syntax, ShellCheck,
-  actionlint, generated-runtime equivalence, diff integrity, and independent Terra/Luna
-  reviews passed. Pinned Gitleaks found no leaks in 48 branch commits (~2.34 MB), the
-  2.68 MB source tree, or either 467.25 KB extracted archive.
-- **Blocked on:** nothing at this checkpoint.
-- **Next step:** capture redacted VM preflight and rollback material, quiesce the timer and
-  worker, then execute the authenticated dry-run and controlled rollback drill.
+- **Evidence refs:** compatibility commit `05af6bb` and raw-profile correction commit
+  `4acdf43`. Exact `4acdf43` native-Linux verification: Python root 201/201; static/runtime
+  root and non-root 89/89 each; managed root 125/125 and non-root 120 passed with five
+  intentional root-only skips; installer root 58 passed with one intentional skip and
+  non-root 59/59; 27-file release checks; generated-runtime, Bash syntax, installed modes,
+  systemd, actionlint, Python 3.10 provider 71/71, and ShellCheck 0.9/0.11 gates passed.
+  Two release builds were byte-identical. Pinned Gitleaks found no leaks in the exact
+  history, tree, or either extracted archive. Independent Terra/Luna reviews returned
+  READY. The exact package was installed quiesced on the VM without changing the active
+  profile or health configuration; the timer remained runtime-masked and the client/tunnel
+  remained healthy.
+- **Blocked on:** the provider backoff and rolling attempt window are being honored; one
+  authenticated dry-run slot remains before the oldest attempt expires naturally.
+- **Next step:** after the recorded backoff expires, spend the remaining slot on one
+  non-mutating authenticated dry run. Preserve the static baseline and remove the test key
+  if the corrected raw profile is not proven.
 
 ## ResumeStateHint
 
@@ -78,8 +86,8 @@ Updated: 2026-07-13
 - Implementation worktree:
   `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `a57b535`; Task 14 is committed and the worktree is
-  clean before Task 14 evidence-record updates.
+- Last accepted implementation commit: `4acdf43`; the exact code/package gate and quiesced
+  VM installation passed before this evidence-record update.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -93,12 +101,13 @@ Updated: 2026-07-13
 - **Fallbacks:** static mode is an explicit product choice, not a managed-error fallback.
 - **Retirement:** only obsolete "no credentials anywhere" assertions retire in v1.1.
 - **Complexity:** the three reviewed production exceptions are `bin/wg-healthcheck` at
-  2,214 lines, `libexec/airvpn-api` at 1,563 lines, and `install.sh` at 1,111 lines. The
-  generated managed runtime remains one 3,792-line installed owner, assembled from nine
-  fixed development fragments no longer than 581 lines. Provider tests use a 48-line
+  2,214 lines, `libexec/airvpn-api` at 1,718 lines, and `install.sh` at 1,154 lines. The
+  generated managed runtime remains one 3,899-line installed owner, assembled from nine
+  fixed development fragments no longer than 666 lines. Provider tests use a 48-line
   compatibility loader plus bounded support/groups; health, managed, and installer runners
-  are 133, 182, and 101 lines, with every split owner at or below 752 lines. Architecture
+  are 133, 185, and 102 lines, with every split owner at or below 797 lines. Architecture
   tests enforce the exact owner exceptions, 13 reviewed long blocks, registries, encodings,
   symlink boundaries, and generated-source manifest.
-- **Evidence decision:** `continue` to Task 15; Tasks 1-14 are accepted, while release and
-  live VM completion remain unclaimed.
+- **Evidence decision:** `continue` within Task 15; deterministic and quiesced-install
+  evidence is accepted, while authenticated raw-profile success, live rollback/rotation,
+  release, and final VM mode remain unclaimed.

@@ -61,6 +61,28 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertTrue(OPERATIONS.is_file(), "docs/operations.md must be published")
         self.assertRegex(self.readme, r"\[[^\]]+\]\(docs/operations\.md(?:#[^)]+)?\)")
 
+    def test_api_quick_start_links_key_source_and_states_the_service_scope(self) -> None:
+        self.assertIn(
+            "[AirVPN API settings](https://airvpn.org/apisettings/)",
+            self.readme_opening,
+        )
+        for service in ("`status`", "`generator`", "`whatismyip`"):
+            with self.subTest(service=service):
+                self.assertIn(service, self.readme)
+        for excluded in (
+            "`userinfo`",
+            "`devices`",
+            "`disconnect`",
+            "`notification`",
+            "`dns_lists`",
+        ):
+            with self.subTest(excluded=excluded):
+                self.assertRegex(
+                    self.readme,
+                    rf"(?is)(does not|never).{{0,240}}{re.escape(excluded)}",
+                )
+        self.assertIn("600 API requests per\n10 minutes", self.readme)
+
     def test_operations_cover_status_manual_health_and_timer_decision(self) -> None:
         text = read_text(OPERATIONS)
         self.assertIn("wg-healthcheck status wg0", text)

@@ -33,7 +33,12 @@ Provider-generated profiles reject every hook. The fixed fd5 adoption path may p
 
 ## Credential lifecycle
 
-The credential location is `/etc/wireguard/healthcheck.d/<iface>.api-key`. It is root-owned mode `0600` beneath a root-owned mode-`0700` directory. Never provide a key in an argument, command line, or environment variable. Interactive setup uses a hidden terminal prompt; automation accepts only `--credential-file` pointing at a root-owned file.
+Activate or replace the account key through [AirVPN API settings](https://airvpn.org/apisettings/),
+then provide it only to this project's private input boundary. The credential location is
+`/etc/wireguard/healthcheck.d/<iface>.api-key`. It is root-owned mode `0600` beneath a
+root-owned mode-`0700` directory. Never provide a key in an argument, command line, or
+environment variable. Interactive setup uses a hidden terminal prompt; automation accepts
+only `--credential-file` pointing at a root-owned file.
 
 To change an API credential, use API mode with `--replace-credential`; setup validates the proposed key and fixed device before replacing the installed file:
 
@@ -81,6 +86,10 @@ one controlled retry; do not delete or reset API state merely to retry sooner. I
 phase repeats, record only the software version, phase, time, and non-secret system status.
 Do not use verbose HTTP tracing, packet capture, or copy the credential, generated profile,
 provider response, or candidate file into diagnostics.
+
+AirVPN documents a global ceiling of 600 API requests per 10 minutes and warns that an
+exceeding source IP may be banned. The healthcheck's lower persistent limit and backoff are
+intentional safety controls, not a quota to consume or bypass.
 
 ## Upgrade and rollback
 
