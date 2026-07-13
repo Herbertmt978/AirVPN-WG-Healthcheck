@@ -552,7 +552,12 @@ sanitize_process_environment() {
   export PATH LC_ALL
   unset BASH_ENV ENV CDPATH GLOBIGNORE IFS PS4 PROMPT_COMMAND
   unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHONPATH PYTHONHOME
+  unset AIRVPN_API_KEY
   export -n SHELLOPTS BASHOPTS 2>/dev/null || true
+}
+
+disable_core_dumps() {
+  ulimit -c 0
 }
 
 prepare_state_dir() {
@@ -567,6 +572,13 @@ prepare_state_dir() {
   uid="$(stat -c '%u' -- "$STATE_DIR" 2>/dev/null)" || return 1
   mode="$(stat -c '%a' -- "$STATE_DIR" 2>/dev/null)" || return 1
   [[ "$uid" == 0 && "$mode" == 700 ]]
+}
+validate_observational_state_dir() {
+  local metadata
+  if [[ ! -e "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then return 0; fi
+  [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || return 1
+  metadata="$(owner_mode "$STATE_DIR")" || return 1
+  [[ "$metadata" == 0:700 ]]
 }
 sanitize_status_value() {
   local value="${1-}"
@@ -1129,7 +1141,7 @@ protective_restart_degraded() {
   fi
 }
 
-rotate_airvpn() {
+rotate_static_endpoint() {
   local reason="${1:-health_check_failed}" require_speed="${2:-0}"
   local old_endpoint selection restart_rc cooldown_rc verify_speed=false
   [[ "$require_speed" == 0 || "$require_speed" == 1 ]] || return 1
@@ -1218,6 +1230,20 @@ rotate_airvpn() {
   log "AirVPN rotation complete"
 }
 
+rotate_airvpn() {
+  local reason="${1:-health_check_failed}" require_speed="${2:-0}"
+  [[ "$require_speed" == 0 || "$require_speed" == 1 ]] || return 1
+  if [[ "$AIRVPN_PROFILE_SOURCE" == api ]] && truthy "$AIRVPN_ROTATE_ENABLED"; then
+    declare -F managed_rotate_profile >/dev/null || {
+      log "Managed rotation owner is unavailable"
+      return 69
+    }
+    managed_rotate_profile "$reason" "$require_speed"
+    return
+  fi
+  rotate_static_endpoint "$reason" "$require_speed"
+}
+
 SPEED_RECOVERY_PERFORMED=0
 
 speed_check() {
@@ -1266,14 +1292,90 @@ load_command_context() {
     return 1
   fi
   validate_secure_file "$CFG" "health-check configuration" 600 || return 1
-  if [[ "$COMMAND" == provision && ! -e "$WG_CONF" && ! -L "$WG_CONF" ]]; then
+  if [[ ( "$COMMAND" == provision || "$COMMAND" == status ||
+          "$COMMAND" == reset-api-state ) &&
+        ! -e "$WG_CONF" && ! -L "$WG_CONF" ]]; then
     :
   else
     validate_secure_file "$WG_CONF" "WireGuard configuration" 600 || return 1
   fi
   parse_healthcheck_config "$CFG" || return 1
   validate_settings || return 1
-  prepare_state_dir || return 1
+  if [[ "$COMMAND" != status ]]; then
+    prepare_state_dir || return 1
+  else
+    validate_observational_state_dir || return 1
+  fi
+}
+
+run_interface_lock_helper() {
+  local private_fd="${1-}"
+  shift
+  if [[ -n "$private_fd" ]]; then
+    run_with_private_fd_closed "$private_fd" "$@"
+  else
+    "$@"
+  fi
+}
+
+interface_lock_create_noclobber() {
+  ( set -o noclobber; umask 077; : > "$LOCK" ) 2>/dev/null
+}
+
+interface_lock_chmod_private() {
+  chmod 600 -- "$LOCK"
+}
+
+interface_lock_path_identity() {
+  stat -Lc '%d:%i' -- "$LOCK" 2>/dev/null
+}
+
+open_interface_lock() {
+  local output_variable="${1:?}" private_fd="${2-}"
+  local opened_lock_fd lock_metadata fd_metadata path_metadata created=0
+  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  [[ -z "$private_fd" ]] || validate_credential_fd_number "$private_fd" || return 1
+  [[ "$LOCK" == "$STATE_DIR/${IFACE}.lock" ]] || return 1
+  [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || return 1
+  if [[ -e "$LOCK" || -L "$LOCK" ]]; then
+    [[ -f "$LOCK" && ! -L "$LOCK" ]] || return 1
+  else
+    if run_interface_lock_helper "$private_fd" interface_lock_create_noclobber; then
+      created=1
+    else
+      [[ -f "$LOCK" && ! -L "$LOCK" ]] || return 1
+    fi
+  fi
+  if (( created )); then
+    run_interface_lock_helper "$private_fd" interface_lock_chmod_private || return 1
+  fi
+  lock_metadata="$(run_interface_lock_helper "$private_fd" owner_mode "$LOCK")" || return 1
+  [[ "$lock_metadata" == 0:600 ]] || return 1
+  exec {opened_lock_fd}<>"$LOCK" || return 1
+  if [[ -L "$LOCK" || ! -f "$LOCK" ]]; then
+    exec {opened_lock_fd}>&-
+    return 1
+  fi
+  fd_metadata="$(run_interface_lock_helper "$private_fd" \
+    interface_lock_fd_identity "$opened_lock_fd")" || {
+    exec {opened_lock_fd}>&-
+    return 1
+  }
+  path_metadata="$(run_interface_lock_helper "$private_fd" \
+    interface_lock_path_identity)" || {
+    exec {opened_lock_fd}>&-
+    return 1
+  }
+  if [[ "$fd_metadata" != "$path_metadata" ||
+        "$(run_interface_lock_helper "$private_fd" owner_mode "$LOCK")" != 0:600 ]]; then
+    exec {opened_lock_fd}>&-
+    return 1
+  fi
+  printf -v "$output_variable" '%s' "$opened_lock_fd"
+}
+
+interface_lock_fd_identity() {
+  stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/${1:?}" 2>/dev/null
 }
 
 acquire_command_lock() {
@@ -1375,6 +1477,16 @@ run_healthcheck() {
 prepare_command_dispatch() {
   DISPATCH_READY=0
   classify_pending_marker || return 1
+  if [[ "$COMMAND" == status ]]; then
+    load_managed_module || return 1
+    declare -F managed_dispatch_command >/dev/null || return 1
+    DISPATCH_READY=1
+    return 0
+  fi
+  if [[ "$COMMAND" != check && "$PENDING_KIND" != none ]]; then
+    log "Administrative command refused while recovery state is unresolved"
+    return 75
+  fi
   case "$PENDING_KIND" in
     v1)
       reconcile_pending_rotation || return 1
@@ -1447,6 +1559,10 @@ main() {
     printf 'wg-healthcheck %s\n' "$WG_HEALTHCHECK_VERSION"
     return 0
   fi
+  if ! disable_core_dumps; then
+    close_cli_credential_fd || return 1
+    return 1
+  fi
 
   if [[ -n "$CREDENTIAL_FD" ]]; then
     if run_with_private_fd_closed "$CREDENTIAL_FD" load_command_context; then
@@ -1464,10 +1580,27 @@ main() {
     return "$main_rc"
   fi
 
-  LOCK_FD=
-  if ! exec {LOCK_FD}>"$LOCK"; then
+  if [[ "$COMMAND" == status ]]; then
+    if dispatch_command; then main_rc=0; else main_rc=$?; fi
     close_cli_credential_fd || return 1
-    return 1
+    return "$main_rc"
+  fi
+
+  LOCK_FD=
+  if [[ -n "$CREDENTIAL_FD" ]]; then
+    if open_interface_lock LOCK_FD "$CREDENTIAL_FD"; then
+      main_rc=0
+    else
+      main_rc=$?
+    fi
+  elif open_interface_lock LOCK_FD; then
+    main_rc=0
+  else
+    main_rc=$?
+  fi
+  if (( main_rc != 0 )); then
+    close_cli_credential_fd || return 1
+    return "$main_rc"
   fi
   if [[ -n "$CREDENTIAL_FD" ]]; then
     if run_with_private_fd_closed "$CREDENTIAL_FD" acquire_command_lock; then

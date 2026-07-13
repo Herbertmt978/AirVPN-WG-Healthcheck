@@ -392,7 +392,10 @@ the listed unique fields, LF separators, and a final LF. Each create or state tr
 uses a same-directory private temporary file, file sync, atomic rename, final-file sync,
 and parent-directory sync.
 
-The two digests and endpoints must differ. `qb_intent=unmanaged` requires every
+The two profile digests must differ. Both endpoints must be canonical, but they may be
+equal when an exact static restore changes peer material without changing the server
+address. Equal endpoints do not bypass any qBittorrent containment, tunnel restart,
+identity, digest, network, or crash-recovery proof. `qb_intent=unmanaged` requires every
 qBittorrent tuple field to use its `-`/`0` sentinel. A `running` or `stopped` intent
 requires a complete tuple whose listen address equals the single digest-bound interface
 IPv4 `/32`; its immutable Docker container ID and current configured container/process/

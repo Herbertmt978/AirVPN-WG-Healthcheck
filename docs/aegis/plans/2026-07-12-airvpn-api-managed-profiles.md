@@ -511,6 +511,8 @@ only legacy no-flag path.
   `AIRVPN_PROFILE_SOURCE=api` and rotation is enabled; never downgrade that path to static
   endpoint mutation after failure. Implement `reset-api-state` inside the managed owner;
   `--apply` removes and syncs only the state file after all inactivity checks pass.
+  Static restore selects static mode before mutation and uses the same crash-safe full-profile
+  transaction whenever snapshot bytes differ, including equal-endpoint peer changes.
 - [ ] **Verify GREEN.** Run both Bash suites and manually inspect JSON through `python3 -m
   json.tool` in the test harness.
 - [ ] **Commit.** `git commit -m "Add managed profile administration"`.
