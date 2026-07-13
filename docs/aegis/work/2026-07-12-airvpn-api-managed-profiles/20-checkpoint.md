@@ -4,8 +4,8 @@ Updated: 2026-07-13
 
 ## TodoCheckpointDraft
 
-- **Current todo:** implement Task 10's transactional setup application and credential
-  lifecycle over the accepted guided two-mode planning boundary.
+- **Current todo:** implement Task 11 installer and systemd upgrade safety over the
+  accepted transactional setup boundary.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -19,7 +19,10 @@ Updated: 2026-07-13
   recovery, and durable safety-record rollback/finalization; Task 8 explicit lifecycle
   commands, redacted status, quiesced state reset, and unattended API-mode dispatch;
   Task 9 guided dual-mode setup, credential-free country selection, private credential and
-  settings descriptors, prospective configuration validation, and redacted dry runs.
+  settings descriptors, prospective configuration validation, and redacted dry runs;
+  Task 10 exclusive setup leasing, transactional config/credential persistence, strict
+  crash journals and fixed staging, deterministic recovery/rollback, fresh health proof,
+  timer commit ordering, and setup-only candidate cleanup.
 - **Completed evidence slice:** green Windows-compatible checks plus a complete Ubuntu
   24.04 container baseline, including POSIX modes and ShellCheck. Task 1 independently
   cleared specification and code-quality/security review. Task 2 cleared both reviews
@@ -36,20 +39,23 @@ Updated: 2026-07-13
   live-review findings were reproduced and fixed without amending history. Task 9 cleared
   setup and runtime specification, security, and quality review after TTY fallback,
   descriptor inheritance, pre-sanitization metadata, signal-handler inheritance, and
-  nested-redirection cleanup defects were reproduced and repaired.
-- **Active slice:** Task 10 transactional setup application and credential lifecycle.
-- **Pending:** implementation Tasks 10-16 from the approved plan.
-- **Evidence refs:** Task 9 commit `f706c74`. Exact final-tree evidence: Python 92/92
-  (including setup 27/27), runtime Linux 84/84, managed Linux 121/121, Bash syntax,
-  ShellCheck, diff integrity, and Gitleaks over the 1.51 MB tree are green. Independent
-  reviews approved the exact final runtime diff and the setup boundary. Tests prove core
-  suppression before secret inspection, strict controlling-TTY behavior, root-0600 stable
-  files, distinct descriptor number and inode, no pre-provider child inheritance,
-  canonical bounded settings, country allowlist semantics, full prospective validation,
-  early close on failure, and child-free interruption cleanup.
+  nested-redirection cleanup defects were reproduced and repaired. Task 10 cleared
+  specification and adversarial reviews after abandoned credential staging and impossible
+  journal semantics were reproduced and fixed.
+- **Active slice:** Task 11 installer and systemd upgrade safety.
+- **Pending:** implementation Tasks 11-16 from the approved plan.
+- **Evidence refs:** Task 10 implementation commit `eae0504` and pinned-format follow-up
+  `f6d3359`. Exact final-tree evidence: Python 167/167, runtime Linux 89/89, managed Linux
+  122/122 with no skips, focused setup/recovery 74/74, Bash syntax, ShellCheck 0.11.0,
+  pinned Ruff 0.12.3 check/format, diff integrity, and Gitleaks over the 2.33 MB tree are
+  green. Independent specification and adversarial reviewers returned READY. Tests prove
+  static mode never opens a key; exclusive lease and lock ordering; private fixed staging
+  recovery; strict v1/v2/v3 journal semantics; exact config/key rollback; inert first
+  provisioning; fresh-health commit; timer post-commit containment; and lease-scoped lone
+  candidate cleanup.
 - **Blocked on:** nothing at this checkpoint.
-- **Next step:** execute Task 10 RED-to-GREEN, including quiescence, credential/config
-  rollback, first-provision inert-static recovery, and fresh-status timer enablement.
+- **Next step:** execute Task 11 RED-to-GREEN for staged/live installation, quiesced
+  upgrades, artifact preservation, root/mode ownership, and `LimitCORE=0`.
 
 ## ResumeStateHint
 
@@ -57,8 +63,8 @@ Updated: 2026-07-13
 - Implementation worktree:
   `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `f706c74`; the Task 9 checkpoint documentation is
-  the next commit before Task 10 begins.
+- Last accepted implementation commit: `f6d3359`; the Task 10 checkpoint documentation is
+  the next commit before Task 11 begins.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -71,11 +77,12 @@ Updated: 2026-07-13
 - **New owners:** managed Bash module and setup Python tool are explicit and bounded.
 - **Fallbacks:** static mode is an explicit product choice, not a managed-error fallback.
 - **Retirement:** only obsolete "no credentials anywhere" assertions retire in v1.1.
-- **Complexity:** `libexec/airvpn-api` is 1,598 lines, `tests/test_airvpn_api.py` is
-  2,263 lines, `bin/wg-healthcheck` is 1,896 lines, `bin/wg-healthcheck-setup` is 825 lines,
-  `libexec/wg-healthcheck-managed` is 3,771 lines, `tests/test_wg_healthcheck.sh` is 2,865
-  lines, and `tests/test_wg_managed_profiles.sh` is 6,312 lines. These exceed the plan's
-  review threshold. Task 14's split/ownership decision remains mandatory and cannot be
-  waived before release.
-- **Evidence decision:** `continue` to Task 10; Tasks 1-9 are accepted, while release and
+- **Complexity:** `libexec/airvpn-api` is 1,563 lines, `tests/test_airvpn_api.py` is
+  2,241 lines, `bin/wg-healthcheck` is 2,218 lines,
+  `libexec/wg-healthcheck-managed` is 3,792 lines, `tests/test_wg_healthcheck.sh` is 3,206
+  lines, and `tests/test_wg_managed_profiles.sh` is 6,404 lines. The setup owner is now a
+  62-line launcher plus focused Python modules, each at or below 723 lines. The remaining
+  Bash/provider owners exceed the review threshold; Task 14's split/ownership decision
+  remains mandatory and cannot be waived before release.
+- **Evidence decision:** `continue` to Task 11; Tasks 1-10 are accepted, while release and
   live VM completion remain unclaimed.

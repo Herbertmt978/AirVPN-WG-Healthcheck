@@ -269,6 +269,37 @@
 - No live API credential, provider mutation, persistent setup application, or VM change was
   used. Task 10 owns transactional persistence and Task 14 must split oversized owners.
 
+### Task 10: transactional setup application and credential lifecycle (accepted)
+
+- Commit `eae050477a373208dbb215e47b1b3720f18f839d` split the setup launcher into a
+  bounded Python package and added exclusive administrative leasing, quiesced config/key
+  transactions, strict v1/v2/v3 recovery journals, repeatable snapshots, fresh-health
+  commit proof, post-commit timer handling, and the setup-only runtime candidate cleanup
+  seam. Commit `f6d3359` normalized the existing provider sources to the pinned formatter.
+- Adversarial review reproduced two final crash-safety blockers before acceptance:
+  - random private write names could strand an undiscoverable credential-bearing temporary
+    after power loss;
+  - a syntactically valid static journal could claim `key_changed=1`, causing rollback to
+    ignore credential recovery evidence.
+- The repaired tree uses fixed same-directory, exclusive-create private staging names;
+  apply recovery durably discards only those known unpublished entries while holding the
+  exclusive setup lease, and dry runs fail closed without mutation. Strict journal
+  semantics now reject static key changes and API states that claim no prior or new key.
+- Final GREEN evidence on the exact accepted tree:
+  - Python 3.12 compile plus discovery: 167/167 passed;
+  - focused setup application/recovery/store/journal/maintenance: 74/74 passed;
+  - static/runtime Ubuntu root suite: 89/89 passed;
+  - managed Ubuntu 24.04 root suite: 122/122 passed with no skips;
+  - pinned Ruff 0.12.3 check and format: all 21 Python owners passed;
+  - Bash syntax, ShellCheck 0.11.0 style, diff integrity, and Gitleaks over the 2.33 MB
+    current tree passed.
+- Independent specification and adversarial re-reviews returned READY after the repairs.
+  They verified static no-key isolation, lease/lock ordering, fixed-stage refusal and
+  cleanup, strict reachable journal states, exact rollback, inert first provisioning,
+  fresh proof before commit, timer containment, and candidate cleanup ownership.
+- No live API credential, VM mutation, installer change, or public release action occurred.
+  Task 11 owns installation/upgrade safety and Task 14 remains a mandatory complexity gate.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.
