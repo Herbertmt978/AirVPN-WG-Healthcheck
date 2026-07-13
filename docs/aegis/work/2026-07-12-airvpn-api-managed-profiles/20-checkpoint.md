@@ -4,8 +4,9 @@ Updated: 2026-07-13
 
 ## TodoCheckpointDraft
 
-- **Current todo:** complete Task 15 download-VM authenticated acceptance, rollback drill,
-  final credential removal, and static/API-mode handoff.
+- **Current todo:** after the provider ledger reopens, complete Task 15 download-VM
+  authenticated generator acceptance with a fresh private credential, then run the API
+  adoption, rollback, rotation, and final static/API-mode handoff drills.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -61,8 +62,9 @@ Updated: 2026-07-13
   then preserved trusted installed `PostUp`/`PostDown` routing hooks without admitting
   provider hooks, tightened managed-profile parent permissions, and corrected the AirVPN
   generator request from OS-packaged output to the raw single-profile form.
-- **Active slice:** Task 15 AirVPN generator response-contract diagnosis and download-VM
-  authenticated acceptance.
+- **Active slice:** Task 15 AirVPN generator response-contract diagnosis is installed and
+  verified on the download VM; authenticated acceptance is waiting on the provider window
+  and a fresh private credential.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
 - **Evidence refs:** compatibility commit `05af6bb` and raw-profile correction commit
   `4acdf43`. Exact `4acdf43` native-Linux verification: Python root 201/201; static/runtime
@@ -72,16 +74,18 @@ Updated: 2026-07-13
   systemd, actionlint, Python 3.10 provider 71/71, and ShellCheck 0.9/0.11 gates passed.
   Two release builds were byte-identical. Pinned Gitleaks found no leaks in the exact
   history, tree, or either extracted archive. Independent Terra/Luna reviews returned
-  READY. The exact package was installed quiesced on the VM without changing the active
-  profile or health configuration; the timer remained runtime-masked and the client/tunnel
-  remained healthy.
+  READY. The exact `47e7511` package is installed on the VM without changing the active
+  profile or health configuration. A manual and timer-triggered static check passed with
+  WireGuard up, qBittorrent proved, AirVPN egress verified, no API key or recovery artifact,
+  and the minute timer enabled and active.
 - **Blocked on:** both authenticated generator dry runs failed closed at the same
   secret-free `phase=response` boundary. The six-attempt rolling cap is now full and will
   not reopen naturally until 2026-07-14 17:25:27 UTC.
-- **Next step:** isolate the response-contract mismatch from public provider evidence and
-  local enum-only diagnostics, then run the complete exact-commit Linux/release gate. Do
-  not publish API success or retry before the natural window; preserve the verified static
-  baseline and require a fresh private credential for any later production migration.
+- **Next step:** after 2026-07-14 17:25:27 UTC, use a fresh privately supplied credential
+  for one controlled generator dry run and record only the local phase/reason manifest. On
+  success, prove identity-pinned API adoption, rollback, bad-server rotation, qBittorrent
+  containment, and key removal before publishing. Do not reset the provider ledger or use
+  the credential that was shared in chat.
 
 ## ResumeStateHint
 
@@ -90,8 +94,8 @@ Updated: 2026-07-13
   `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
 - Branch: `Herb/airvpn-api-profiles`
 - Last accepted implementation commit: `47e7511`; its exact root/non-root Linux, release,
-  reproducibility, workflow, and secret gates passed. The VM still runs the byte-identical
-  `4acdf43` runtime pending a quiesced diagnostic-build update.
+  reproducibility, workflow, and secret gates passed. The VM runs that byte-identical
+  diagnostic runtime in verified static mode with the timer enabled and active.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.

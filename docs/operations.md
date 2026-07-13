@@ -107,7 +107,23 @@ credential, generated profile, provider response, or candidate file into diagnos
 
 AirVPN documents a global ceiling of 600 API requests per 10 minutes and warns that an
 exceeding source IP may be banned. The healthcheck's lower persistent limit and backoff are
-intentional safety controls, not a quota to consume or bypass.
+intentional safety controls, not a quota to consume or bypass. Its authenticated ledger is
+per interface, but the provider ceiling is per source IP; operators running many interfaces
+behind one address must budget and stagger their aggregate requests.
+
+The authenticated generator origin is fixed in code. `AIRVPN_STATUS_URL` and
+`AIRVPN_WHATISMYIP_URL` are accepted only from the root-owned configuration so controlled
+tests and trusted proxies remain possible, but they are still trust-boundary overrides.
+Changing either value means the response is no longer direct evidence from the default
+AirVPN endpoint; keep the defaults unless the replacement is operator-controlled and
+reviewed.
+
+Generated v1.1 profiles deliberately route IPv4 with `AllowedIPs = 0.0.0.0/0` and the
+qBittorrent proof checks its peer TCP and UDP listeners on the configured WireGuard IPv4
+address. The tunnel-bound `whatismyip` check proves that its own request exited through
+AirVPN; it is not a whole-host IPv6 leak test. If the host or container has IPv6, enforce an
+independent firewall policy that blocks non-tunnel IPv6 (or disable IPv6 intentionally) and
+test that policy before unattended downloads.
 
 ## Upgrade and rollback
 

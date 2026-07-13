@@ -64,6 +64,9 @@ authenticated `generator` service for one raw profile, and the credential-free
 DNS policy remain operator-owned. AirVPN documents a global limit of 600 API requests per
 10 minutes and warns that exceeding it can ban the source IP. This project deliberately
 uses a much stricter persistent retry ledger; do not reset that state to force a retry.
+The authenticated ledger is per interface, while AirVPN's ceiling is per source IP. If
+you operate many interfaces behind one public address, budget their combined traffic and
+stagger checks rather than treating each interface's ledger as a separate provider quota.
 
 | AirVPN service | Provider access | v1.1 policy |
 | --- | --- | --- |
@@ -79,6 +82,11 @@ uses a much stricter persistent retry ledger; do not reset that state to force a
 The API Explorer is the provider authority for this boundary. A future setup-only device
 picker could consume a strictly reduced `devices` list, but unattended checks will not gain
 device mutation or account-session authority implicitly.
+
+The generator's authenticated origin is fixed in code. The public status and egress URLs
+are root-configuration overrides for controlled testing or a trusted proxy; changing either
+one changes the network trust boundary. Keep the AirVPN defaults unless you control and have
+reviewed the replacement endpoint.
 
 When authenticated generation fails, diagnostics expose only a local failure phase and,
 for response-contract failures, one fixed reason such as `media`, `size`, or `protocol`.

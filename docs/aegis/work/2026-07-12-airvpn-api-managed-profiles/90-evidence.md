@@ -549,6 +549,28 @@ the actual release contract successfully.
 - A Windows-mounted staged-installer run was rejected only by the expected lack of native
   POSIX ownership/mode semantics and is not counted as release evidence; the corresponding
   fresh native-Linux root and non-root installer gates above passed.
+- The preserved exact `47e7511` tar was transferred to the download VM in a private,
+  root-owned staging area and independently matched
+  `b51557be42032af357cc1e974b91944876ec8eba77d2b1e05159d94e1abed29c` before extraction.
+  `install.sh --quiesce wg0` completed successfully. Every installed program, helper,
+  setup package file, and systemd unit matched the reviewed archive byte-for-byte; the
+  existing WireGuard profile and health configuration retained their preflight digests.
+- The diagnostic-build acceptance ran with the timer runtime-masked and no API credential.
+  The one-shot service completed with `mode=static`, `tunnel=up`, a healthy or recovered
+  result, `pending=none`, and `qbittorrent=proved`. A separate HTTPS request bound to `wg0`
+  was accepted by AirVPN's public `whatismyip` service with `result=ok` and `airvpn=true`;
+  its address and response body were not retained.
+- The runtime mask was removed only after that acceptance. The timer is enabled and active,
+  has triggered the installed service, and the latest automated check remains successful
+  in static mode with qBittorrent proved. No API key, managed candidate, setup transaction,
+  pending journal, or safety record exists. Both private deployment directories and the
+  temporary egress response were securely removed after validation.
+- A fresh read-only AirVPN API audit confirmed the eight-service boundary recorded in the
+  public guide and the provider's source-IP-wide 600-request/10-minute ceiling. The safest
+  later uplift is a setup-only reduced `devices?action=list` picker; device mutations remain
+  asynchronous identity changes requiring a separate blue/green design. Public status and
+  egress URL overrides, aggregate multi-interface rate budgeting, and IPv4/IPv6 leak-policy
+  boundaries are now explicit in the operator documentation.
 
 Authenticated raw-profile success, API apply, live rollback/rotation, release, tag, and
 publication remain unclaimed. The six-attempt rolling cap does not naturally reopen until
