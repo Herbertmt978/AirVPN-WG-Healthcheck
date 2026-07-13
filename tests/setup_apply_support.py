@@ -240,6 +240,7 @@ class FixedCommandDouble:
         self.worker_active = True
         self.fail_stop_unit: str | None = None
         self.fail_first_validation = False
+        self.validation_failure_stdout = ""
         self.fail_runtime_apply = False
         self.install_profile_before_apply_failure = False
         self.create_snapshot_before_apply_failure = False
@@ -445,7 +446,10 @@ class FixedCommandDouble:
                     )
                 if self.fail_first_validation:
                     return self._completed(
-                        argv, 1, stderr="redacted validation failure"
+                        argv,
+                        1,
+                        stdout=self.validation_failure_stdout,
+                        stderr="redacted validation failure",
                     )
             return self._completed(
                 argv,

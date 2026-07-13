@@ -138,8 +138,21 @@ managed_fail_candidate_before_rollback() {
   (( persistence_rc == 0 && rollback_rc == 0 ))
 }
 
+managed_finish_authenticated_provider_result() {
+  local provider_rc="${1:?}" outcome="${2:?}" phase="${3-}"
+  (( provider_rc != 0 )) || return 0
+  if [[ "$outcome" == transient ]]; then
+    case "$phase" in
+      transport|response|profile|internal)
+        printf 'failure\ttransient\tphase=%s\n' "$phase"
+        ;;
+    esac
+  fi
+  return "$provider_rc"
+}
+
 # Provider callbacks receive only the private credential descriptor number and may set
-# the four MANAGED_API_PROVIDER_* result fields. Downstream is invoked only after the
+# the bounded MANAGED_API_PROVIDER_* result fields. Downstream is invoked only after the
 # authenticated outcome is durable and this process has released the global API lock.
 managed_run_authenticated_attempt() {
   local wgmanaged_administrative_bypass="${1:-0}" wgmanaged_credential_fd="${2-}"
@@ -163,7 +176,6 @@ managed_run_authenticated_attempt() {
   if [[ -n "$wgmanaged_credential_fd" ]]; then
     validate_credential_fd_number "$wgmanaged_credential_fd" || return 1
   fi
-
   if ! managed_global_api_lock_acquire "$wgmanaged_credential_fd"; then
     [[ -z "$wgmanaged_credential_fd" ]] || close_private_fd "$wgmanaged_credential_fd" ||
       return 1
@@ -219,18 +231,18 @@ managed_run_authenticated_attempt() {
       close_private_fd "$active_credential_fd" || wgmanaged_outcome_rc=1
     return "$wgmanaged_outcome_rc"
   fi
-
   MANAGED_API_PROVIDER_FAILURE_CLASS=''
   MANAGED_API_PROVIDER_RETRY_AFTER=''
   MANAGED_API_PROVIDER_FAILED_SERVER=''
   MANAGED_API_PROVIDER_JITTER=''
+  MANAGED_API_PROVIDER_FAILURE_PHASE=''
   if "$wgmanaged_provider_callback" "$active_credential_fd"; then
     wgmanaged_provider_rc=0
   else
     wgmanaged_provider_rc=$?
   fi
-  [[ -z "$active_credential_fd" ]] ||
-    close_private_fd "$active_credential_fd" || wgmanaged_provider_rc=1
+  [[ -z "$active_credential_fd" ]] || close_private_fd "$active_credential_fd" ||
+    { wgmanaged_provider_rc=1; MANAGED_API_PROVIDER_FAILURE_PHASE=''; }
 
   wgmanaged_clock_epoch_carrier=''
   if managed_call_without_private_fd "$active_credential_fd" \
@@ -270,6 +282,7 @@ managed_run_authenticated_attempt() {
     wgmanaged_release_rc=$?
   fi
   (( wgmanaged_outcome_rc == 0 && wgmanaged_release_rc == 0 )) || return 1
-  (( wgmanaged_provider_rc == 0 )) || return "$wgmanaged_provider_rc"
+  managed_finish_authenticated_provider_result "$wgmanaged_provider_rc" \
+    "$wgmanaged_outcome" "$MANAGED_API_PROVIDER_FAILURE_PHASE" || return $?
   "$wgmanaged_downstream_callback"
 }

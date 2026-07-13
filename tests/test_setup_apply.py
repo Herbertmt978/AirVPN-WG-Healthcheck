@@ -207,6 +207,25 @@ class SetupApplyTests(unittest.TestCase):
             "a rejected proposal must not reach runtime apply",
         )
 
+    def test_authenticated_apply_validation_surfaces_only_allowlisted_phase(self):
+        before = _snapshot(self.paths)
+        self.runner.fail_first_validation = True
+        self.runner.validation_failure_stdout = (
+            "failure\ttransient\tphase=profile\n"
+        )
+
+        with self.proposed_credential() as credential:
+            with self.assertRaisesRegex(
+                setup.SetupError, "phase=profile"
+            ) as raised:
+                self.apply(_request(mode="api"), credential)
+
+        self.assertNotIn("redacted validation failure", str(raised.exception))
+        self.assertEqual(_snapshot(self.paths), before)
+        self.assertFalse(self.paths.credential.exists())
+        self.assertFalse(self.runner.timer_active)
+        self.assertFalse(self.runner.worker_active)
+
     def test_failed_adoption_restores_exact_config_credential_and_snapshot_state(self):
         _write_private(self.paths.profile, self.PROFILE)
         _write_private(self.paths.credential, self.OLD_CREDENTIAL)

@@ -38,6 +38,16 @@ test_generator_callback_handles_reserved_fd_collisions_and_clean_child_environme
   AIRVPN_API_TIMEOUT=20
   export AIRVPN_API_KEY=must-not-reach-child
   validate_secure_executable() { return 0; }
+  managed_secure_sha256_stream() {
+    local descriptor target
+    for descriptor in "/proc/$BASHPID/fd/"*; do
+      target="$(readlink -- "$descriptor")" || continue
+      [[ "$target" != "$TEST_TMP/credential" && "$target" != "$MANAGED_CANDIDATE" ]] ||
+        return 97
+    done
+    printf 'hasher-closed\n' >> "$TEST_TMP/fd-events"
+    command sha256sum
+  }
   managed_select_airvpn_candidate() {
     printf -v "$1" '%s' $'Candidate\t198.51.100.20:1637\tGB\tLondon\t10000\t10\t20'
   }
@@ -88,8 +98,9 @@ test_generator_callback_handles_reserved_fd_collisions_and_clean_child_environme
       "credential must never enter helper argv or output" || return 1
     assert_contains generate-profile "$args" "generator must use the fixed provider subcommand" || return 1
     [[ -f "$MANAGED_CANDIDATE" ]] || fail "generator must write only through candidate fd 4" || return 1
-    assert_eq $'paths-closed\ninode-closed\nfinalize-closed' "$(<"$TEST_TMP/fd-events")" \
-      "all candidate/helper metadata stages must run with supplied fd $supplied_fd closed" || return 1
+    assert_eq $'paths-closed\ninode-closed\nhasher-closed\nhasher-closed\nfinalize-closed' \
+      "$(<"$TEST_TMP/fd-events")" \
+      "all non-provider stages must run with credential and candidate descriptors closed" || return 1
   done
   unset AIRVPN_API_KEY
 }
@@ -172,6 +183,100 @@ PY
       assert_eq "cleanup-closed:$supplied_fd:$failure_case" "$(<"$TEST_TMP/cleanup-events")" \
         "$failure_case cleanup child must not inherit supplied fd $supplied_fd" || return 1
     done
+  done
+}
+
+test_generator_transient_failure_manifest_is_exact_and_secret_safe() {
+  local hasher_case malformed_case output rc
+  setup_managed_journal_fixture || return 1
+  AIRVPN_API_HELPER="$TEST_TMP/fake-airvpn-api"
+  printf '#!/bin/sh\nexit 1\n' > "$AIRVPN_API_HELPER"
+  chmod 755 -- "$AIRVPN_API_HELPER"
+  printf 'descriptor-only-test-record\n' > "$TEST_TMP/credential"
+  MANAGED_PROFILE_SERVER=Candidate
+  MANAGED_PROFILE_ENDPOINT=198.51.100.20:1637
+  MANAGED_PROFILE_PIN=1
+  AIRVPN_DEVICE=Device-One
+  AIRVPN_API_TIMEOUT=20
+  validate_secure_executable() { return 0; }
+  managed_remove_generated_candidate() { rm -f -- "$MANAGED_CANDIDATE"; }
+
+  managed_invoke_generator_closed() {
+    close_private_fd "$1" || return 1
+    printf 'failure\ttransient\tphase=response\n'
+    return 6
+  }
+  : > "$MANAGED_CANDIDATE"
+  chmod 600 -- "$MANAGED_CANDIDATE"
+  exec 3<"$TEST_TMP/credential"
+  set +e
+  managed_generate_candidate_provider 3 > "$TEST_TMP/phase-output"
+  rc=$?
+  set +e
+  exec 3<&-
+  output="$(<"$TEST_TMP/phase-output")"
+  assert_eq 1 "$rc" "transient provider failure must remain nonzero" || return 1
+  assert_eq '' "$output" \
+    "provider callback must defer the safe phase until outcome persistence" || return 1
+  assert_eq response "$MANAGED_API_PROVIDER_FAILURE_PHASE" \
+    "provider callback must retain only the canonical safe phase enum" || return 1
+  [[ ! -e "$MANAGED_CANDIDATE" ]] ||
+    fail "transient failure must remove the generated candidate" || return 1
+
+  managed_invoke_generator_closed() {
+    close_private_fd "$1" || return 1
+    case "$MALFORMED_MANIFEST_CASE" in
+      extra-line) printf 'failure\ttransient\tphase=response\n\n' ;;
+      nul) printf 'failure\ttransient\tphase=response\n\000' ;;
+      secret) printf 'failure\ttransient\tphase=response\n%s\n' 'descriptor-only-test-record' ;;
+      *) return 1 ;;
+    esac
+    return 6
+  }
+  for malformed_case in extra-line nul secret; do
+    MALFORMED_MANIFEST_CASE="$malformed_case"
+    : > "$MANAGED_CANDIDATE"
+    chmod 600 -- "$MANAGED_CANDIDATE"
+    exec 3<"$TEST_TMP/credential"
+    set +e
+    managed_generate_candidate_provider 3 > "$TEST_TMP/phase-output" 2>/dev/null
+    rc=$?
+    set +e
+    exec 3<&-
+    output="$(<"$TEST_TMP/phase-output")"
+    assert_eq 1 "$rc" "$malformed_case transient output must remain nonzero" || return 1
+    assert_eq '' "$output" "$malformed_case helper output must be discarded" || return 1
+    assert_eq '' "$MANAGED_API_PROVIDER_FAILURE_PHASE" \
+      "$malformed_case helper output must not retain a provider phase" || return 1
+    [[ ! -e "$MANAGED_CANDIDATE" ]] ||
+      fail "$malformed_case transient failure must remove the generated candidate" || return 1
+  done
+
+  managed_invoke_generator_closed() {
+    close_private_fd "$1" || return 1
+    printf 'failure\ttransient\tphase=response\n'
+    return 6
+  }
+  managed_secure_sha256_stream() {
+    command sha256sum >/dev/null
+    [[ "$HASHER_CASE" == malformed ]] && { printf 'not-a-digest\n'; return 0; }
+    return 9
+  }
+  for hasher_case in malformed failed; do
+    HASHER_CASE="$hasher_case"
+    : > "$MANAGED_CANDIDATE"
+    chmod 600 -- "$MANAGED_CANDIDATE"
+    exec 3<"$TEST_TMP/credential"
+    set +e
+    managed_generate_candidate_provider 3 > "$TEST_TMP/phase-output" 2>/dev/null
+    rc=$?
+    set +e
+    exec 3<&-
+    assert_eq 1 "$rc" "$hasher_case hasher result must fail closed" || return 1
+    assert_eq '' "$(<"$TEST_TMP/phase-output")" "$hasher_case hasher output must be suppressed" || return 1
+    assert_eq '' "$MANAGED_API_PROVIDER_FAILURE_PHASE" \
+      "$hasher_case hasher result must suppress provider attribution" || return 1
+    [[ ! -e "$MANAGED_CANDIDATE" ]] || return 1
   done
 }
 

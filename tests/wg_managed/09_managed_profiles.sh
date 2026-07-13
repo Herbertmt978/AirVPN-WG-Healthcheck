@@ -76,6 +76,57 @@ test_managed_attempt_stages_close_key_everywhere_except_exact_provider() {
     "only the exact authenticated provider may observe the key descriptor"
 }
 
+test_transient_failure_phase_requires_durable_outcome_and_lock_release() {
+  local credential_fd failure_case output rc
+  source_managed_contract || return 1
+  setup_api_state_fixture
+  managed_global_api_lock_acquire() { MANAGED_API_LOCK_FD=99; }
+  managed_capture_wall_clock_epoch_closed() {
+    printf -v wgmanaged_clock_epoch_carrier '%s' \
+      "$([[ "$1" == attempt ]] && printf 1000 || printf 1001)"
+  }
+  managed_api_state_load() { managed_api_state_defaults "$1"; }
+  managed_api_state_refresh_identity() { return 0; }
+  managed_api_gate_before_preflight() { return 0; }
+  managed_api_record_attempt() { return 0; }
+  phase_provider() {
+    MANAGED_API_PROVIDER_FAILURE_PHASE=response
+    MANAGED_API_PROVIDER_FAILED_SERVER=Candidate
+    return 1
+  }
+  phase_downstream() { printf 'unexpected-downstream\n' >> "$TEST_TMP/phase-events"; }
+  managed_api_record_outcome() {
+    printf 'outcome\n' >> "$TEST_TMP/phase-events"
+    [[ "$FAILURE_CASE" != outcome ]]
+  }
+  managed_global_api_lock_release() {
+    printf 'release\n' >> "$TEST_TMP/phase-events"
+    MANAGED_API_LOCK_FD=''
+    [[ "$FAILURE_CASE" != release ]]
+  }
+
+  for failure_case in none outcome release; do
+    FAILURE_CASE="$failure_case"
+    : > "$TEST_TMP/phase-events"
+    exec {credential_fd}<"$AIRVPN_API_KEY_FILE"
+    set +e
+    output="$(managed_run_authenticated_attempt \
+      0 "$credential_fd" phase_provider phase_downstream)"
+    rc=$?
+    set +e
+    assert_eq 1 "$rc" "$failure_case transient provider result must remain nonzero" || return 1
+    assert_eq $'outcome\nrelease' "$(<"$TEST_TMP/phase-events")" \
+      "$failure_case path must attempt outcome persistence before lock release" || return 1
+    if [[ "$failure_case" == none ]]; then
+      assert_eq $'failure\ttransient\tphase=response' "$output" \
+        "durably recorded transient phase must surface after lock release" || return 1
+    else
+      assert_eq '' "$output" \
+        "$failure_case failure must suppress provider phase attribution" || return 1
+    fi
+  done
+}
+
 test_rotate_dry_run_apply_and_static_restore_use_explicit_safe_ordering() {
   local rc
   setup_managed_transaction_fixture || return 1

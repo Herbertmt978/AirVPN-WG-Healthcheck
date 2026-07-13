@@ -25,7 +25,7 @@ MANAGED_FRAGMENTS = (
 REVIEW_LINE_LIMIT = 800
 REVIEW_EXCEPTIONS = {
     Path("bin/wg-healthcheck"): 2214,
-    Path("libexec/airvpn-api"): 1563,
+    Path("libexec/airvpn-api"): 1631,
     Path("install.sh"): 1154,
 }
 CODE_SUFFIXES = {".bash", ".py", ".sh"}
@@ -434,6 +434,7 @@ class ArchitectureContractTests(unittest.TestCase):
         loader = (ROOT / "tests" / "test_airvpn_api.py").read_text(encoding="utf-8")
         expected = (
             "airvpn_api_tests_cli.py",
+            "airvpn_api_tests_diagnostics.py",
             "airvpn_api_tests_generator.py",
             "airvpn_api_tests_profiles.py",
             "airvpn_api_tests_selection.py",

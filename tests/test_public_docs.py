@@ -78,6 +78,15 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertRegex(text, r"(?is)(order|first).{0,100}soft.{0,100}preference")
         self.assertRegex(text, r"(?is)\bALL\b.{0,120}(eligible|every).{0,120}countr")
 
+    def test_operations_explain_safe_authenticated_failure_phases(self) -> None:
+        text = read_text(OPERATIONS)
+        for phase in ("transport", "response", "profile", "internal"):
+            with self.subTest(phase=phase):
+                self.assertIn(f"`phase={phase}`", text)
+        self.assertRegex(text, r"(?is)(wait|honou?r|respect).{0,100}backoff")
+        self.assertRegex(text, r"(?is)phase.{0,160}(never|does not).{0,100}(key|profile|provider text)")
+        self.assertNotRegex(text, r"(?i)curl\s+(?:-[^\s]*v|--verbose)")
+
     def test_credential_lifecycle_is_documented_without_secret_cli_or_environment_input(self) -> None:
         text = self.current_public_text()
         self.assertIn("/etc/wireguard/healthcheck.d/<iface>.api-key", text)

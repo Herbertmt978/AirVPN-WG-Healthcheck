@@ -194,3 +194,35 @@ def parse_runtime_manifest(payload: str, operation: str) -> RuntimeManifest:
     if canonical != payload:
         raise SetupError("runtime returned an invalid redacted manifest")
     return RuntimeManifest(fields[1], f"{address}:{port}", expected_pin == "1")
+
+
+def parse_runtime_failure_phase(payload: str) -> str | None:
+    """Return only an exact local transient phase; discard every other child byte."""
+
+    if not isinstance(payload, str):
+        return None
+    try:
+        payload.encode("ascii", "strict")
+    except UnicodeError:
+        return None
+    prefix = "failure\ttransient\tphase="
+    if not payload.startswith(prefix) or not payload.endswith("\n"):
+        return None
+    if payload.count("\n") != 1:
+        return None
+    phase = payload[len(prefix) : -1]
+    if phase not in {"transport", "response", "profile", "internal"}:
+        return None
+    if payload != f"{prefix}{phase}\n":
+        return None
+    return phase
+
+
+def runtime_validation_failure_message(payload: str) -> str:
+    phase = parse_runtime_failure_phase(payload)
+    if phase is None:
+        return "authenticated runtime validation failed; no changes were made"
+    return (
+        "authenticated runtime validation failed "
+        f"(phase={phase}); no changes were made"
+    )

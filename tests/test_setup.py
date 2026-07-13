@@ -487,6 +487,58 @@ class SetupCliTests(unittest.TestCase):
 
         self.assertNotIn(SENTINEL, stdout.getvalue() + stderr.getvalue())
 
+    def test_runtime_failure_phase_is_exact_allowlisted_and_secret_free(self):
+        allowed = ("transport", "response", "profile", "internal")
+        for phase in allowed:
+            with self.subTest(phase=phase):
+                def run(argv, **_kwargs):
+                    return subprocess.CompletedProcess(
+                        argv,
+                        1,
+                        f"failure\ttransient\tphase={phase}\n",
+                        SENTINEL,
+                    )
+
+                with (
+                    setup.credential_from_bytes(
+                        (SENTINEL + "\n").encode("ascii")
+                    ) as credential,
+                    setup.settings_from_values("default", "GB") as settings,
+                ):
+                    with self.assertRaisesRegex(
+                        setup.SetupError, rf"phase={phase}"
+                    ) as raised:
+                        setup.run_runtime_validation(
+                            "wg0", "adopt", credential, settings, run=run
+                        )
+                self.assertNotIn(SENTINEL, str(raised.exception))
+
+        malformed = (
+            f"failure\ttransient\tphase={SENTINEL}\n",
+            "failure\ttransient\tphase=response\nextra\n",
+            "failure\ttransient\tphase=Response\n",
+            "failure\ttransient\tphase=response",
+            "failure\tpermanent\tphase=response\n",
+        )
+        for payload in malformed:
+            with self.subTest(payload=payload[:40]):
+                def run(argv, **_kwargs):
+                    return subprocess.CompletedProcess(argv, 1, payload, SENTINEL)
+
+                with (
+                    setup.credential_from_bytes(
+                        (SENTINEL + "\n").encode("ascii")
+                    ) as credential,
+                    setup.settings_from_values("default", "GB") as settings,
+                ):
+                    with self.assertRaisesRegex(setup.SetupError, "validation failed") as raised:
+                        setup.run_runtime_validation(
+                            "wg0", "adopt", credential, settings, run=run
+                        )
+                rendered = str(raised.exception)
+                self.assertNotIn("phase=", rendered)
+                self.assertNotIn(SENTINEL, rendered)
+
     def test_child_decode_failures_are_mapped_to_redacted_setup_errors(self):
         def run(_argv, **_kwargs):
             raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, SENTINEL)

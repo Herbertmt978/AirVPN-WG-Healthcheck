@@ -88,7 +88,7 @@ equivalence. Three production files remain a frozen review-size exception for v1
 
 - `bin/wg-healthcheck` (2,214 lines), because splitting descriptor capture, static dispatch,
   and secure managed admission would add a source or process boundary to the static path;
-- `libexec/airvpn-api` (1,563 lines), because splitting its isolated executable would alter
+- `libexec/airvpn-api` (1,631 lines), because splitting its isolated executable would alter
   the fixed private-descriptor, import, installation, and archive contract;
 - `install.sh` (1,154 lines), because its inert-guard-to-final-launcher publication order is
   one linear rollback invariant.
@@ -102,6 +102,20 @@ The Task 15 live-upgrade drill reopened the installer ceiling when a safe v1.0-e
 blocked the reviewed v1.1 path. The accepted increase is limited to an FD-pinned migration
 of the selected interface's root-owned, single-link, empty mode-`0644` lock after quiescence;
 ordinary upgrades, setup guards, held locks, and every other interface remain strict.
+
+The authenticated Task 15 acceptance then produced the same opaque transient result from
+three distinct provider candidates. That live evidence reopened the provider-helper ceiling.
+The accepted increase from 1,563 to 1,631 lines is limited to a four-value local phase enum,
+classification at the existing transport/response/profile boundary, and one hard-coded
+failure manifest. No provider text, new request, persistent field, credential path, or
+administrative command crosses the boundary. Malformed or additional child output is
+discarded. The runtime streams raw helper stdout only through SHA-256, preserves the helper
+and hasher statuses separately, and compares that digest with independently constructed,
+newline-exact allowlisted manifests. This keeps NUL bytes and every other provider byte out
+of shell variables while still rejecting any byte-level difference. The hasher executable
+and its fixed-path ancestors are revalidated after every credential and candidate descriptor
+is closed in that subprocess. A future provider feature still triggers extraction or a
+superseding decision; this diagnostic exception is not a general growth allowance.
 
 ### Block-level review
 

@@ -297,10 +297,87 @@ managed_duplicate_credential_fd() {
   printf -v "$output_variable" '%s' "$duplicated_fd"
 }
 
+managed_secure_sha256_stream() {
+  local executable
+  executable="$(type -P sha256sum)" || return 1
+  validate_secure_executable "$executable" || return 1
+  "$executable"
+}
+
+managed_print_text() { printf '%s' "${1-}"; }
+
+managed_secure_sha256_stream_closed() {
+  local first_fd="${1:?}" second_fd="${2-}" third_fd="${3-}" private_fd
+  (( $# >= 1 && $# <= 3 )) || return 1
+  validate_credential_fd_number "$first_fd" || return 1
+  [[ -z "$second_fd" ]] || validate_credential_fd_number "$second_fd" || return 1
+  [[ -z "$third_fd" ]] || validate_credential_fd_number "$third_fd" || return 1
+  [[ -z "$second_fd" || "$first_fd" != "$second_fd" ]] || return 1
+  [[ -z "$third_fd" || ( "$first_fd" != "$third_fd" && "$second_fd" != "$third_fd" ) ]] ||
+    return 1
+  for private_fd in "$first_fd" "$second_fd" "$third_fd"; do
+    [[ -z "$private_fd" ]] || close_private_fd "$private_fd" || return 1
+  done
+  managed_secure_sha256_stream
+}
+
+managed_print_text_closed() {
+  local private_fd="${1:?}" value="${2-}"
+  close_private_fd "$private_fd" || return 1
+  managed_print_text "$value"
+}
+
+managed_sha256_text() {
+  local output_variable="${1:?}" value="${2-}" private_fd="${3:?}" result digest
+  managed_output_variable_is_valid "$output_variable" || return 1
+  validate_credential_fd_number "$private_fd" || return 1
+  result="$(
+    managed_print_text_closed "$private_fd" "$value" |
+      managed_secure_sha256_stream_closed "$private_fd"
+  )" || return 1
+  [[ "$result" =~ ^[0-9a-f]{64}\ \ -$ ]] || return 1
+  digest="${result%% *}"
+  managed_sha256_is_valid "$digest" || return 1
+  printf -v "$output_variable" '%s' "$digest"
+}
+
+managed_capture_generator_digest() {
+  local digest_variable="${1:?}" rc_variable="${2:?}" credential_fd="${3:?}"
+  local key_fd="${4:?}" candidate_fd="${5:?}" pin="${6:?}"
+  local capture digest_line status_line provider_status hasher_status digest
+  local -a statuses=()
+  [[ $# == 6 && "$digest_variable" != "$rc_variable" ]] || return 1
+  managed_output_variable_is_valid "$digest_variable" || return 1
+  managed_output_variable_is_valid "$rc_variable" || return 1
+  capture="$(
+    set +e
+    managed_invoke_generator_closed "$credential_fd" "$key_fd" "$candidate_fd" \
+      "$pin" 2>/dev/null |
+      managed_secure_sha256_stream_closed "$credential_fd" "$key_fd" "$candidate_fd"
+    statuses=("${PIPESTATUS[@]}")
+    printf 'provider=%s\thasher=%s\n' "${statuses[0]}" "${statuses[1]}"
+  )" || return 1
+  [[ "$capture" == *$'\n'* ]] || return 1
+  digest_line="${capture%%$'\n'*}"
+  status_line="${capture#*$'\n'}"
+  [[ "$status_line" != *$'\n'* && "$status_line" == provider=*$'\t'hasher=* ]] || return 1
+  provider_status="${status_line#provider=}"
+  provider_status="${provider_status%%$'\t'*}"
+  hasher_status="${status_line##*$'\t'hasher=}"
+  [[ "$status_line" == "provider=$provider_status"$'\t'"hasher=$hasher_status" ]] || return 1
+  managed_uint_is_canonical "$provider_status" 255 || return 1
+  [[ "$hasher_status" == 0 && "$digest_line" =~ ^[0-9a-f]{64}\ \ -$ ]] || return 1
+  digest="${digest_line%% *}"
+  managed_sha256_is_valid "$digest" || return 1
+  printf -v "$digest_variable" '%s' "$digest"
+  printf -v "$rc_variable" '%s' "$provider_status"
+}
+
 managed_generate_candidate_provider() {
   local credential_fd="${1:?}" candidate_fd key_fd
-  local manifest provider_rc expected_pin
+  local manifest manifest_digest expected_digest provider_rc expected_pin failure_phase=''
   validate_credential_fd_number "$credential_fd" || return 1
+  MANAGED_API_PROVIDER_FAILURE_PHASE=''
   managed_call_without_private_fd "$credential_fd" managed_validate_generator_paths_closed ||
     return 1
   exec {candidate_fd}<>"$MANAGED_CANDIDATE" || return 1
@@ -315,12 +392,11 @@ managed_generate_candidate_provider() {
       managed_remove_generated_candidate >/dev/null 2>&1 || true
     return 1
   }
-  if manifest="$(managed_invoke_generator_closed "$credential_fd" "$key_fd" "$candidate_fd" \
-      "$MANAGED_PROFILE_PIN" 2>/dev/null)"; then
-    provider_rc=0
-  else
-    provider_rc=$?
-  fi
+  managed_capture_generator_digest manifest_digest provider_rc "$credential_fd" \
+    "$key_fd" "$candidate_fd" "$MANAGED_PROFILE_PIN" || {
+    manifest_digest=''
+    provider_rc=1
+  }
   exec {key_fd}<&- {candidate_fd}>&-
   if (( provider_rc != 0 )); then
     managed_call_without_private_fd "$credential_fd" \
@@ -329,6 +405,20 @@ managed_generate_candidate_provider() {
       4) MANAGED_API_PROVIDER_FAILURE_CLASS=auth; return 4 ;;
       5) return 5 ;;
       7) MANAGED_API_PROVIDER_FAILURE_CLASS=device; return 7 ;;
+      6)
+        for failure_phase in transport response profile internal; do
+          managed_sha256_text expected_digest \
+            $'failure\ttransient\tphase='"$failure_phase"$'\n' "$credential_fd" || {
+            failure_phase=''
+            break
+          }
+          [[ "$manifest_digest" == "$expected_digest" ]] && break
+          failure_phase=''
+        done
+        MANAGED_API_PROVIDER_FAILURE_PHASE="$failure_phase"
+        MANAGED_API_PROVIDER_FAILED_SERVER="$MANAGED_PROFILE_SERVER"
+        return 1
+        ;;
       *)
         MANAGED_API_PROVIDER_FAILED_SERVER="$MANAGED_PROFILE_SERVER"
         return 1
@@ -336,14 +426,16 @@ managed_generate_candidate_provider() {
     esac
   fi
   expected_pin="$MANAGED_PROFILE_PIN"
-  [[ "$manifest" == $'generated\t'"$MANAGED_PROFILE_SERVER"$'\t'"$MANAGED_PROFILE_ENDPOINT"$'\tpinned='"$expected_pin" ]] || {
+  manifest=$'generated\t'"$MANAGED_PROFILE_SERVER"$'\t'"$MANAGED_PROFILE_ENDPOINT"$'\tpinned='"$expected_pin"$'\n'
+  if ! managed_sha256_text expected_digest "$manifest" "$credential_fd" ||
+      [[ "$manifest_digest" != "$expected_digest" ]]; then
     managed_call_without_private_fd "$credential_fd" \
       managed_remove_generated_candidate >/dev/null 2>&1 || true
     return 1
-  }
+  fi
   managed_call_without_private_fd "$credential_fd" managed_finalize_generated_candidate_closed ||
     return 1
-  MANAGED_PROFILE_MANIFEST="$manifest"
+  MANAGED_PROFILE_MANIFEST="${manifest%$'\n'}"
 }
 
 managed_candidate_fd_identity() {

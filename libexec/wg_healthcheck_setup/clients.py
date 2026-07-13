@@ -16,6 +16,7 @@ from .model import (
     SetupError,
     parse_country_inventory,
     parse_runtime_manifest,
+    runtime_validation_failure_message,
 )
 from .private_io import PrivateHandle
 
@@ -86,9 +87,7 @@ def run_runtime_validation(
     ]
     completed = _run_fixed(argv, pass_fds=(credential.fd, settings.fd), run=run)
     if completed.returncode != 0:
-        raise SetupError(
-            "authenticated runtime validation failed; no changes were made"
-        )
+        raise SetupError(runtime_validation_failure_message(completed.stdout))
     if completed.stderr:
         raise SetupError("runtime returned an invalid redacted manifest")
     return parse_runtime_manifest(completed.stdout, operation)

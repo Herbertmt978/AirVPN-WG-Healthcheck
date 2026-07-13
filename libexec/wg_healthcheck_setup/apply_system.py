@@ -12,7 +12,12 @@ import subprocess
 from typing import Callable, Iterator, Protocol
 
 from .clients import _run_fixed
-from .model import RUNTIME, SetupError, parse_runtime_manifest
+from .model import (
+    RUNTIME,
+    SetupError,
+    parse_runtime_manifest,
+    runtime_validation_failure_message,
+)
 from .private_io import PrivateHandle, settings_from_values
 from .store import (
     ensure_private_directory,
@@ -285,7 +290,9 @@ def validate_with_lease(
             pass_fds=(credential.fd, settings.fd),
             run=run,
         )
-        if completed.returncode != 0 or completed.stderr:
+        if completed.returncode != 0:
+            raise SetupError(runtime_validation_failure_message(completed.stdout))
+        if completed.stderr:
             raise SetupError(
                 "authenticated runtime validation failed; no changes were made"
             )
