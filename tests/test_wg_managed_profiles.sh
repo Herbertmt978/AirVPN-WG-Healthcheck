@@ -1692,6 +1692,9 @@ test_linux_supplied_credential_fd_is_private_until_managed_owner() {
     mode="$(stat -c '%a' -- "$1")" || return 1
     printf '0:%s\n' "$mode"
   }
+  setup_guard_metadata_child() {
+    probe_fd_closed_in_child guard-metadata
+  }
   interface_lock_fd_identity() {
     probe_fd_closed_in_child lock-fd || return 1
     stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/$1"
@@ -1725,7 +1728,7 @@ test_linux_supplied_credential_fd_is_private_until_managed_owner() {
   set +e
   events="$(<"$TEST_TMP/events")"
   assert_eq 0 "$rc" "private descriptor must reach the exact managed owner without preflight leakage" || return 1
-  for stage in context environment root-check stat config settings state-dir \
+  for stage in context environment root-check stat config settings state-dir guard-metadata \
       lock-create lock-chmod lock-metadata lock-fd lock-path lock marker log module; do
     assert_contains "closed:$stage" "$events" "credential must be absent in $stage child" || return 1
   done
