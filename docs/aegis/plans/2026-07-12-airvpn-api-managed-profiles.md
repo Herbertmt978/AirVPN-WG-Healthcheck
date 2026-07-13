@@ -490,7 +490,7 @@ only legacy no-flag path.
 
 **Verification:** focused command tests plus both Bash suites.
 
-- [ ] **Write RED tests.** Cover redacted/non-mutating dry runs; provision refusing an
+- [x] **Write RED tests.** Cover redacted/non-mutating dry runs; provision refusing an
   existing/symlink path; durable first install; adoption identity match/mismatch and exact
   pre-managed snapshot; rotate dry-run/apply; static restoration; credential descriptor
   override; text/JSON status schema; credential presence checked by `stat` only; and every
@@ -501,9 +501,9 @@ only legacy no-flag path.
   worker/timer/lock/pending refusal, corrupt-state apply reset, and directory durability
   tests. Require adopt/restore/mode-change/credential-removal/state-reset commands to refuse
   v1 or v2 unresolved markers and every managed safety record.
-- [ ] **Verify RED.** Require only missing command owners to fail and assert zero Docker/
+- [x] **Verify RED.** Require only missing command owners to fail and assert zero Docker/
   network events for all dry runs.
-- [ ] **Implement minimal commands.** Wire provider FD contracts, candidate staging,
+- [x] **Implement minimal commands.** Wire provider FD contracts, candidate staging,
   snapshot creation, managed transaction calls, mode changes through strict atomic config
   rewrite, explicit static restore, and deterministic status rendering with no address,
   endpoint, device key, API key, or profile content. Make the normal health/speed/
@@ -513,9 +513,9 @@ only legacy no-flag path.
   `--apply` removes and syncs only the state file after all inactivity checks pass.
   Static restore selects static mode before mutation and uses the same crash-safe full-profile
   transaction whenever snapshot bytes differ, including equal-endpoint peer changes.
-- [ ] **Verify GREEN.** Run both Bash suites and manually inspect JSON through `python3 -m
+- [x] **Verify GREEN.** Run both Bash suites and manually inspect JSON through `python3 -m
   json.tool` in the test harness.
-- [ ] **Commit.** `git commit -m "Add managed profile administration"`.
+- [x] **Commit.** `git commit -m "Add managed profile administration"`.
 
 ## Task 9: Guided setup CLI and secret input boundary
 

@@ -4,8 +4,8 @@ Updated: 2026-07-12
 
 ## TodoCheckpointDraft
 
-- **Current todo:** implement Task 8's explicit provision, adopt, rotate, restore, status,
-  and reset administration while preserving the accepted crash-safe Task 7 owner model.
+- **Current todo:** implement Task 9's guided two-mode setup CLI and secret-input boundary
+  over the accepted Task 8 administration commands.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -16,7 +16,8 @@ Updated: 2026-07-12
   exclusions, fresh phase clocks, and descriptor-safe global serialization; Task 6 strict
   digest-bound v2 journal durability, factual crash classification, and v1 compatibility;
   Task 7 qBittorrent containment, identity-pinned full-profile switching, immutable Docker
-  recovery, and durable safety-record rollback/finalization.
+  recovery, and durable safety-record rollback/finalization; Task 8 explicit lifecycle
+  commands, redacted status, quiesced state reset, and unattended API-mode dispatch.
 - **Completed evidence slice:** green Windows-compatible checks plus a complete Ubuntu
   24.04 container baseline, including POSIX modes and ShellCheck. Task 1 independently
   cleared specification and code-quality/security review. Task 2 cleared both reviews
@@ -28,21 +29,23 @@ Updated: 2026-07-12
   adversarial durability, and quality/security review after artifact-fsync and classifier
   collision defects were reproduced and repaired. Task 7 cleared specification and
   adversarial security review after its provisional implementation was reopened twice and
-  every reproduced fail-closed gap was repaired.
-- **Active slice:** Task 8 command ownership and unattended API-mode dispatch.
-- **Pending:** implementation Tasks 8-16 from the approved plan.
-- **Evidence refs:** accepted Task 7 commits `89bb3cf`, `80356d8`, and `d5b435b` follow the
-  provisional `f9231ef` and approved design amendment `0f6c3ea`. Exact final-tree evidence:
-  managed Linux 81/81 as root and 77/77 with four intentional root-only skips as a normal
-  user; static/runtime 69/69; focused independent recovery gates 9/9 and 7/7; Bash syntax,
-  ShellCheck 0.11, diff integrity, and Gitleaks over the tree and 42-commit history are
-  green. The reviewers proved identity checks precede effects, Docker name/immutable-ID
-  paths cannot collide, pending safety is re-barriered only after qB containment, drift
-  restores the old verified tunnel while retaining containment and recovery ownership,
-  and no rollback path leaves a candidate success stamp.
+  every reproduced fail-closed gap was repaired. Task 8 cleared specification,
+  adversarial security, and code-quality review after six exact-SHA findings plus earlier
+  live-review findings were reproduced and fixed without amending history.
+- **Active slice:** Task 9 guided setup parsing and private secret transport.
+- **Pending:** implementation Tasks 9-16 from the approved plan.
+- **Evidence refs:** Task 8 commits `2089c78` and `82eb266`. Exact final-tree evidence:
+  managed Linux 120/120 as root and 116/116 with four intentional root-only skips as a
+  normal user; static/runtime 79/79; exact follow-up specification 20/20 plus 6/6,
+  quality 15/15 plus 1/1, and security 14/14 plus 3/3 focused gates; Bash syntax,
+  ShellCheck 0.11, JSON standard-library parsing, diff integrity, and Gitleaks over the
+  tree and 44-commit history are green. Reviews proved provider-only FD inheritance,
+  non-mutating dry-run orphan handling, single-epoch/non-incrementing preflight accounting,
+  durable snapshot/reset retries, equal-endpoint crash-safe restore, root-0700 config
+  ownership, fixed status redaction, and no managed-to-static failure fallback.
 - **Blocked on:** nothing at this checkpoint.
-- **Next step:** execute Task 8 RED-to-GREEN, then require independent command-contract and
-  security review before accepting its checkpoint.
+- **Next step:** execute Task 9 RED-to-GREEN, then independently review TTY/file descriptor
+  credential handling and country-choice semantics.
 
 ## ResumeStateHint
 
@@ -50,8 +53,8 @@ Updated: 2026-07-12
 - Implementation worktree:
   `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `d5b435b`; the Task 7 checkpoint documentation is
-  the next commit before Task 8 begins.
+- Last accepted implementation commit: `82eb266`; the Task 8 checkpoint documentation is
+  the next commit before Task 9 begins.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -65,9 +68,9 @@ Updated: 2026-07-12
 - **Fallbacks:** static mode is an explicit product choice, not a managed-error fallback.
 - **Retirement:** only obsolete "no credentials anywhere" assertions retire in v1.1.
 - **Complexity:** `libexec/airvpn-api` is 1,598 lines, `tests/test_airvpn_api.py` is
-  2,263 lines, `bin/wg-healthcheck` is 1,506 lines, `libexec/wg-healthcheck-managed` is
-  2,916 lines, and `tests/test_wg_managed_profiles.sh` is 4,588 lines. These exceed the
+  2,263 lines, `bin/wg-healthcheck` is 1,656 lines, `libexec/wg-healthcheck-managed` is
+  3,770 lines, and `tests/test_wg_managed_profiles.sh` is 6,257 lines. These exceed the
   plan's review threshold. Task 14's split/ownership decision remains mandatory and cannot
   be waived before release.
-- **Evidence decision:** `continue` to Task 8; Tasks 1-7 are accepted, while release and
+- **Evidence decision:** `continue` to Task 9; Tasks 1-8 are accepted, while release and
   live VM completion remain unclaimed.

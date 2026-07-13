@@ -216,6 +216,35 @@
 - No live API credential was used. Task 14 must still resolve the now 2,916-line managed
   module and 4,588-line managed test owner before release.
 
+### Task 8: managed administration and unattended dispatch (accepted)
+
+- Commit `2089c78` added explicit provision, adopt, rotate, restore-static, reset-state,
+  and redacted text/JSON status commands plus mode-aware unattended dispatch.
+- Exact-SHA review then reproduced six fail-closed gaps: provider-error cleanup inherited
+  the credential FD; dry-run removed an existing orphan candidate; new helpers leaked
+  `errexit`; identical snapshot retry skipped the durability barrier; absent-file reset
+  retry skipped its parent barrier; and config writes did not consistently prove a
+  root-owned mode-0700 parent.
+- Follow-up commit `82eb266dc35c8fd560f45a92835b36201e54a2af` fixed all six without
+  rewriting history. The final design keeps credential access limited to the exact
+  generator process, refuses unsafe candidate/state/config paths, uses one captured
+  preflight epoch, and never falls back from a managed failure to the static profile.
+- Final GREEN evidence on exact clean commit `82eb266`:
+  - managed Ubuntu 24.04 root suite: 120/120 passed;
+  - managed normal-user suite: 116/116 passed with four expected root-only skips;
+  - static/runtime suite: 79/79 passed;
+  - exact follow-up specification gates: 20/20 managed and 6/6 runtime passed;
+  - exact follow-up security gates: 14/14 managed and 3/3 runtime passed, including
+    provider cleanup probes proving FDs 3, 4, and 5 closed while the provider exit code
+    remained intact;
+  - exact follow-up quality gates: 15/15 managed and 1/1 runtime passed;
+  - Bash syntax, ShellCheck 0.11.0, JSON standard-library parsing, diff integrity, and
+    Gitleaks over both the tree and 44-commit history passed with no leak.
+- Independent specification, adversarial security, and code-quality reviewers approved
+  the exact follow-up commit with no remaining Task 8 blocker.
+- No live API credential, provider mutation, or VM change was used. Task 14 must still
+  resolve the 3,770-line managed module and 6,257-line managed test owner before release.
+
 ### Isolated baseline
 
 - Windows Python: 29 tests passed.
