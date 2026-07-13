@@ -203,7 +203,7 @@ test_generator_transient_failure_manifest_is_exact_and_secret_safe() {
 
   managed_invoke_generator_closed() {
     close_private_fd "$1" || return 1
-    printf 'failure\ttransient\tphase=response\n'
+    printf 'failure\ttransient\tphase=response\treason=media\n'
     return 6
   }
   : > "$MANAGED_CANDIDATE"
@@ -220,6 +220,8 @@ test_generator_transient_failure_manifest_is_exact_and_secret_safe() {
     "provider callback must defer the safe phase until outcome persistence" || return 1
   assert_eq response "$MANAGED_API_PROVIDER_FAILURE_PHASE" \
     "provider callback must retain only the canonical safe phase enum" || return 1
+  assert_eq media "$MANAGED_API_PROVIDER_FAILURE_REASON" \
+    "provider callback must retain only the canonical safe response reason" || return 1
   [[ ! -e "$MANAGED_CANDIDATE" ]] ||
     fail "transient failure must remove the generated candidate" || return 1
 
@@ -229,11 +231,12 @@ test_generator_transient_failure_manifest_is_exact_and_secret_safe() {
       extra-line) printf 'failure\ttransient\tphase=response\n\n' ;;
       nul) printf 'failure\ttransient\tphase=response\n\000' ;;
       secret) printf 'failure\ttransient\tphase=response\n%s\n' 'descriptor-only-test-record' ;;
+      unknown-reason) printf 'failure\ttransient\tphase=response\treason=remote-detail\n' ;;
       *) return 1 ;;
     esac
     return 6
   }
-  for malformed_case in extra-line nul secret; do
+  for malformed_case in extra-line nul secret unknown-reason; do
     MALFORMED_MANIFEST_CASE="$malformed_case"
     : > "$MANAGED_CANDIDATE"
     chmod 600 -- "$MANAGED_CANDIDATE"
@@ -248,13 +251,15 @@ test_generator_transient_failure_manifest_is_exact_and_secret_safe() {
     assert_eq '' "$output" "$malformed_case helper output must be discarded" || return 1
     assert_eq '' "$MANAGED_API_PROVIDER_FAILURE_PHASE" \
       "$malformed_case helper output must not retain a provider phase" || return 1
+    assert_eq '' "$MANAGED_API_PROVIDER_FAILURE_REASON" \
+      "$malformed_case helper output must not retain a provider reason" || return 1
     [[ ! -e "$MANAGED_CANDIDATE" ]] ||
       fail "$malformed_case transient failure must remove the generated candidate" || return 1
   done
 
   managed_invoke_generator_closed() {
     close_private_fd "$1" || return 1
-    printf 'failure\ttransient\tphase=response\n'
+    printf 'failure\ttransient\tphase=response\treason=media\n'
     return 6
   }
   managed_secure_sha256_stream() {
@@ -276,6 +281,8 @@ test_generator_transient_failure_manifest_is_exact_and_secret_safe() {
     assert_eq '' "$(<"$TEST_TMP/phase-output")" "$hasher_case hasher output must be suppressed" || return 1
     assert_eq '' "$MANAGED_API_PROVIDER_FAILURE_PHASE" \
       "$hasher_case hasher result must suppress provider attribution" || return 1
+    assert_eq '' "$MANAGED_API_PROVIDER_FAILURE_REASON" \
+      "$hasher_case hasher result must suppress provider reason attribution" || return 1
     [[ ! -e "$MANAGED_CANDIDATE" ]] || return 1
   done
 }

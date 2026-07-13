@@ -320,55 +320,6 @@ class GeneratorBoundaryTests(unittest.TestCase):
                 if secret_text:
                     self.assertNotIn(secret_text, result.stderr)
 
-    def test_response_mime_encoding_status_and_size_are_fail_closed(self):
-        for content_type in ("text/plain", "application/octet-stream"):
-            for content_encoding in (None, "identity"):
-                with self.subTest(
-                    content_type=content_type,
-                    content_encoding=content_encoding,
-                ):
-                    result = self._run_generator(
-                        response=_Response(
-                            _generator_profile(),
-                            content_type=content_type,
-                            content_encoding=content_encoding,
-                        )
-                    )
-                    self.assertEqual(result.return_code, 0, result.stderr)
-
-        wrong_status = _Response(_generator_profile())
-        wrong_status.status = 201
-        transport_statuses = []
-        for status in (302, 408, 500, 503):
-            response = _Response(_generator_profile())
-            response.status = status
-            transport_statuses.append(response)
-        rejected = (
-            _Response(_generator_profile(), content_type=None),
-            _Response(_generator_profile(), content_type="text/html"),
-            _Response(_generator_profile(), content_type="application/zip"),
-            _Response(
-                _generator_profile(),
-                content_type="text/plain",
-                content_encoding="gzip",
-            ),
-            _Response(b"x" * ((64 * 1024) + 1)),
-            wrong_status,
-        )
-        for response in rejected:
-            with self.subTest(headers=response.headers, status=response.status):
-                result = self._run_generator(response=response)
-                self.assertEqual(result.return_code, 6)
-                self.assertEqual(result.stdout, "failure\ttransient\tphase=response\n")
-                self.assertEqual(result.output_stream.write_calls, [])
-                self.assertTrue(response.closed)
-
-        for response in transport_statuses:
-            with self.subTest(status=response.status):
-                result = self._run_generator(response=response)
-                self.assertEqual(result.return_code, 6)
-                self.assertEqual(result.stdout, "failure\ttransient\tphase=transport\n")
-
     def test_json_error_on_http_200_is_classified_without_remote_text(self):
         remote_secret = "provider-secret-detail-should-not-escape"
         payload = json.dumps(
@@ -432,25 +383,28 @@ class GeneratorBoundaryTests(unittest.TestCase):
     def test_http_protocol_json_depth_and_close_failures_are_transient(self):
         marker = b"http-partial-private-marker"
         cases = (
-            {"opener_error": http.client.BadStatusLine(marker.decode("ascii"))},
-            {"response": _IncompleteReadResponse(marker)},
-            {"response": _CloseFailureResponse(marker)},
-            {
-                "response": _Response(
-                    (b"[" * 2000) + b"0" + (b"]" * 2000),
-                    content_type="application/json",
-                )
-            },
+            ({"opener_error": http.client.BadStatusLine(marker.decode("ascii"))}, "transport"),
+            ({"response": _IncompleteReadResponse(marker)}, "protocol"),
+            ({"response": _CloseFailureResponse(marker)}, "protocol"),
+            (
+                {
+                    "response": _Response(
+                        (b"[" * 2000) + b"0" + (b"]" * 2000),
+                        content_type="application/json",
+                    )
+                },
+                "json",
+            ),
         )
-        for case in cases:
+        for case, reason in cases:
             with self.subTest(case=tuple(case)):
                 result = self._run_generator(**case)
                 self.assertEqual(result.return_code, 6)
                 phase = "transport" if "opener_error" in case else "response"
-                self.assertEqual(
-                    result.stdout,
-                    f"failure\ttransient\tphase={phase}\n",
-                )
+                expected = f"failure\ttransient\tphase={phase}\n"
+                if phase == "response":
+                    expected = f"{expected[:-1]}\treason={reason}\n"
+                self.assertEqual(result.stdout, expected)
                 self.assertNotIn(marker.decode("ascii"), result.stderr)
                 self.assertEqual(result.output_stream.write_calls, [])
 

@@ -490,11 +490,57 @@ the actual release contract successfully.
   configuration remained byte-identical to preflight, the timer remained runtime-masked,
   and WireGuard plus qBittorrent remained active. No installed API key, candidate, journal,
   or safety record exists.
-- The persistent provider ledger remains intact at five attempts. The final slot will be
-  used only after natural backoff for a non-mutating proof of the corrected raw response.
-  Apply, rollback, and successful rotation remain unclaimed until the rolling window opens
-  again; the ledger will not be reset or bypassed.
+- Exact commit `85abcdd6d0893c9145aadd7227454b92ac74ed19` documents the reviewed API
+  boundary and public setup path. A fresh root-owned Linux clone passed 202 Python tests,
+  healthcheck root/non-root 89/89, managed root 125/125, managed non-root 120 with five
+  intentional root-only skips, installer root 58 with one intentional skip, installer
+  non-root 59/59, and the reproducible 27-file release check. Pinned Gitleaks 8.30.1 found
+  no leaks across 70 reachable commits.
+- The sixth and final rolling-window slot was used only after the recorded backoff elapsed.
+  The corrected `system=other` request again returned rc 64 and the allowlisted
+  `phase=response` result. The accounting ledger advanced to six attempts and recorded the
+  transient outcome, as specified; it was not reset or bypassed.
+- The second live failure changed no profile, health configuration, live interface,
+  installed credential, candidate, recovery journal, safety record, timer, or qBittorrent
+  state. The original profile and health-configuration digests still match preflight,
+  WireGuard and qBittorrent remain active, and the timer remains runtime-masked.
+- The root-only response log, supplied test key, and complete task-specific temporary
+  directory were deleted and the runtime parent was synchronized. No API credential is
+  installed. The ledger intentionally retains non-secret metadata for the consumed
+  temporary credential identity until a later explicit setup or state reset.
+- qBittorrent uses host networking and is pinned to `wg0`; its peer TCP and UDP listener
+  bind the WireGuard address, a route lookup from that address selects `wg0`, and the
+  tunnel-bound AirVPN egress proof returned `airvpn=true`. The wildcard Web UI and local
+  discovery sockets are separate local-service surfaces.
+- The public AirVPN API Explorer was re-read without a credential. It classifies `status`,
+  `dns_lists`, and `whatismyip` as public and `userinfo`, `notification`, `devices`,
+  `generator`, and `disconnect` as account-scoped. The asynchronous device list/add/renew/
+  delete/modify lifecycle is intentionally deferred to a separate blue/green identity
+  design; version 1.1 keeps only public status selection, fixed-device generation, and
+  tunnel-bound egress proof.
+- Response-boundary diagnostics were implemented test-first as seven local-only reasons:
+  `status`, `encoding`, `media`, `read`, `size`, `json`, and `protocol`. The provider emits
+  a reason only with `phase=response`; setup and the managed runtime accept only exact
+  newline-terminated allowlisted manifests. Actual status values, headers, URLs, response
+  bytes, devices, servers, provider messages, and credential-derived values remain outside
+  every diagnostic and persistence boundary.
+- The first implementation correctly passed focused provider/setup/managed tests but
+  failed the architecture gate because several review owners exceeded their frozen limits.
+  The repair extracted bounded helpers and split test owners without increasing a ceiling:
+  `libexec/airvpn-api` remains exactly 1,718 lines, `_read_generator_response` is 20 lines,
+  `managed_generate_candidate_provider` is 42 lines, and the existing 132-line authenticated
+  attempt ceiling is unchanged. Refactoring exposed and fixed a close-failure precedence
+  regression before acceptance.
+- Fresh current-tree Linux checks passed Python discovery 203/203, the complete managed
+  recovery suite 125/125, architecture 11/11, generated-module equivalence, Bash syntax,
+  and public documentation 16/16. Pinned Gitleaks 8.30.1 found no current-tree leak. Two
+  independent Terra integration/architecture reviews and a Luna documentation/API-scope
+  review returned READY. A Windows-mounted staged-installer run was rejected only by the
+  expected lack of native POSIX ownership/mode semantics and is not counted as release
+  evidence; the fresh native-Linux exact-commit gate remains pending.
 
-No release/tag/publication completion claim exists yet. The test key must be removed, and
-the VM must return to verified static mode unless a fresh production key that was not
-shared in chat is supplied through a private channel.
+Authenticated raw-profile success, API apply, live rollback/rotation, release, tag, and
+publication remain unclaimed. The six-attempt rolling cap does not naturally reopen until
+2026-07-14 17:25:27 UTC and will not be reset or bypassed. The VM remains in verified static
+mode; any later production migration requires both a proven generator contract and a fresh
+credential that was not shared in chat.

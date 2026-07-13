@@ -373,11 +373,61 @@ managed_capture_generator_digest() {
   printf -v "$rc_variable" '%s' "$provider_status"
 }
 
+managed_classify_generator_failure() {
+  local credential_fd="${1:?}" provider_rc="${2:?}" manifest_digest="${3-}"
+  local expected_digest failure_phase='' failure_reason=''
+  managed_call_without_private_fd "$credential_fd" \
+    managed_remove_generated_candidate >/dev/null 2>&1 || true
+  case "$provider_rc" in
+    4) MANAGED_API_PROVIDER_FAILURE_CLASS=auth; return 4 ;;
+    5) return 5 ;;
+    7) MANAGED_API_PROVIDER_FAILURE_CLASS=device; return 7 ;;
+    6)
+      for failure_phase in transport profile internal; do
+        managed_sha256_text expected_digest \
+          $'failure\ttransient\tphase='"$failure_phase"$'\n' "$credential_fd" || {
+          failure_phase=''
+          break
+        }
+        [[ "$manifest_digest" == "$expected_digest" ]] && break
+        failure_phase=''
+      done
+      if [[ -z "$failure_phase" ]]; then
+        managed_sha256_text expected_digest \
+          $'failure\ttransient\tphase=response\n' "$credential_fd" || expected_digest=''
+        [[ -n "$expected_digest" && "$manifest_digest" == "$expected_digest" ]] &&
+          failure_phase=response
+      fi
+      if [[ -z "$failure_phase" ]]; then
+        for failure_reason in status encoding media read size json protocol; do
+          managed_sha256_text expected_digest \
+            $'failure\ttransient\tphase=response\treason='"$failure_reason"$'\n' \
+            "$credential_fd" || {
+            failure_reason=''
+            break
+          }
+          if [[ "$manifest_digest" == "$expected_digest" ]]; then
+            failure_phase=response
+            break
+          fi
+          failure_reason=''
+        done
+      fi
+      MANAGED_API_PROVIDER_FAILURE_PHASE="$failure_phase"
+      MANAGED_API_PROVIDER_FAILURE_REASON="$failure_reason"
+      MANAGED_API_PROVIDER_FAILED_SERVER="$MANAGED_PROFILE_SERVER"
+      ;;
+    *) MANAGED_API_PROVIDER_FAILED_SERVER="$MANAGED_PROFILE_SERVER" ;;
+  esac
+  return 1
+}
+
 managed_generate_candidate_provider() {
   local credential_fd="${1:?}" candidate_fd key_fd
-  local manifest manifest_digest expected_digest provider_rc expected_pin failure_phase=''
+  local manifest manifest_digest expected_digest provider_rc expected_pin
   validate_credential_fd_number "$credential_fd" || return 1
   MANAGED_API_PROVIDER_FAILURE_PHASE=''
+  MANAGED_API_PROVIDER_FAILURE_REASON=''
   managed_call_without_private_fd "$credential_fd" managed_validate_generator_paths_closed ||
     return 1
   exec {candidate_fd}<>"$MANAGED_CANDIDATE" || return 1
@@ -399,31 +449,8 @@ managed_generate_candidate_provider() {
   }
   exec {key_fd}<&- {candidate_fd}>&-
   if (( provider_rc != 0 )); then
-    managed_call_without_private_fd "$credential_fd" \
-      managed_remove_generated_candidate >/dev/null 2>&1 || true
-    case "$provider_rc" in
-      4) MANAGED_API_PROVIDER_FAILURE_CLASS=auth; return 4 ;;
-      5) return 5 ;;
-      7) MANAGED_API_PROVIDER_FAILURE_CLASS=device; return 7 ;;
-      6)
-        for failure_phase in transport response profile internal; do
-          managed_sha256_text expected_digest \
-            $'failure\ttransient\tphase='"$failure_phase"$'\n' "$credential_fd" || {
-            failure_phase=''
-            break
-          }
-          [[ "$manifest_digest" == "$expected_digest" ]] && break
-          failure_phase=''
-        done
-        MANAGED_API_PROVIDER_FAILURE_PHASE="$failure_phase"
-        MANAGED_API_PROVIDER_FAILED_SERVER="$MANAGED_PROFILE_SERVER"
-        return 1
-        ;;
-      *)
-        MANAGED_API_PROVIDER_FAILED_SERVER="$MANAGED_PROFILE_SERVER"
-        return 1
-        ;;
-    esac
+    managed_classify_generator_failure "$credential_fd" "$provider_rc" "$manifest_digest"
+    return $?
   fi
   expected_pin="$MANAGED_PROFILE_PIN"
   manifest=$'generated\t'"$MANAGED_PROFILE_SERVER"$'\t'"$MANAGED_PROFILE_ENDPOINT"$'\tpinned='"$expected_pin"$'\n'

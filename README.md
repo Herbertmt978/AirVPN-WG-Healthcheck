@@ -65,6 +65,26 @@ DNS policy remain operator-owned. AirVPN documents a global limit of 600 API req
 10 minutes and warns that exceeding it can ban the source IP. This project deliberately
 uses a much stricter persistent retry ledger; do not reset that state to force a retry.
 
+| AirVPN service | Provider access | v1.1 policy |
+| --- | --- | --- |
+| `status` | Public | Used for eligible-country and healthy-server selection. |
+| `generator` | API key | Used only to generate a raw profile for the configured fixed device. |
+| `whatismyip` | Public | Used only through the tunnel to prove AirVPN egress. |
+| `devices` | API key | Not used. Its asynchronous list/add/renew/delete/modify lifecycle changes tunnel identity and needs a separate blue/green migration design. |
+| `userinfo` | API key | Not used; account and connection details are outside the runtime boundary. |
+| `disconnect` | API key | Not used; it is a destructive account-session action. |
+| `notification` | API key | Not used; operator notification policy stays external. |
+| `dns_lists` | Public | Not used; DNS policy stays external. |
+
+The API Explorer is the provider authority for this boundary. A future setup-only device
+picker could consume a strictly reduced `devices` list, but unattended checks will not gain
+device mutation or account-session authority implicitly.
+
+When authenticated generation fails, diagnostics expose only a local failure phase and,
+for response-contract failures, one fixed reason such as `media`, `size`, or `protocol`.
+They never include the actual status, headers, response body, device, server, or key; see
+the [operator guide](docs/operations.md#authenticated-failure-phases).
+
 Generated provider profiles always reject every executable hook. During identity-pinned adoption and rotation, a validated root-owned installed profile may retain repeated `PostUp` and `PostDown` commands in their original order; these remain local code executed as root by `wg-quick`. Review them before setup. `PreUp`, `PreDown`, `SaveConfig`, peer hooks, and unknown directives block API adoption without changing the installed profile.
 
 For API mode, setup shows eligible countries from public status data before asking for the key:

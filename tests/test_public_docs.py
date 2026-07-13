@@ -82,6 +82,25 @@ class PublicDocumentationTests(unittest.TestCase):
                     rf"(?is)(does not|never).{{0,240}}{re.escape(excluded)}",
                 )
         self.assertIn("600 API requests per\n10 minutes", self.readme)
+        for service in (
+            "`status`",
+            "`generator`",
+            "`whatismyip`",
+            "`devices`",
+            "`userinfo`",
+            "`disconnect`",
+            "`notification`",
+            "`dns_lists`",
+        ):
+            with self.subTest(policy_row=service):
+                self.assertRegex(
+                    self.readme,
+                    rf"(?m)^\| {re.escape(service)} \| .+ \| .+ \|$",
+                )
+        self.assertRegex(
+            self.readme,
+            r"(?is)devices.{0,220}list/add/renew/delete/modify.{0,220}blue/green",
+        )
 
     def test_operations_cover_status_manual_health_and_timer_decision(self) -> None:
         text = read_text(OPERATIONS)
@@ -123,6 +142,9 @@ class PublicDocumentationTests(unittest.TestCase):
         for phase in ("transport", "response", "profile", "internal"):
             with self.subTest(phase=phase):
                 self.assertIn(f"`phase={phase}`", text)
+        for reason in ("status", "encoding", "media", "read", "size", "json", "protocol"):
+            with self.subTest(reason=reason):
+                self.assertIn(f"`reason={reason}`", text)
         self.assertRegex(text, r"(?is)(wait|honou?r|respect).{0,100}backoff")
         self.assertRegex(text, r"(?is)phase.{0,160}(never|does not).{0,100}(key|profile|provider text)")
         self.assertNotRegex(text, r"(?i)curl\s+(?:-[^\s]*v|--verbose)")

@@ -91,6 +91,7 @@ test_transient_failure_phase_requires_durable_outcome_and_lock_release() {
   managed_api_record_attempt() { return 0; }
   phase_provider() {
     MANAGED_API_PROVIDER_FAILURE_PHASE=response
+    MANAGED_API_PROVIDER_FAILURE_REASON=media
     MANAGED_API_PROVIDER_FAILED_SERVER=Candidate
     return 1
   }
@@ -118,8 +119,8 @@ test_transient_failure_phase_requires_durable_outcome_and_lock_release() {
     assert_eq $'outcome\nrelease' "$(<"$TEST_TMP/phase-events")" \
       "$failure_case path must attempt outcome persistence before lock release" || return 1
     if [[ "$failure_case" == none ]]; then
-      assert_eq $'failure\ttransient\tphase=response' "$output" \
-        "durably recorded transient phase must surface after lock release" || return 1
+      assert_eq $'failure\ttransient\tphase=response\treason=media' "$output" \
+        "durably recorded transient diagnostic must surface after lock release" || return 1
     else
       assert_eq '' "$output" \
         "$failure_case failure must suppress provider phase attribution" || return 1

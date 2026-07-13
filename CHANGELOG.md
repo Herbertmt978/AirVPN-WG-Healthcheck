@@ -21,7 +21,9 @@ All notable changes to this project are documented here. Release numbers follow
 - qBittorrent containment during managed switches, a preserved pre-managed profile,
   quiesced live upgrades, an MIT license, and a complete operator guide.
 - Secret-free authenticated failure phases that distinguish transport, response-contract,
-  generated-profile, and contained internal failures without exposing provider material.
+  generated-profile, and contained internal failures. Response failures add one fixed
+  local reason (`status`, `encoding`, `media`, `read`, `size`, `json`, or `protocol`)
+  without exposing provider material.
 - Compatibility-safe retention of ordered, repeated `PostUp` and `PostDown` commands from
   the validated root-owned installed profile; provider profiles remain hook-free.
 
@@ -40,7 +42,7 @@ All notable changes to this project are documented here. Release numbers follow
   while production still installs and validates one deterministically generated runtime
   module; CI rejects source drift and architecture-boundary growth.
 - Authenticated setup failures retain bounded retry/exclusion behaviour while returning
-  only an exact local phase enum for safe troubleshooting.
+  only an exact local phase and optional response-reason enum for safe troubleshooting.
 - Updated the SHA-pinned GitHub artifact actions used by future release workflows
   to their Node 24 versions.
 - Authenticated generation requests AirVPN's raw single-profile output; OS-specific
@@ -60,7 +62,8 @@ All notable changes to this project are documented here. Release numbers follow
   from AirVPN device lifecycle; this project does not create, renew, revoke, or delete a
   device.
 - Provider failure diagnostics cross the secret boundary only as one fixed allowlisted
-  phase; malformed, additional, or provider-controlled output is discarded.
+  phase and, for response failures, one fixed local reason; malformed, additional, or
+  provider-controlled output is discarded.
 - Local hook provenance stays separate from the provider profile model and renderer;
   `PreUp`, `PreDown`, `SaveConfig`, peer hooks, and unknown directives remain rejected.
 

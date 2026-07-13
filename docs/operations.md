@@ -27,6 +27,14 @@ Interactive setup lists countries that currently have eligible WireGuard servers
 
 API mode uses a fixed device name. It can refresh profile peer material, but does not create, renew, revoke, or delete a device. A generated profile must match the installed interface identity before setup can adopt it.
 
+AirVPN also exposes account-scoped device actions for list, add, renew, delete, and modify;
+add, renew, and delete are asynchronous. This release deliberately does not call them.
+Changing device identity affects the WireGuard private key, tunnel address, forwarding
+consumers, and rollback owner, so it requires a separately reviewed blue/green migration
+rather than being treated as an ordinary bad-server rotation. The runtime likewise does not
+call account/session `userinfo`, `disconnect`, or `notification`, and it leaves public
+`dns_lists` policy to the operator.
+
 ### Installed WireGuard hooks
 
 Provider-generated profiles reject every hook. The fixed fd5 adoption path may preserve only repeated `PostUp` and `PostDown` commands from the validated root-owned installed profile, in their original order. These commands already run as root through `wg-quick`; review them before enabling API mode. The profile must be a root-owned mode-`0600` regular file, and its immediate directory (normally `/etc/wireguard`) must be a root-owned, non-symlinked directory with exact mode `0700`. `PreUp`, `PreDown`, `SaveConfig`, hooks under `[Peer]`, and unknown directives fail before the authenticated request or profile mutation. The pre-managed snapshot still retains the exact original file for static rollback.
@@ -75,17 +83,27 @@ text, URL, device, endpoint, or response body:
 - `phase=transport` means the HTTPS request did not complete safely, or AirVPN returned a
   transient HTTP status or redirect.
 - `phase=response` means the response headers, encoding, media type, size, or error
-  envelope did not meet the bounded response contract.
+  envelope did not meet the bounded response contract. It may include exactly one local
+  reason enum:
+  - `reason=status`: AirVPN returned an unexpected successful HTTP status.
+  - `reason=encoding`: the content encoding was unsupported or ambiguous.
+  - `reason=media`: the media type was missing, ambiguous, or unsupported.
+  - `reason=read`: the response body could not be read safely.
+  - `reason=size`: the body exceeded the bound or had an invalid body type or size.
+  - `reason=json`: a JSON-shaped response was not a valid bounded provider error object.
+  - `reason=protocol`: the local HTTP response object, close, or protocol handling failed.
 - `phase=profile` means the returned WireGuard configuration did not meet the strict
   profile and selected-endpoint contract.
 - `phase=internal` means an unexpected local helper failure was contained at the secret
   boundary.
 
-Keep the timer disabled after any of these results. Respect the recorded backoff before
-one controlled retry; do not delete or reset API state merely to retry sooner. If the same
-phase repeats, record only the software version, phase, time, and non-secret system status.
-Do not use verbose HTTP tracing, packet capture, or copy the credential, generated profile,
-provider response, or candidate file into diagnostics.
+The reason values describe only the helper branch that rejected the response. They never
+contain the actual status, header name or value, URL, body, device, server, or provider
+message. Keep the timer disabled after any of these results. Respect the recorded backoff
+before one controlled retry; do not delete or reset API state merely to retry sooner. If
+the same result repeats, record only the software version, phase, optional reason, time,
+and non-secret system status. Do not use verbose HTTP tracing, packet capture, or copy the
+credential, generated profile, provider response, or candidate file into diagnostics.
 
 AirVPN documents a global ceiling of 600 API requests per 10 minutes and warns that an
 exceeding source IP may be banned. The healthcheck's lower persistent limit and backoff are

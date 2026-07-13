@@ -85,6 +85,14 @@ class GeneratorTransientPhase(Enum):
     INTERNAL = "internal"
 
 
+class GeneratorTransientResponseReason(Enum):
+    """Allowlisted, secret-free reason for transient response failures."""
+
+    STATUS, ENCODING, MEDIA, READ, SIZE, JSON, PROTOCOL = (
+        "status", "encoding", "media", "read", "size", "json", "protocol"
+    )
+
+
 class GeneratorTransientError(AirVPNAPIError):
     """Raised for transient provider, network, or response failures."""
 
@@ -92,11 +100,19 @@ class GeneratorTransientError(AirVPNAPIError):
         self,
         message="authenticated provider request failed",
         phase=GeneratorTransientPhase.INTERNAL,
+        reason=None,
     ):
         self.phase = (
             phase
             if isinstance(phase, GeneratorTransientPhase)
             else GeneratorTransientPhase.INTERNAL
+        )
+        self.reason = reason if (
+            self.phase is GeneratorTransientPhase.RESPONSE
+            and isinstance(reason, GeneratorTransientResponseReason)
+        ) else (
+            GeneratorTransientResponseReason.PROTOCOL
+            if self.phase is GeneratorTransientPhase.RESPONSE else None
         )
         super().__init__(message)
 
@@ -113,6 +129,7 @@ class _GeneratorOutcome:
     manifest: str = ""
     retry_after: int | None = None
     phase: GeneratorTransientPhase | None = None
+    reason: GeneratorTransientResponseReason | None = None
 
 
 @dataclass(frozen=True)
@@ -157,7 +174,6 @@ def _validate_port(value):
         raise AirVPNAPIError("port must be between 1 and 65535")
     return port
 
-
 def parse_endpoint_ip(endpoint):
     """Return the normalized IP from an IPv4 or bracketed IPv6 endpoint."""
 
@@ -194,7 +210,6 @@ def parse_endpoint_ip(endpoint):
         raise AirVPNAPIError(f"endpoint must contain a valid {family} address")
     return str(address)
 
-
 def _profile_lines(payload):
     if not isinstance(payload, bytes):
         raise AirVPNAPIError("WireGuard profile payload must be bytes")
@@ -225,7 +240,6 @@ def _profile_lines(payload):
         raise AirVPNAPIError("WireGuard profile contains a control character")
     return lines
 
-
 def _wireguard_key(value, field_name):
     try:
         decoded = base64.b64decode(value, validate=True)
@@ -243,7 +257,6 @@ def _wireguard_key(value, field_name):
         )
     return value
 
-
 def _profile_address(value):
     try:
         address = ipaddress.ip_interface(value)
@@ -258,7 +271,6 @@ def _profile_address(value):
     ):
         raise AirVPNAPIError("WireGuard profile Address must be one canonical IPv4 /32")
     return address
-
 
 def _profile_dns(value):
     values = value.split(",")
@@ -282,7 +294,6 @@ def _profile_dns(value):
             )
         normalized.append(str(address))
     return tuple(normalized)
-
 
 def _profile_table(value):
     if value in ("auto", "off"):
@@ -1182,13 +1193,11 @@ def _header_values(headers, name):
         if isinstance(header_name, str) and header_name.lower() == name.lower()
     ]
 
-
 def _single_header(headers, name):
     values = _header_values(headers, name)
     if len(values) != 1 or not isinstance(values[0], str):
         return None
     return values[0]
-
 
 def _retry_after(headers):
     value = _single_header(headers, "Retry-After")
@@ -1198,7 +1207,6 @@ def _retry_after(headers):
     if retry_after > 86400:
         return None
     return retry_after
-
 
 def _classify_http_error(error):
     status = error.code
@@ -1215,7 +1223,6 @@ def _classify_http_error(error):
         "authenticated provider request failed",
         GeneratorTransientPhase.TRANSPORT,
     )
-
 
 def _generator_url(server, device, port):
     query = (
@@ -1235,7 +1242,6 @@ def _generator_url(server, device, port):
         quote_via=urllib.parse.quote,
     )
     return f"{GENERATOR_URL}?{encoded}"
-
 
 def _open_generator_response(request, timeout):
     opener = urllib.request.build_opener(_NoRedirectHandler())
@@ -1263,7 +1269,6 @@ def _open_generator_response(request, timeout):
         raise classified_error
     return response
 
-
 def _response_media_type(headers):
     content_encoding = _single_header(headers, "Content-Encoding")
     if _header_values(headers, "Content-Encoding") and (
@@ -1272,6 +1277,7 @@ def _response_media_type(headers):
         raise GeneratorTransientError(
             "authenticated provider response was rejected",
             GeneratorTransientPhase.RESPONSE,
+            GeneratorTransientResponseReason.ENCODING,
         )
 
     content_type = _single_header(headers, "Content-Type")
@@ -1279,6 +1285,7 @@ def _response_media_type(headers):
         raise GeneratorTransientError(
             "authenticated provider response was rejected",
             GeneratorTransientPhase.RESPONSE,
+            GeneratorTransientResponseReason.MEDIA,
         )
     parts = [part.strip() for part in content_type.split(";")]
     media_type = parts[0].lower()
@@ -1290,6 +1297,7 @@ def _response_media_type(headers):
         raise GeneratorTransientError(
             "authenticated provider response was rejected",
             GeneratorTransientPhase.RESPONSE,
+            GeneratorTransientResponseReason.MEDIA,
         )
     parameters = parts[1:]
     if parameters:
@@ -1302,85 +1310,80 @@ def _response_media_type(headers):
             raise GeneratorTransientError(
                 "authenticated provider response was rejected",
                 GeneratorTransientPhase.RESPONSE,
+                GeneratorTransientResponseReason.MEDIA,
             )
     return media_type
 
+def _generator_response_error(reason):
+    return GeneratorTransientError(
+        "authenticated provider response was rejected",
+        GeneratorTransientPhase.RESPONSE,
+        reason,
+    )
+
+def _generator_response_status_error(response):
+    try:
+        status = response.getcode()
+    except (OSError, ValueError, TypeError, http.client.HTTPException):
+        return _generator_response_error(GeneratorTransientResponseReason.PROTOCOL)
+    if status == 200:
+        return None
+    phase = (
+        GeneratorTransientPhase.TRANSPORT
+        if status == 408 or 300 <= status < 400 or status >= 500
+        else GeneratorTransientPhase.RESPONSE
+    )
+    return GeneratorTransientError(
+        "authenticated provider response was rejected",
+        phase,
+        GeneratorTransientResponseReason.STATUS
+        if phase is GeneratorTransientPhase.RESPONSE
+        else None,
+    )
+
+def _read_generator_payload(response):
+    media_type = _response_media_type(response.headers)
+    try:
+        payload = response.read(MAX_PROFILE_BYTES + 1)
+    except http.client.HTTPException:
+        raise _generator_response_error(
+            GeneratorTransientResponseReason.PROTOCOL
+        ) from None
+    except (OSError, ValueError, TypeError):
+        raise _generator_response_error(
+            GeneratorTransientResponseReason.READ
+        ) from None
+    if not isinstance(payload, bytes) or len(payload) > MAX_PROFILE_BYTES:
+        raise _generator_response_error(GeneratorTransientResponseReason.SIZE)
+    if media_type != "application/json" and not payload.lstrip().startswith(b"{"):
+        return payload
+    try:
+        remote_error = json.loads(payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError, ValueError, RecursionError):
+        remote_error = None
+    if isinstance(remote_error, dict):
+        raise GeneratorPermanentError("authenticated generation was rejected")
+    raise _generator_response_error(GeneratorTransientResponseReason.JSON)
 
 def _read_generator_response(response):
     payload = None
     classified_error = None
     try:
         with response:
-            status = response.getcode()
-            if status != 200:
-                phase = (
-                    GeneratorTransientPhase.TRANSPORT
-                    if status == 408 or 300 <= status < 400 or status >= 500
-                    else GeneratorTransientPhase.RESPONSE
-                )
-                classified_error = GeneratorTransientError(
-                    "authenticated provider response was rejected",
-                    phase,
-                )
-            else:
-                media_type = _response_media_type(response.headers)
+            classified_error = _generator_response_status_error(response)
+            if classified_error is None:
                 try:
-                    payload = response.read(MAX_PROFILE_BYTES + 1)
-                except (
-                    OSError,
-                    ValueError,
-                    TypeError,
-                    http.client.HTTPException,
-                ):
-                    classified_error = GeneratorTransientError(
-                        "authenticated provider response was rejected",
-                        GeneratorTransientPhase.RESPONSE,
-                    )
-                if classified_error is None and (
-                    not isinstance(payload, bytes) or len(payload) > MAX_PROFILE_BYTES
-                ):
-                    classified_error = GeneratorTransientError(
-                        "authenticated provider response was rejected",
-                        GeneratorTransientPhase.RESPONSE,
-                    )
-                if classified_error is None:
-                    stripped = payload.lstrip()
-                    if media_type == "application/json" or stripped.startswith(b"{"):
-                        try:
-                            remote_error = json.loads(payload.decode("utf-8"))
-                        except (
-                            UnicodeError,
-                            json.JSONDecodeError,
-                            ValueError,
-                            RecursionError,
-                        ):
-                            remote_error = None
-                        if isinstance(remote_error, dict):
-                            classified_error = GeneratorPermanentError(
-                                "authenticated generation was rejected"
-                            )
-                        else:
-                            classified_error = GeneratorTransientError(
-                                "authenticated provider response was rejected",
-                                GeneratorTransientPhase.RESPONSE,
-                            )
-    except (GeneratorPermanentError, GeneratorTransientError) as error:
-        classified_error = error
-    except (
-        OSError,
-        ValueError,
-        TypeError,
-        http.client.HTTPException,
-        RecursionError,
-    ):
-        classified_error = GeneratorTransientError(
-            "authenticated provider response was rejected",
-            GeneratorTransientPhase.RESPONSE,
-        )
+                    payload = _read_generator_payload(response)
+                except (GeneratorPermanentError, GeneratorTransientError) as error:
+                    classified_error = error
+    except Exception:
+        if classified_error is None:
+            classified_error = _generator_response_error(
+                GeneratorTransientResponseReason.PROTOCOL
+            )
     if classified_error is not None:
         raise classified_error
     return payload
-
 
 def _parse_generated_profile(payload, expected_endpoint):
     profile = None
@@ -1398,7 +1401,6 @@ def _parse_generated_profile(payload, expected_endpoint):
             GeneratorTransientPhase.PROFILE,
         )
     return profile
-
 
 def _truncate_private_profile(stream):
     truncated = False
@@ -1418,7 +1420,6 @@ def _truncate_private_profile(stream):
         pass
     return truncated
 
-
 def _prepare_private_profile_stream(stream):
     ready = False
     try:
@@ -1432,7 +1433,6 @@ def _prepare_private_profile_stream(stream):
     if not ready:
         _truncate_private_profile(stream)
         raise AirVPNAPIError("private profile descriptor must support staging")
-
 
 def _write_private_profile(stream, payload):
     offset = 0
@@ -1455,7 +1455,6 @@ def _write_private_profile(stream, payload):
     if failed or offset != len(payload):
         _truncate_private_profile(stream)
         raise AirVPNAPIError("private descriptor write failed")
-
 
 def _generate_profile_secret_body(
     server,
@@ -1530,7 +1529,6 @@ def _generate_profile_secret_body(
         _close_private_stream(output_stream)
         _close_private_stream(installed_stream)
 
-
 def _run_generator_secret_boundary(
     server,
     device,
@@ -1558,7 +1556,7 @@ def _run_generator_secret_boundary(
     except GeneratorPermanentError:
         return _GeneratorOutcome("permanent")
     except GeneratorTransientError as error:
-        return _GeneratorOutcome("transient", phase=error.phase)
+        return _GeneratorOutcome("transient", phase=error.phase, reason=error.reason)
     except AirVPNAPIError:
         return _GeneratorOutcome("contract")
     except Exception:
@@ -1601,6 +1599,7 @@ def generate_profile(server, device, expected_endpoint, timeout, pin_identity):
     raise GeneratorTransientError(
         "authenticated provider request failed",
         outcome.phase,
+        outcome.reason,
     ) from None
 
 
@@ -1698,7 +1697,8 @@ def main(argv=None):
         print(f"ERROR: {_error_text(exc)}", file=sys.stderr)
         return 4
     except GeneratorTransientError as exc:
-        print(f"failure\ttransient\tphase={exc.phase.value}")
+        reason = f"\treason={exc.reason.value}" if exc.phase is GeneratorTransientPhase.RESPONSE else ""
+        print(f"failure\ttransient\tphase={exc.phase.value}{reason}")
         print("ERROR: authenticated provider request failed", file=sys.stderr)
         return 6
     except NoCandidateError as exc:

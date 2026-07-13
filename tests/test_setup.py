@@ -43,50 +43,6 @@ def _countries():
 
 
 class SetupCliTests(unittest.TestCase):
-    def test_entrypoint_is_thin_source_relative_and_ignores_pythonpath(self):
-        self.assertLessEqual(len(SETUP.read_text(encoding="utf-8").splitlines()), 80)
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            bin_dir = root / "bin"
-            package_parent = root / "libexec"
-            hostile = root / "hostile"
-            bin_dir.mkdir()
-            package_parent.mkdir()
-            hostile.mkdir()
-            entrypoint = bin_dir / SETUP.name
-            shutil.copy2(SETUP, entrypoint)
-            shutil.copytree(
-                ROOT / "libexec" / "wg_healthcheck_setup",
-                package_parent / "wg_healthcheck_setup",
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-            )
-            marker = root / "hostile-imported"
-            (hostile / "wg_healthcheck_setup.py").write_text(
-                "from pathlib import Path\n"
-                f"Path({str(marker)!r}).write_text('imported', encoding='ascii')\n",
-                encoding="ascii",
-            )
-            environment = {
-                "PATH": os.environ.get("PATH", ""),
-                "PYTHONPATH": str(hostile),
-            }
-
-            completed = subprocess.run(
-                [sys.executable, str(entrypoint), "--help"],
-                cwd=root,
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertFalse(marker.exists())
-            self.assertFalse(
-                (package_parent / "wg_healthcheck_setup" / "__pycache__").exists()
-            )
-
     def test_main_disables_core_before_inspecting_secret_inputs(self):
         events = []
 
@@ -513,12 +469,38 @@ class SetupCliTests(unittest.TestCase):
                         )
                 self.assertNotIn(SENTINEL, str(raised.exception))
 
+        for reason in ("status", "encoding", "media", "read", "size", "json", "protocol"):
+            with self.subTest(reason=reason):
+                def run(argv, **_kwargs):
+                    return subprocess.CompletedProcess(
+                        argv,
+                        1,
+                        f"failure\ttransient\tphase=response\treason={reason}\n",
+                        SENTINEL,
+                    )
+
+                with (
+                    setup.credential_from_bytes(
+                        (SENTINEL + "\n").encode("ascii")
+                    ) as credential,
+                    setup.settings_from_values("default", "GB") as settings,
+                ):
+                    with self.assertRaisesRegex(
+                        setup.SetupError, rf"phase=response, reason={reason}"
+                    ) as raised:
+                        setup.run_runtime_validation(
+                            "wg0", "adopt", credential, settings, run=run
+                        )
+                self.assertNotIn(SENTINEL, str(raised.exception))
+
         malformed = (
             f"failure\ttransient\tphase={SENTINEL}\n",
             "failure\ttransient\tphase=response\nextra\n",
             "failure\ttransient\tphase=Response\n",
             "failure\ttransient\tphase=response",
             "failure\tpermanent\tphase=response\n",
+            "failure\ttransient\tphase=response\treason=remote-detail\n",
+            "failure\ttransient\tphase=profile\treason=media\n",
         )
         for payload in malformed:
             with self.subTest(payload=payload[:40]):

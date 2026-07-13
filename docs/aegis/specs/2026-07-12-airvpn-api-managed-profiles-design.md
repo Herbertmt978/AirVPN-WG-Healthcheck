@@ -322,6 +322,14 @@ The credential supplied for acceptance testing is not a production credential. I
 removed after the live test. The VM remains in API mode only after the owner supplies a
 new API key that was not pasted into chat; otherwise it is returned to verified static mode.
 
+The AirVPN API Explorer classifies `status`, `dns_lists`, and `whatismyip` as public and
+`userinfo`, `notification`, `devices`, `generator`, and `disconnect` as account-scoped.
+The `devices` service exposes asynchronous list/add/renew/delete/modify lifecycle actions.
+Version 1.1 intentionally admits only public `status`, account-scoped `generator`, and
+tunnel-bound public `whatismyip`. A setup-only reduced device picker is future work;
+unattended device mutation, account inspection, notification, disconnect, and DNS-list
+policy remain outside this trust and product boundary.
+
 ## Provider response boundary
 
 The Python helper must parse and canonically render authenticated generator output. It
@@ -362,6 +370,14 @@ accepts only the expected WireGuard text content or a bounded JSON error object;
 HTML, OS archives, multipart data, unsupported content encodings, and any unexpected
 content type. Synthetic redacted response-shape fixtures provide deterministic contract
 tests without retaining credentials or generated key material.
+
+An authenticated transient failure emits one exact local phase. Only `phase=response` may
+also emit one exact local reason: `status`, `encoding`, `media`, `read`, `size`, `json`, or
+`protocol`. These values identify the helper branch only. They must not contain, encode,
+or cause retention of an actual status, header name or value, URL, body, device, server,
+credential-derived value, or provider message. The runtime admits only newline-exact
+allowlisted manifests. Adding this diagnostic does not broaden the accepted media types,
+content encodings, status codes, JSON envelope, profile grammar, or request contract.
 
 Required structure:
 

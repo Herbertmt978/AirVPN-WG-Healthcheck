@@ -139,11 +139,20 @@ managed_fail_candidate_before_rollback() {
 }
 
 managed_finish_authenticated_provider_result() {
-  local provider_rc="${1:?}" outcome="${2:?}" phase="${3-}"
+  local provider_rc="${1:?}" outcome="${2:?}" phase="${3-}" reason="${4-}"
   (( provider_rc != 0 )) || return 0
   if [[ "$outcome" == transient ]]; then
     case "$phase" in
-      transport|response|profile|internal)
+      response)
+        case "$reason" in
+          status|encoding|media|read|size|json|protocol)
+            printf 'failure\ttransient\tphase=response\treason=%s\n' "$reason"
+            ;;
+          '') printf 'failure\ttransient\tphase=response\n' ;;
+        esac
+        ;;
+      transport|profile|internal)
+        [[ -z "$reason" ]] || return "$provider_rc"
         printf 'failure\ttransient\tphase=%s\n' "$phase"
         ;;
     esac
@@ -163,15 +172,11 @@ managed_run_authenticated_attempt() {
   local wgmanaged_outcome_rc wgmanaged_release_rc wgmanaged_clock_epoch_carrier=''
   local wgmanaged_preflight_started=0
   [[ $# == 4 || $# == 6 ]] || return 1
-  [[ "$wgmanaged_provider_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  [[ "$wgmanaged_downstream_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  declare -F "$wgmanaged_provider_callback" >/dev/null || return 1
-  declare -F "$wgmanaged_downstream_callback" >/dev/null || return 1
+  [[ "$wgmanaged_provider_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$wgmanaged_downstream_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  declare -F "$wgmanaged_provider_callback" >/dev/null && declare -F "$wgmanaged_downstream_callback" >/dev/null || return 1
   if [[ -n "$wgmanaged_preflight_callback" ]]; then
-    [[ "$wgmanaged_preflight_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ &&
-       "$wgmanaged_preflight_cleanup" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-    declare -F "$wgmanaged_preflight_callback" >/dev/null || return 1
-    declare -F "$wgmanaged_preflight_cleanup" >/dev/null || return 1
+    [[ "$wgmanaged_preflight_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$wgmanaged_preflight_cleanup" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+    declare -F "$wgmanaged_preflight_callback" >/dev/null && declare -F "$wgmanaged_preflight_cleanup" >/dev/null || return 1
   fi
   if [[ -n "$wgmanaged_credential_fd" ]]; then
     validate_credential_fd_number "$wgmanaged_credential_fd" || return 1
@@ -181,7 +186,6 @@ managed_run_authenticated_attempt() {
       return 1
     return 1
   fi
-
   managed_call_without_private_fd "$wgmanaged_credential_fd" \
     managed_capture_wall_clock_epoch_closed attempt
   wgmanaged_outcome_rc=$?
@@ -236,14 +240,18 @@ managed_run_authenticated_attempt() {
   MANAGED_API_PROVIDER_FAILED_SERVER=''
   MANAGED_API_PROVIDER_JITTER=''
   MANAGED_API_PROVIDER_FAILURE_PHASE=''
+  MANAGED_API_PROVIDER_FAILURE_REASON=''
   if "$wgmanaged_provider_callback" "$active_credential_fd"; then
     wgmanaged_provider_rc=0
   else
     wgmanaged_provider_rc=$?
   fi
   [[ -z "$active_credential_fd" ]] || close_private_fd "$active_credential_fd" ||
-    { wgmanaged_provider_rc=1; MANAGED_API_PROVIDER_FAILURE_PHASE=''; }
-
+    {
+      wgmanaged_provider_rc=1
+      MANAGED_API_PROVIDER_FAILURE_PHASE=''
+      MANAGED_API_PROVIDER_FAILURE_REASON=''
+    }
   wgmanaged_clock_epoch_carrier=''
   if managed_call_without_private_fd "$active_credential_fd" \
       managed_capture_wall_clock_epoch_closed outcome; then
@@ -283,6 +291,7 @@ managed_run_authenticated_attempt() {
   fi
   (( wgmanaged_outcome_rc == 0 && wgmanaged_release_rc == 0 )) || return 1
   managed_finish_authenticated_provider_result "$wgmanaged_provider_rc" \
-    "$wgmanaged_outcome" "$MANAGED_API_PROVIDER_FAILURE_PHASE" || return $?
+    "$wgmanaged_outcome" "$MANAGED_API_PROVIDER_FAILURE_PHASE" \
+    "$MANAGED_API_PROVIDER_FAILURE_REASON" || return $?
   "$wgmanaged_downstream_callback"
 }

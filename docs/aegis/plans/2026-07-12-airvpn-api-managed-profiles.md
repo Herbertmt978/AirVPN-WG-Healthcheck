@@ -106,9 +106,10 @@ verified rollback on the download VM.
 
 ### Unknowns resolved by explicit gates
 
-- The live generator content type and exact response headers are captured only as a
-  redacted shape fixture. A contradiction with the approved MIME allowlist stops the live
-  test and requires a spec amendment before code accepts another type.
+- Live response values are never captured. A local-only response reason enum identifies
+  whether the strict gate rejected status, encoding, media type, read, size, JSON, or local
+  protocol handling. A contradiction with the approved allowlists stops the live test and
+  requires a spec amendment before code accepts another response shape.
 - The VM's root-only profile may contain routing hooks. Adoption retains validated repeated
   `PostUp`/`PostDown` commands without admitting hooks from provider output; other hooks or
   unsupported content keep the VM in static mode without mutation.
@@ -755,10 +756,12 @@ qBittorrent ownership, and route probes.
   pending marker and safety record. Preserve a root-only rollback bundle and verified v1.0
   package. Stop and mask timer, stop worker, wait inactive, and acquire/check the interface
   lock.
-- [ ] **Run authenticated RED-safe dry run.** Transfer the supplied test key through a
+- [x] **Run authenticated RED-safe dry run.** Transfer the supplied test key through a
   non-echoing protected channel to a temporary root-only descriptor/file, run adoption dry
-  run, retain only redacted response shape, prove active profile/tunnel hashes unchanged,
-  and stop if identity or managed allowlist does not match.
+  run, retain only local allowlisted diagnostics, prove active profile/tunnel hashes
+  unchanged, and stop if identity or managed allowlist does not match. Two
+  backoff-compliant attempts reached `phase=response`; neither generated a profile or
+  mutated the live configuration, and the test credential was removed.
 - [ ] **Install/apply and drill rollback.** Install the branch with `--quiesce`; adopt with
   timer disabled; force post-candidate speed verification to fail with a temporary
   impossible threshold so the old profile is restored without making rollback speed a

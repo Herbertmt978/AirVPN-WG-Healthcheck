@@ -196,8 +196,8 @@ def parse_runtime_manifest(payload: str, operation: str) -> RuntimeManifest:
     return RuntimeManifest(fields[1], f"{address}:{port}", expected_pin == "1")
 
 
-def parse_runtime_failure_phase(payload: str) -> str | None:
-    """Return only an exact local transient phase; discard every other child byte."""
+def _parse_runtime_failure_diagnostic(payload: str) -> tuple[str, str | None] | None:
+    """Return only exact local enums; discard every other child byte."""
 
     if not isinstance(payload, str):
         return None
@@ -205,24 +205,55 @@ def parse_runtime_failure_phase(payload: str) -> str | None:
         payload.encode("ascii", "strict")
     except UnicodeError:
         return None
-    prefix = "failure\ttransient\tphase="
-    if not payload.startswith(prefix) or not payload.endswith("\n"):
+    if not payload.endswith("\n") or payload.count("\n") != 1:
         return None
-    if payload.count("\n") != 1:
+    fields = payload[:-1].split("\t")
+    if len(fields) not in {3, 4} or fields[:2] != ["failure", "transient"]:
         return None
-    phase = payload[len(prefix) : -1]
+    if not fields[2].startswith("phase="):
+        return None
+    phase = fields[2][len("phase=") :]
     if phase not in {"transport", "response", "profile", "internal"}:
         return None
-    if payload != f"{prefix}{phase}\n":
+    reason = None
+    if len(fields) == 4:
+        if phase != "response" or not fields[3].startswith("reason="):
+            return None
+        reason = fields[3][len("reason=") :]
+        if reason not in {
+            "status",
+            "encoding",
+            "media",
+            "read",
+            "size",
+            "json",
+            "protocol",
+        }:
+            return None
+    canonical = f"failure\ttransient\tphase={phase}"
+    if reason is not None:
+        canonical += f"\treason={reason}"
+    if payload != f"{canonical}\n":
         return None
-    return phase
+    return phase, reason
+
+
+def parse_runtime_failure_phase(payload: str) -> str | None:
+    """Return only an exact local transient phase; discard every other child byte."""
+
+    diagnostic = _parse_runtime_failure_diagnostic(payload)
+    return diagnostic[0] if diagnostic is not None else None
 
 
 def runtime_validation_failure_message(payload: str) -> str:
-    phase = parse_runtime_failure_phase(payload)
-    if phase is None:
+    diagnostic = _parse_runtime_failure_diagnostic(payload)
+    if diagnostic is None:
         return "authenticated runtime validation failed; no changes were made"
+    phase, reason = diagnostic
+    detail = f"phase={phase}"
+    if reason is not None:
+        detail += f", reason={reason}"
     return (
         "authenticated runtime validation failed "
-        f"(phase={phase}); no changes were made"
+        f"({detail}); no changes were made"
     )

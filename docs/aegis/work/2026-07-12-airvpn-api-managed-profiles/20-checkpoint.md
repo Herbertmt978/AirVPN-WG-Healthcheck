@@ -61,7 +61,8 @@ Updated: 2026-07-13
   then preserved trusted installed `PostUp`/`PostDown` routing hooks without admitting
   provider hooks, tightened managed-profile parent permissions, and corrected the AirVPN
   generator request from OS-packaged output to the raw single-profile form.
-- **Active slice:** Task 15 download-VM authenticated acceptance and rollback evidence.
+- **Active slice:** Task 15 AirVPN generator response-contract diagnosis and download-VM
+  authenticated acceptance.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
 - **Evidence refs:** compatibility commit `05af6bb` and raw-profile correction commit
   `4acdf43`. Exact `4acdf43` native-Linux verification: Python root 201/201; static/runtime
@@ -74,11 +75,13 @@ Updated: 2026-07-13
   READY. The exact package was installed quiesced on the VM without changing the active
   profile or health configuration; the timer remained runtime-masked and the client/tunnel
   remained healthy.
-- **Blocked on:** the provider backoff and rolling attempt window are being honored; one
-  authenticated dry-run slot remains before the oldest attempt expires naturally.
-- **Next step:** after the recorded backoff expires, spend the remaining slot on one
-  non-mutating authenticated dry run. Preserve the static baseline and remove the test key
-  if the corrected raw profile is not proven.
+- **Blocked on:** both authenticated generator dry runs failed closed at the same
+  secret-free `phase=response` boundary. The six-attempt rolling cap is now full and will
+  not reopen naturally until 2026-07-14 17:25:27 UTC.
+- **Next step:** isolate the response-contract mismatch from public provider evidence and
+  local enum-only diagnostics, then run the complete exact-commit Linux/release gate. Do
+  not publish API success or retry before the natural window; preserve the verified static
+  baseline and require a fresh private credential for any later production migration.
 
 ## ResumeStateHint
 
@@ -86,8 +89,9 @@ Updated: 2026-07-13
 - Implementation worktree:
   `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `4acdf43`; the exact code/package gate and quiesced
-  VM installation passed before this evidence-record update.
+- Last accepted implementation commit: `85abcdd`; its exact root/non-root Linux and release
+  gates passed. The VM still runs the byte-identical `4acdf43` runtime installed before the
+  documentation-only checkpoint.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -108,6 +112,13 @@ Updated: 2026-07-13
   are 133, 185, and 102 lines, with every split owner at or below 797 lines. Architecture
   tests enforce the exact owner exceptions, 13 reviewed long blocks, registries, encodings,
   symlink boundaries, and generated-source manifest.
-- **Evidence decision:** `continue` within Task 15; deterministic and quiesced-install
-  evidence is accepted, while authenticated raw-profile success, live rollback/rotation,
-  release, and final VM mode remain unclaimed.
+- **Evidence decision:** `continue` within Task 15; deterministic, quiesced-install, safe
+  failure-containment, key-removal, and static-routing evidence is accepted, while
+  authenticated raw-profile success, live rollback/rotation, release, and API-mode VM
+  migration remain unclaimed.
+- **Current diagnostic candidate:** `phase=response` may add only one local value from
+  `status`, `encoding`, `media`, `read`, `size`, `json`, or `protocol`. Current-tree Linux
+  verification passed Python 203/203, managed recovery 125/125, architecture 11/11,
+  generated-source drift, Bash syntax, public-doc contracts, and a redacted Gitleaks tree
+  scan. Two independent Terra reviews and one Luna documentation/API-scope review returned
+  READY. Exact-commit root/non-root and release verification remains the next gate.

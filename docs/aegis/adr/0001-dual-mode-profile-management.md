@@ -105,9 +105,10 @@ ordinary upgrades, setup guards, held locks, and every other interface remain st
 
 The authenticated Task 15 acceptance then produced the same opaque transient result from
 three distinct provider candidates. That live evidence reopened the provider-helper ceiling.
-The accepted increase from 1,563 to 1,631 lines is limited to a four-value local phase enum,
-classification at the existing transport/response/profile boundary, and one hard-coded
-failure manifest. No provider text, new request, persistent field, credential path, or
+The initial accepted increase from 1,563 to 1,631 lines was limited to a four-value local
+phase enum, classification at the existing transport/response/profile boundary, and one
+hard-coded phase-only failure manifest. No provider text, new request, persistent field,
+credential path, or
 administrative command crosses the boundary. Malformed or additional child output is
 discarded. The runtime streams raw helper stdout only through SHA-256, preserves the helper
 and hasher statuses separately, and compares that digest with independently constructed,
@@ -137,10 +138,22 @@ relax the future extraction/superseding-decision trigger.
 
 The first request that reached AirVPN used `system=linux` and was rejected at the response
 boundary before profile parsing. Public AirVPN raw-configuration examples use
-`system=other`, so the generator now requests that raw single-profile form. The fixed
-origin, method, authentication header, remaining query parameters, byte bounds, and strict
-archive/content rejection are unchanged. No response body or complete header set was
-retained, so the rejected response's exact media type is intentionally not asserted.
+`system=other`, so the generator now requests that raw single-profile form. A second
+backoff-compliant request using `system=other` reached the same response boundary. Both dry
+runs left the profile, live interface, health configuration, and service state unchanged;
+the persistent request ledger advanced within its cap and retained the failed-server
+exclusions. The fixed origin, method, authentication header, remaining query parameters,
+byte bounds, and strict archive/content rejection are unchanged. No response body or
+complete header set was retained, so the rejected response's exact media type is
+intentionally not asserted.
+
+That repeated result permits one narrower diagnostic: `phase=response` may add exactly one
+local reason from `status`, `encoding`, `media`, `read`, `size`, `json`, or `protocol`.
+The values classify only local control-flow branches. They reveal and retain no actual
+status, header, URL, response bytes, device/server identity, credential-derived value, or
+provider message, and they do not loosen the response or profile contract. API-managed
+operation remains acceptance-blocked until a naturally permitted request with a fresh,
+privately supplied key generates and validates a profile successfully.
 
 AirVPN's wider API surface was reviewed before freezing this boundary. Version 1.1 uses
 the credential-free `status` service for country/server selection, authenticated
