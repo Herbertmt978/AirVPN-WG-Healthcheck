@@ -1,6 +1,6 @@
 # Todo Checkpoint: AirVPN API-Managed WireGuard Profiles
 
-Updated: 2026-07-13
+Updated: 2026-07-14
 
 ## TodoCheckpointDraft
 
@@ -61,23 +61,31 @@ Updated: 2026-07-13
   ADR-status, and full-ancestor trust gaps were reproduced and corrected. Task 15 preparation
   then preserved trusted installed `PostUp`/`PostDown` routing hooks without admitting
   provider hooks, tightened managed-profile parent permissions, and corrected the AirVPN
-  generator request from OS-packaged output to the raw single-profile form.
-- **Active slice:** Task 15 AirVPN generator response-contract diagnosis is installed and
-  verified on the download VM; authenticated acceptance is waiting on the provider window
-  and a fresh private credential.
+  generator request from OS-packaged output to the raw single-profile form. Provider-contract
+  diagnosis then confirmed AirVPN's documented exact `result: "ok"` success rule and its
+  current top-level `error`-only authentication envelope without making an authenticated
+  request. The helper now rejects duplicate JSON keys and every ambiguous or contradictory
+  envelope as a redacted transient response-contract failure. Release packaging now pins one
+  immutable commit and remains reproducible on Ubuntu 22.04's Git 2.34 without relying on
+  the newer `git archive --mtime` option; behavioral tests cover annotated tags and archive
+  timestamps.
+- **Active slice:** exact candidate `b44d320` is installed and verified on the download VM
+  in static mode. Authenticated acceptance is waiting on the provider window and a fresh
+  private credential.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
-- **Evidence refs:** compatibility commit `05af6bb` and raw-profile correction commit
-  `4acdf43`. Exact `4acdf43` native-Linux verification: Python root 201/201; static/runtime
-  root and non-root 89/89 each; managed root 125/125 and non-root 120 passed with five
-  intentional root-only skips; installer root 58 passed with one intentional skip and
-  non-root 59/59; 27-file release checks; generated-runtime, Bash syntax, installed modes,
-  systemd, actionlint, Python 3.10 provider 71/71, and ShellCheck 0.9/0.11 gates passed.
-  Two release builds were byte-identical. Pinned Gitleaks found no leaks in the exact
-  history, tree, or either extracted archive. Independent Terra/Luna reviews returned
-  READY. The exact `47e7511` package is installed on the VM without changing the active
-  profile or health configuration. A manual and timer-triggered static check passed with
-  WireGuard up, qBittorrent proved, AirVPN egress verified, no API key or recovery artifact,
-  and the minute timer enabled and active.
+- **Evidence refs:** response-envelope commits `5e7b4f9` and `7f75fe8`, portable-release
+  commit `0e19ba6`, documentation commits `2ead395` and `2121085`, and lint annotation
+  commit `b44d320`. Exact `b44d320` native-Linux verification: Python root 206/206;
+  static/runtime root and non-root 89/89 each; managed root 125/125 and non-root 120 passed
+  with five intentional root-only skips; installer root 58 passed with one intentional skip
+  and non-root 59/59; 27-file annotated-tag release checks; generated-runtime, Bash syntax,
+  systemd, and ShellCheck 0.9/0.11 gates passed. Pinned Gitleaks found no leaks through the
+  release candidate's history or either extracted archive. Independent Terra/Luna final
+  reviews returned READY. The exact `b44d320` package is installed byte-for-byte on the VM
+  without changing the active static profile, health configuration, or six-attempt provider
+  ledger. Manual and timer-triggered static checks passed with WireGuard up, AirVPN egress
+  verified, qBittorrent proved, no API key or recovery artifact, and the timer enabled and
+  active.
 - **Blocked on:** both authenticated generator dry runs failed closed at the same
   secret-free `phase=response` boundary. The six-attempt rolling cap is now full and will
   not reopen naturally until 2026-07-14 17:25:27 UTC.
@@ -90,12 +98,11 @@ Updated: 2026-07-13
 ## ResumeStateHint
 
 - Primary checkout: repository `main` at the public baseline.
-- Implementation worktree:
-  `C:/Users/Ashby/.config/aegis/worktrees/airvpn-wg-healthcheck/airvpn-api-profiles`
+- Implementation worktree: isolated feature worktree outside the public checkout.
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `47e7511`; its exact root/non-root Linux, release,
+- Last accepted implementation commit: `b44d320`; its exact root/non-root Linux, release,
   reproducibility, workflow, and secret gates passed. The VM runs that byte-identical
-  diagnostic runtime in verified static mode with the timer enabled and active.
+  candidate in verified static mode with the timer enabled and active.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -120,10 +127,10 @@ Updated: 2026-07-13
   failure-containment, key-removal, and static-routing evidence is accepted, while
   authenticated raw-profile success, live rollback/rotation, release, and API-mode VM
   migration remain unclaimed.
-- **Accepted diagnostic candidate:** exact commit `47e7511`; `phase=response` may add only
+- **Accepted diagnostic candidate:** exact commit `b44d320`; `phase=response` may add only
   one local value from
   `status`, `encoding`, `media`, `read`, `size`, `json`, or `protocol`. Current-tree Linux
-  and exact-commit verification passed Python 203/203, root/non-root health 89/89 each,
+  and exact-commit verification passed Python 206/206, root/non-root health 89/89 each,
   managed root 125/125 and non-root 120 with five intentional skips, installer root 58 with
   one intentional skip and non-root 59/59, architecture 11/11, generated-source drift,
   Bash syntax, ShellCheck, systemd, workflow, 27-file reproducible release, and redacted
