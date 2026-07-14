@@ -381,8 +381,9 @@ as a transient `phase=response`, `reason=json` contract failure and never expose
 remote field.
 
 An authenticated transient failure emits one exact local phase. Only `phase=response` may
-also emit one exact local reason: `status`, `encoding`, `media`, `read`, `size`, `json`, or
-`protocol`. These values identify the helper branch only. They must not contain, encode,
+also emit one exact local reason: `status`, `encoding`, `media_missing`, `media_multiple`,
+`media_invalid`, `media_type`, `media_parameter`, `read`, `size`, `json`, or `protocol`.
+These values identify the helper branch only. They must not contain, encode,
 or cause retention of an actual status, header name or value, URL, body, device, server,
 credential-derived value, or provider message. The runtime admits only newline-exact
 allowlisted manifests. Adding this diagnostic does not broaden the accepted media types,

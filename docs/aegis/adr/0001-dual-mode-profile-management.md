@@ -148,7 +148,8 @@ complete header set was retained, so the rejected response's exact media type is
 intentionally not asserted.
 
 That repeated result permits one narrower diagnostic: `phase=response` may add exactly one
-local reason from `status`, `encoding`, `media`, `read`, `size`, `json`, or `protocol`.
+local reason from `status`, `encoding`, `media_missing`, `media_multiple`, `media_invalid`,
+`media_type`, `media_parameter`, `read`, `size`, `json`, or `protocol`.
 The values classify only local control-flow branches. They reveal and retain no actual
 status, header, URL, response bytes, device/server identity, credential-derived value, or
 provider message, and they do not loosen the response or profile contract. API-managed
