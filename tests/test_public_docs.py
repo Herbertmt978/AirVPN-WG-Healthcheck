@@ -14,6 +14,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 OPERATIONS = ROOT / "docs" / "operations.md"
+RELEASE_NOTE = ROOT / "docs" / "releases" / "v1.1.0.md"
 LICENSE = ROOT / "LICENSE"
 SECURITY = ROOT / "SECURITY.md"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
@@ -35,7 +36,15 @@ class PublicDocumentationTests(unittest.TestCase):
         """Return current documentation only; v1.0 notes remain immutable history."""
         return "\n".join(
             read_text(path)
-            for path in (README, OPERATIONS, SECURITY, CONTRIBUTING, EXAMPLE_CONFIG, LICENSE)
+            for path in (
+                README,
+                OPERATIONS,
+                RELEASE_NOTE,
+                SECURITY,
+                CONTRIBUTING,
+                EXAMPLE_CONFIG,
+                LICENSE,
+            )
         )
 
     def test_readme_opening_has_a_two_mode_choice_table(self) -> None:
@@ -161,14 +170,14 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertNotRegex(text, r"(?im)^\s*(?:AIRVPN_)?API[_-]?KEY\s*=")
 
     def test_unattended_credential_path_trust_is_documented(self) -> None:
-        for path in (README, OPERATIONS):
+        for path in (README, OPERATIONS, RELEASE_NOTE):
             text = read_text(path)
             with self.subTest(path=path.name):
                 self.assertIn("--credential-file", text)
-                self.assertRegex(text, r"(?is)absolute(?: normalized)? path")
+                self.assertRegex(text, r"(?is)absolute.{0,40}path")
                 self.assertRegex(text, r"(?is)parent component.{0,100}root-owned")
                 self.assertRegex(text, r"(?is)parent component.{0,180}non-symlinked")
-                self.assertRegex(text, r"(?is)parent component.{0,240}not writable by other users")
+                self.assertRegex(text, r"(?is)parent component.{0,240}not\s+writable by other users")
                 self.assertIn("root-owned sticky directory", text)
 
     def test_docs_state_kill_switch_and_fixed_device_limits(self) -> None:
