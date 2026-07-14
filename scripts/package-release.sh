@@ -41,12 +41,12 @@ for command_name in git gzip install mktemp python3 sha256sum; do
   }
 done
 
-git -C "$ROOT" rev-parse --verify --quiet "$REF^{tree}" >/dev/null || {
-  printf 'package-release.sh: invalid Git ref: %s\n' "$REF" >&2
+commit="$(git -C "$ROOT" rev-parse --verify --quiet "$REF^{commit}" 2>/dev/null)" || {
+  printf 'package-release.sh: Git ref must resolve to a commit: %s\n' "$REF" >&2
   exit 1
 }
 
-version="$(git -C "$ROOT" show "$REF:VERSION")" || {
+version="$(git -C "$ROOT" show "$commit:VERSION")" || {
   printf 'package-release.sh: VERSION is missing from %s\n' "$REF" >&2
   exit 1
 }
@@ -87,7 +87,7 @@ files=(
 )
 
 for path in "${files[@]}"; do
-  git -C "$ROOT" cat-file -e "$REF:$path" 2>/dev/null || {
+  git -C "$ROOT" cat-file -e "$commit:$path" 2>/dev/null || {
     printf 'package-release.sh: required release path is missing from %s: %s\n' "$REF" "$path" >&2
     exit 1
   }
@@ -115,17 +115,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if commit="$(git -C "$ROOT" rev-parse --verify --quiet "$REF^{commit}" 2>/dev/null)"; then
-  archive_time="$(git -C "$ROOT" show -s --format=%cI "$commit")"
-else
-  archive_time='2000-01-01T00:00:00Z'
-fi
+archive_time="$(git -C "$ROOT" show -s --format=%cI "$commit")"
 
 git -c tar.umask=0022 -C "$ROOT" archive \
   --format=tar \
-  --mtime="$archive_time" \
   --prefix="$prefix/" \
-  "$REF" -- "${files[@]}" > "$tmp/${prefix}.tar"
+  "$commit" -- "${files[@]}" > "$tmp/${prefix}.tar"
 gzip -n -9 < "$tmp/${prefix}.tar" > "$tmp/$tar_name"
 
 python3 - "$tmp/${prefix}.tar" "$tmp/$zip_name" "$archive_time" <<'PY'

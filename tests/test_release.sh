@@ -59,6 +59,14 @@ test_source="$(git -C "$ROOT" show "$REF:tests/test_release.sh")"
   printf 'checked-out release test does not match the requested release ref\n' >&2
   exit 1
 }
+grep -F -- '"$REF^{commit}"' <<<"$package_source" >/dev/null || {
+  printf 'packager does not pin the release ref to one commit\n' >&2
+  exit 1
+}
+[[ "$package_source" != *'--mtime='* ]] || {
+  printf 'packager depends on a post-Ubuntu-22.04 git archive option\n' >&2
+  exit 1
+}
 grep -F -- '## [1.1.0]' <<<"$changelog" >/dev/null || {
   printf 'CHANGELOG.md has no 1.1.0 release section\n' >&2
   exit 1
@@ -89,9 +97,23 @@ done
 
 first="$tmp/first"
 second="$tmp/second"
+tagged="$tmp/tagged"
 "$ROOT/scripts/package-release.sh" --ref "$REF" --output "$first" >/dev/null
 sleep 1
 "$ROOT/scripts/package-release.sh" --ref "$REF" --output "$second" >/dev/null
+
+commit="$(git -C "$ROOT" rev-parse --verify "$REF^{commit}")"
+tag_object="$(
+  printf '%s\n' \
+    "object $commit" \
+    'type commit' \
+    'tag release-portability-test' \
+    'tagger Release Test <release-test@example.invalid> 946684800 +0000' \
+    '' \
+    'Release portability test.' |
+    git -C "$ROOT" mktag
+)"
+"$ROOT/scripts/package-release.sh" --ref "$tag_object" --output "$tagged" >/dev/null
 
 base="airvpn-wg-healthcheck-${version}"
 tar_name="${base}.tar.gz"
@@ -101,6 +123,10 @@ for name in "$tar_name" "$zip_name" SHA256SUMS; do
     printf 'release output is not reproducible: %s\n' "$name" >&2
     exit 1
   }
+  cmp -s -- "$first/$name" "$tagged/$name" || {
+    printf 'annotated-tag release output differs: %s\n' "$name" >&2
+    exit 1
+  }
 done
 
 (
@@ -108,7 +134,9 @@ done
   sha256sum -c SHA256SUMS >/dev/null
 )
 
-python3 - "$first/$tar_name" "$first/$zip_name" "$base" <<'PY'
+commit_epoch="$(git -C "$ROOT" show -s --format=%ct "$commit")"
+python3 - "$first/$tar_name" "$first/$zip_name" "$base" "$commit_epoch" <<'PY'
+import datetime
 import pathlib
 import re
 import stat
@@ -119,6 +147,16 @@ import zipfile
 tar_path = pathlib.Path(sys.argv[1])
 zip_path = pathlib.Path(sys.argv[2])
 prefix = sys.argv[3]
+commit_epoch = int(sys.argv[4])
+commit_time = datetime.datetime.fromtimestamp(commit_epoch, datetime.timezone.utc)
+expected_zip_time = (
+    commit_time.year,
+    commit_time.month,
+    commit_time.day,
+    commit_time.hour,
+    commit_time.minute,
+    commit_time.second - commit_time.second % 2,
+)
 release_notes = f"docs/releases/v{prefix.rsplit('-', 1)[1]}.md"
 relative_files = {
     "CHANGELOG.md",
@@ -204,6 +242,11 @@ with tarfile.open(tar_path, "r:gz") as archive:
     ]
     if unsupported:
         raise SystemExit(f"release tar contains unsupported members: {unsupported}")
+    incorrect_mtimes = [
+        member.name for member in archive_members if member.mtime != commit_epoch
+    ]
+    if incorrect_mtimes:
+        raise SystemExit(f"release tar has non-commit mtimes: {incorrect_mtimes}")
     members = {member.name: member for member in archive_members if member.isfile()}
     check_archive_names(set(members))
     expected_directories = {prefix}
@@ -235,6 +278,8 @@ with zipfile.ZipFile(zip_path) as archive:
     check_archive_names(names)
     for name, expected_mode in expected_modes.items():
         info = archive.getinfo(name)
+        if info.date_time != expected_zip_time:
+            raise SystemExit(f"release ZIP has non-commit timestamp for {name}")
         mode = (info.external_attr >> 16) & 0o777
         if stat.S_ISLNK(info.external_attr >> 16):
             raise SystemExit(f"release ZIP contains a link: {name}")
