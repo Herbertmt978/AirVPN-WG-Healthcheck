@@ -18,6 +18,16 @@ class _ExplodingHeaders:
         raise RuntimeError(self.marker)
 
 
+class _ContentTypeHeaders:
+    def __init__(self, values):
+        self.values = values
+
+    def get_all(self, name):
+        if name.lower() == "content-type":
+            return self.values
+        return []
+
+
 class _CloseFailureJsonResponse(_Response):
     def __init__(self, payload, marker):
         super().__init__(payload, content_type="application/json")
@@ -63,6 +73,7 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
         for content_type in (
             "text/plain",
             "text/plain; charset=utf-8",
+            "text/plain; charset=us-ascii",
             "application/octet-stream",
         ):
             for content_encoding in (None, "identity"):
@@ -87,9 +98,9 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             response.status = status
             transport_statuses.append(response)
         rejected = (
-            (_Response(_generator_profile(), content_type=None), "media"),
-            (_Response(_generator_profile(), content_type="text/html"), "media"),
-            (_Response(_generator_profile(), content_type="application/zip"), "media"),
+            (_Response(_generator_profile(), content_type=None), "media_missing"),
+            (_Response(_generator_profile(), content_type="text/html"), "media_type"),
+            (_Response(_generator_profile(), content_type="application/zip"), "media_type"),
             (
                 _Response(
                     _generator_profile(),
@@ -118,11 +129,111 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
                 self.assertEqual(result.return_code, 6)
                 self.assertEqual(result.stdout, "failure\ttransient\tphase=transport\n")
 
+    def test_response_media_type_accepts_allowlisted_media_and_charsets(self):
+        accepted = (
+            "text/plain",
+            "text/plain; charset=utf-8",
+            "text/plain; charset=us-ascii",
+            "application/octet-stream",
+            "application/json",
+            "application/json; charset=utf-8",
+            "application/json; charset=us-ascii",
+        )
+        for content_type in accepted:
+            with self.subTest(content_type=content_type):
+                self.assertEqual(
+                    airvpn_api._response_media_type({"Content-Type": content_type}),
+                    content_type.split(";", 1)[0],
+                )
+
+    def test_response_media_reasons_are_specific_and_redacted(self):
+        marker = "provider-content-type-sentinel"
+        responses = (
+            (
+                "missing",
+                _Response(_generator_profile(), content_type=None),
+                "media_missing",
+            ),
+            (
+                "multiple",
+                _Response(_generator_profile()),
+                "media_multiple",
+            ),
+            (
+                "invalid",
+                _Response(
+                    _generator_profile(),
+                    content_type=f"not-a-media-type-{marker}",
+                ),
+                "media_invalid",
+            ),
+            (
+                "type",
+                _Response(
+                    _generator_profile(),
+                    content_type=f"application/{marker}",
+                ),
+                "media_type",
+            ),
+            (
+                "parameter",
+                _Response(
+                    _generator_profile(),
+                    content_type=f"text/plain; charset={marker}",
+                ),
+                "media_parameter",
+            ),
+        )
+        responses[1][1].headers = _ContentTypeHeaders(("text/plain", marker))
+
+        for case, response, reason in responses:
+            with self.subTest(case=case):
+                result = self._run_generator(response=response)
+                self.assertEqual(result.return_code, 6)
+                self.assertEqual(
+                    result.stdout,
+                    f"failure\ttransient\tphase=response\treason={reason}\n",
+                )
+                self.assertEqual(
+                    result.stderr,
+                    "ERROR: authenticated provider request failed\n",
+                )
+                self.assertNotIn(marker, result.stdout)
+                self.assertNotIn(marker, result.stderr)
+                self.assertEqual(result.output_stream.write_calls, [])
+
+        for invalid_value in (None, "", "text", "text/", "/plain", "text plain"):
+            with self.subTest(invalid_value=invalid_value):
+                response = _Response(_generator_profile())
+                response.headers = _ContentTypeHeaders((invalid_value,))
+                result = self._run_generator(response=response)
+                self.assertEqual(
+                    result.stdout,
+                    "failure\ttransient\tphase=response\treason=media_invalid\n",
+                )
+
+        for parameter_value in (
+            "application/octet-stream; charset=utf-8",
+            "application/json; charset=iso-8859-1",
+            "text/plain; charset=utf-8; boundary=unexpected",
+        ):
+            with self.subTest(parameter_value=parameter_value):
+                response = _Response(_generator_profile(), content_type=parameter_value)
+                result = self._run_generator(response=response)
+                self.assertEqual(
+                    result.stdout,
+                    "failure\ttransient\tphase=response\treason=media_parameter\n",
+                )
+
     def test_response_reason_enum_is_allowlisted_and_local(self):
         expected = {
             "status",
             "encoding",
-            "media",
+            "media_missing",
+            "media_multiple",
+            "media_invalid",
+            "media_type",
+            "media_parameter",
             "read",
             "size",
             "json",

@@ -90,7 +90,8 @@ one changes the network trust boundary. Keep the AirVPN defaults unless you cont
 reviewed the replacement endpoint.
 
 When authenticated generation fails, diagnostics expose only a local failure phase and,
-for response-contract failures, one fixed reason such as `media`, `size`, or `protocol`.
+for response-contract failures, one of eleven fixed reasons such as `media_type`, `size`,
+or `protocol`.
 They never include the actual status, headers, response body, device, server, or key; see
 the [operator guide](docs/operations.md#authenticated-failure-phases).
 

@@ -151,7 +151,19 @@ class PublicDocumentationTests(unittest.TestCase):
         for phase in ("transport", "response", "profile", "internal"):
             with self.subTest(phase=phase):
                 self.assertIn(f"`phase={phase}`", text)
-        for reason in ("status", "encoding", "media", "read", "size", "json", "protocol"):
+        for reason in (
+            "status",
+            "encoding",
+            "media_missing",
+            "media_multiple",
+            "media_invalid",
+            "media_type",
+            "media_parameter",
+            "read",
+            "size",
+            "json",
+            "protocol",
+        ):
             with self.subTest(reason=reason):
                 self.assertIn(f"`reason={reason}`", text)
         self.assertRegex(text, r"(?is)(wait|honou?r|respect).{0,100}backoff")

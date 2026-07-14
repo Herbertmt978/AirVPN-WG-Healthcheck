@@ -145,7 +145,8 @@ managed_finish_authenticated_provider_result() {
     case "$phase" in
       response)
         case "$reason" in
-          status|encoding|media|read|size|json|protocol)
+          status|encoding|media_missing|media_multiple|media_invalid|media_type|\
+          media_parameter|read|size|json|protocol)
             printf 'failure\ttransient\tphase=response\treason=%s\n' "$reason"
             ;;
           '') printf 'failure\ttransient\tphase=response\n' ;;

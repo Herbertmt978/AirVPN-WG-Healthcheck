@@ -203,7 +203,7 @@ test_generator_transient_failure_manifest_is_exact_and_secret_safe() {
 
   managed_invoke_generator_closed() {
     close_private_fd "$1" || return 1
-    printf 'failure\ttransient\tphase=response\treason=media\n'
+    printf 'failure\ttransient\tphase=response\treason=media_missing\n'
     return 6
   }
   : > "$MANAGED_CANDIDATE"
@@ -220,11 +220,10 @@ test_generator_transient_failure_manifest_is_exact_and_secret_safe() {
     "provider callback must defer the safe phase until outcome persistence" || return 1
   assert_eq response "$MANAGED_API_PROVIDER_FAILURE_PHASE" \
     "provider callback must retain only the canonical safe phase enum" || return 1
-  assert_eq media "$MANAGED_API_PROVIDER_FAILURE_REASON" \
+  assert_eq media_missing "$MANAGED_API_PROVIDER_FAILURE_REASON" \
     "provider callback must retain only the canonical safe response reason" || return 1
   [[ ! -e "$MANAGED_CANDIDATE" ]] ||
     fail "transient failure must remove the generated candidate" || return 1
-
   managed_invoke_generator_closed() {
     close_private_fd "$1" || return 1
     case "$MALFORMED_MANIFEST_CASE" in
@@ -232,11 +231,12 @@ test_generator_transient_failure_manifest_is_exact_and_secret_safe() {
       nul) printf 'failure\ttransient\tphase=response\n\000' ;;
       secret) printf 'failure\ttransient\tphase=response\n%s\n' 'descriptor-only-test-record' ;;
       unknown-reason) printf 'failure\ttransient\tphase=response\treason=remote-detail\n' ;;
+      generic-media) printf 'failure\ttransient\tphase=response\treason=media\n' ;;
       *) return 1 ;;
     esac
     return 6
   }
-  for malformed_case in extra-line nul secret unknown-reason; do
+  for malformed_case in extra-line nul secret unknown-reason generic-media; do
     MALFORMED_MANIFEST_CASE="$malformed_case"
     : > "$MANAGED_CANDIDATE"
     chmod 600 -- "$MANAGED_CANDIDATE"
@@ -259,7 +259,7 @@ test_generator_transient_failure_manifest_is_exact_and_secret_safe() {
 
   managed_invoke_generator_closed() {
     close_private_fd "$1" || return 1
-    printf 'failure\ttransient\tphase=response\treason=media\n'
+    printf 'failure\ttransient\tphase=response\treason=media_missing\n'
     return 6
   }
   managed_secure_sha256_stream() {

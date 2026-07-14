@@ -223,7 +223,11 @@ def _parse_runtime_failure_diagnostic(payload: str) -> tuple[str, str | None] | 
         if reason not in {
             "status",
             "encoding",
-            "media",
+            "media_missing",
+            "media_multiple",
+            "media_invalid",
+            "media_type",
+            "media_parameter",
             "read",
             "size",
             "json",

@@ -399,7 +399,9 @@ managed_classify_generator_failure() {
           failure_phase=response
       fi
       if [[ -z "$failure_phase" ]]; then
-        for failure_reason in status encoding media read size json protocol; do
+        for failure_reason in \
+          status encoding media_missing media_multiple media_invalid media_type \
+          media_parameter read size json protocol; do
           managed_sha256_text expected_digest \
             $'failure\ttransient\tphase=response\treason='"$failure_reason"$'\n' \
             "$credential_fd" || {

@@ -43,6 +43,7 @@ _GENERATED_PROFILE_HEADER = (
 _TSV_SEPARATORS = re.compile(r"[\t\r\n]+")
 _COUNTRY_SEPARATORS = re.compile(r"[\s,]+")
 _COUNTRY_CODE = re.compile(r"[A-Za-z]{2}\Z")
+_MEDIA_TYPE = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+/[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 _API_KEY = re.compile(rb"[0-9a-f]{64}\n\Z")
 _SERVER_NAME = re.compile(r"[A-Za-z0-9-]{1,64}\Z")
 _DEVICE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}\Z")
@@ -88,8 +89,10 @@ class GeneratorTransientPhase(Enum):
 class GeneratorTransientResponseReason(Enum):
     """Allowlisted, secret-free reason for transient response failures."""
 
-    STATUS, ENCODING, MEDIA, READ, SIZE, JSON, PROTOCOL = (
-        "status", "encoding", "media", "read", "size", "json", "protocol"
+    STATUS, ENCODING, MEDIA_MISSING, MEDIA_MULTIPLE, MEDIA_INVALID, MEDIA_TYPE, \
+        MEDIA_PARAMETER, READ, SIZE, JSON, PROTOCOL = (
+        "status", "encoding", "media_missing", "media_multiple", "media_invalid",
+        "media_type", "media_parameter", "read", "size", "json", "protocol",
     )
 
 
@@ -1276,30 +1279,26 @@ def _response_media_type(headers):
     ):
         raise _generator_response_error(GeneratorTransientResponseReason.ENCODING)
 
-    content_type = _single_header(headers, "Content-Type")
-    if content_type is None:
-        raise _generator_response_error(GeneratorTransientResponseReason.MEDIA)
+    content_type_values = _header_values(headers, "Content-Type")
+    if len(content_type_values) != 1:
+        reason = GeneratorTransientResponseReason.MEDIA_MISSING if not content_type_values \
+            else GeneratorTransientResponseReason.MEDIA_MULTIPLE
+        raise _generator_response_error(reason)
+    content_type = content_type_values[0]
+    if not isinstance(content_type, str) or not _MEDIA_TYPE.fullmatch(
+        content_type.split(";", 1)[0].strip()
+    ):
+        raise _generator_response_error(GeneratorTransientResponseReason.MEDIA_INVALID)
     parts = [part.strip() for part in content_type.split(";")]
     media_type = parts[0].lower()
-    if media_type not in (
-        "text/plain",
-        "application/octet-stream",
-        "application/json",
-    ):
-        raise _generator_response_error(GeneratorTransientResponseReason.MEDIA)
+    if media_type not in ("text/plain", "application/octet-stream", "application/json"):
+        raise _generator_response_error(GeneratorTransientResponseReason.MEDIA_TYPE)
     parameters = parts[1:]
     if parameters:
-        allowed = (
-            media_type in ("text/plain", "application/json")
-            and len(parameters) == 1
+        allowed = media_type in ("text/plain", "application/json") and len(parameters) == 1 \
             and parameters[0].lower() in ("charset=utf-8", "charset=us-ascii")
-        )
         if not allowed:
-            raise GeneratorTransientError(
-                "authenticated provider response was rejected",
-                GeneratorTransientPhase.RESPONSE,
-                GeneratorTransientResponseReason.MEDIA,
-            )
+            raise _generator_response_error(GeneratorTransientResponseReason.MEDIA_PARAMETER)
     return media_type
 
 def _generator_response_error(reason):

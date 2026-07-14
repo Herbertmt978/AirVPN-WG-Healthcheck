@@ -87,7 +87,11 @@ text, URL, device, endpoint, or response body:
   reason enum:
   - `reason=status`: AirVPN returned an unexpected successful HTTP status.
   - `reason=encoding`: the content encoding was unsupported or ambiguous.
-  - `reason=media`: the media type was missing, ambiguous, or unsupported.
+  - `reason=media_missing`: no media type was supplied.
+  - `reason=media_multiple`: multiple media types were supplied.
+  - `reason=media_invalid`: the media type syntax was invalid.
+  - `reason=media_type`: the media type was unsupported.
+  - `reason=media_parameter`: the media type carried an unsupported parameter.
   - `reason=read`: the response body could not be read safely.
   - `reason=size`: the body exceeded the bound or had an invalid body type or size.
   - `reason=json`: a JSON-shaped response was neither AirVPN's documented non-empty

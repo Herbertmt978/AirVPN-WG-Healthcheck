@@ -22,8 +22,9 @@ All notable changes to this project are documented here. Release numbers follow
   quiesced live upgrades, an MIT license, and a complete operator guide.
 - Secret-free authenticated failure phases that distinguish transport, response-contract,
   generated-profile, and contained internal failures. Response failures add one fixed
-  local reason (`status`, `encoding`, `media`, `read`, `size`, `json`, or `protocol`)
-  without exposing provider material.
+  local reason (`status`, `encoding`, `media_missing`, `media_multiple`, `media_invalid`,
+  `media_type`, `media_parameter`, `read`, `size`, `json`, or `protocol`) without exposing
+  provider material.
 - Compatibility-safe retention of ordered, repeated `PostUp` and `PostDown` commands from
   the validated root-owned installed profile; provider profiles remain hook-free.
 

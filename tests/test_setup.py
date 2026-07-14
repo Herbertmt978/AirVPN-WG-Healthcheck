@@ -469,7 +469,19 @@ class SetupCliTests(unittest.TestCase):
                         )
                 self.assertNotIn(SENTINEL, str(raised.exception))
 
-        for reason in ("status", "encoding", "media", "read", "size", "json", "protocol"):
+        for reason in (
+            "status",
+            "encoding",
+            "media_missing",
+            "media_multiple",
+            "media_invalid",
+            "media_type",
+            "media_parameter",
+            "read",
+            "size",
+            "json",
+            "protocol",
+        ):
             with self.subTest(reason=reason):
                 def run(argv, **_kwargs):
                     return subprocess.CompletedProcess(
@@ -500,7 +512,8 @@ class SetupCliTests(unittest.TestCase):
             "failure\ttransient\tphase=response",
             "failure\tpermanent\tphase=response\n",
             "failure\ttransient\tphase=response\treason=remote-detail\n",
-            "failure\ttransient\tphase=profile\treason=media\n",
+            "failure\ttransient\tphase=profile\treason=media_missing\n",
+            "failure\ttransient\tphase=response\treason=media\n",
         )
         for payload in malformed:
             with self.subTest(payload=payload[:40]):
