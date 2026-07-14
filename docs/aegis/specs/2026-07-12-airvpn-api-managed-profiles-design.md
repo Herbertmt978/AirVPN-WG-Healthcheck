@@ -348,6 +348,7 @@ Authenticated generation uses one `GET` request to the fixed URL
 parameters:
 
 - `system=other` (AirVPN's raw single-profile output, not an OS archive)
+- `format=text` (explicit raw-text response negotiation)
 - `protocols=wireguard_1_udp_<port>`
 - `servers=<exact public_name selected from the status response>`
 - `device=<explicit configured device>`

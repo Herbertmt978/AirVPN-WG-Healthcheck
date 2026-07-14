@@ -192,6 +192,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
             request.full_url,
             "https://airvpn.org/api/generator/"
             "?system=other"
+            "&format=text"
             "&protocols=wireguard_1_udp_1637"
             "&servers=Mensa-1"
             "&device=My%20Device_1.0"

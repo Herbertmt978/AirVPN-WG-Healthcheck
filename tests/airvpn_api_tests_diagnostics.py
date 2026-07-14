@@ -60,7 +60,11 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
                 self.assertEqual(result.output_stream.write_calls, [])
 
     def test_response_mime_encoding_status_and_size_are_fail_closed(self):
-        for content_type in ("text/plain", "application/octet-stream"):
+        for content_type in (
+            "text/plain",
+            "text/plain; charset=utf-8",
+            "application/octet-stream",
+        ):
             for content_encoding in (None, "identity"):
                 with self.subTest(
                     content_type=content_type,

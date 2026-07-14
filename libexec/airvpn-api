@@ -1226,7 +1226,7 @@ def _classify_http_error(error):
 
 def _generator_url(server, device, port):
     query = (
-        ("system", "other"),
+        ("system", "other"), ("format", "text"),
         ("protocols", f"wireguard_1_udp_{port}"),
         ("servers", server),
         ("device", device),
