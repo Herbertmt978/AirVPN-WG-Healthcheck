@@ -90,7 +90,9 @@ text, URL, device, endpoint, or response body:
   - `reason=media`: the media type was missing, ambiguous, or unsupported.
   - `reason=read`: the response body could not be read safely.
   - `reason=size`: the body exceeded the bound or had an invalid body type or size.
-  - `reason=json`: a JSON-shaped response was not a valid bounded provider error object.
+  - `reason=json`: a JSON-shaped response was neither AirVPN's documented non-empty
+    error-message `result` nor its current top-level `error`-only authentication envelope;
+    exact `result: "ok"` is not accepted as a generated profile.
   - `reason=protocol`: the local HTTP response object, close, or protocol handling failed.
 - `phase=profile` means the returned WireGuard configuration did not meet the strict
   profile and selected-endpoint contract.

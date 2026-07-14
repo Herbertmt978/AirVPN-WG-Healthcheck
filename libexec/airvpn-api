@@ -1274,11 +1274,7 @@ def _response_media_type(headers):
     if _header_values(headers, "Content-Encoding") and (
         content_encoding is None or content_encoding.lower() != "identity"
     ):
-        raise GeneratorTransientError(
-            "authenticated provider response was rejected",
-            GeneratorTransientPhase.RESPONSE,
-            GeneratorTransientResponseReason.ENCODING,
-        )
+        raise _generator_response_error(GeneratorTransientResponseReason.ENCODING)
 
     content_type = _single_header(headers, "Content-Type")
     if content_type is None:
@@ -1361,7 +1357,11 @@ def _read_generator_payload(response):
         remote_error = json.loads(payload.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError, ValueError, RecursionError):
         remote_error = None
-    if isinstance(remote_error, dict):
+    envelope = remote_error if isinstance(remote_error, dict) else {}
+    result = envelope.get("result")
+    error = envelope.get("error", "") if "result" not in envelope else ""
+    is_auth_error = isinstance(error, str) and bool(error)
+    if (isinstance(result, str) and result not in ("", "ok")) or is_auth_error:
         raise GeneratorPermanentError("authenticated generation was rejected")
     raise _generator_response_error(GeneratorTransientResponseReason.JSON)
 

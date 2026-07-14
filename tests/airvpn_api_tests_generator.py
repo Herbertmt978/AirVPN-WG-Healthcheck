@@ -320,18 +320,50 @@ class GeneratorBoundaryTests(unittest.TestCase):
                 if secret_text:
                     self.assertNotIn(secret_text, result.stderr)
 
-    def test_json_error_on_http_200_is_classified_without_remote_text(self):
+    def test_json_errors_on_http_200_are_classified_without_remote_text(self):
         remote_secret = "provider-secret-detail-should-not-escape"
-        payload = json.dumps(
-            {"result": "error", "error": remote_secret, "device": "missing"}
-        ).encode("utf-8")
-        for content_type in ("application/json", "text/plain"):
-            with self.subTest(content_type=content_type):
+        payloads = (
+            {"result": "error", "error": remote_secret, "device": "missing"},
+            {"result": "No user", "options": {"device": "Default"}},
+            {"error": remote_secret},
+        )
+        for payload in payloads:
+            for content_type in ("application/json", "text/plain"):
+                with self.subTest(payload=payload, content_type=content_type):
+                    response = json.dumps(payload).encode("utf-8")
+                    result = self._run_generator(
+                        response=_Response(response, content_type=content_type)
+                    )
+                    self.assertEqual(result.return_code, 4)
+                    self.assertEqual(result.stdout, "")
+                    self.assertNotIn(remote_secret, result.stderr)
+                    self.assertEqual(result.output_stream.write_calls, [])
+
+    def test_only_recognized_json_error_envelopes_are_permanent(self):
+        remote_secret = "unrecognized-provider-json-must-not-escape"
+        payloads = (
+            {},
+            {"message": remote_secret},
+            {"result": "ok", "error": remote_secret},
+            {"result": "", "error": remote_secret},
+            {"result": None, "error": remote_secret},
+            {"result": 4, "error": remote_secret},
+            ["error", remote_secret],
+        )
+        for payload in payloads:
+            with self.subTest(payload_type=type(payload).__name__, payload=payload):
                 result = self._run_generator(
-                    response=_Response(payload, content_type=content_type)
+                    response=_Response(
+                        json.dumps(payload).encode("utf-8"),
+                        content_type="application/json",
+                    )
                 )
-                self.assertEqual(result.return_code, 4)
-                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.return_code, 6)
+                self.assertEqual(
+                    result.stdout,
+                    "failure\ttransient\tphase=response\treason=json\n",
+                )
+                self.assertNotIn(remote_secret, result.stdout)
                 self.assertNotIn(remote_secret, result.stderr)
                 self.assertEqual(result.output_stream.write_calls, [])
 

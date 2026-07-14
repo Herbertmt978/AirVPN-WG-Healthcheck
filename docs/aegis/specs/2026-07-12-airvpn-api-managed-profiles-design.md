@@ -371,6 +371,13 @@ HTML, OS archives, multipart data, unsupported content encodings, and any unexpe
 content type. Synthetic redacted response-shape fixtures provide deterministic contract
 tests without retaining credentials or generated key material.
 
+AirVPN documents exact top-level `result: "ok"` as API success and otherwise uses `result`
+for the error message. Its current authentication boundary can instead emit a top-level
+non-empty `error` string with no `result`. The helper recognizes only those two shapes as
+permanent generator rejection envelopes. It treats missing, empty, non-string,
+success-shaped, contradictory, non-object, malformed, or over-deep JSON as a transient
+`phase=response`, `reason=json` contract failure and never exposes any remote field.
+
 An authenticated transient failure emits one exact local phase. Only `phase=response` may
 also emit one exact local reason: `status`, `encoding`, `media`, `read`, `size`, `json`, or
 `protocol`. These values identify the helper branch only. They must not contain, encode,

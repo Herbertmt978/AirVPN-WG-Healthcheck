@@ -79,9 +79,10 @@ stagger checks rather than treating each interface's ledger as a separate provid
 | `notification` | API key | Not used; operator notification policy stays external. |
 | `dns_lists` | Public | Not used; DNS policy stays external. |
 
-The API Explorer is the provider authority for this boundary. A future setup-only device
-picker could consume a strictly reduced `devices` list, but unattended checks will not gain
-device mutation or account-session authority implicitly.
+The [AirVPN API Explorer](https://airvpn.org/apisettings/) is the provider authority for
+this boundary. A future setup-only device picker could consume a strictly reduced `devices`
+list, but unattended checks will not gain device mutation or account-session authority
+implicitly.
 
 The generator's authenticated origin is fixed in code. The public status and egress URLs
 are root-configuration overrides for controlled testing or a trusted proxy; changing either
@@ -92,6 +93,12 @@ When authenticated generation fails, diagnostics expose only a local failure pha
 for response-contract failures, one fixed reason such as `media`, `size`, or `protocol`.
 They never include the actual status, headers, response body, device, server, or key; see
 the [operator guide](docs/operations.md#authenticated-failure-phases).
+
+AirVPN documents exact `result: "ok"` as API success and otherwise places the error message
+in `result`; its current authentication boundary can instead return one non-empty top-level
+`error` without `result`. Only those two bounded envelopes are permanent generator
+rejections. Contradictory or malformed JSON fails closed as a retryable response-contract
+error.
 
 Generated provider profiles always reject every executable hook. During identity-pinned adoption and rotation, a validated root-owned installed profile may retain repeated `PostUp` and `PostDown` commands in their original order; these remain local code executed as root by `wg-quick`. Review them before setup. `PreUp`, `PreDown`, `SaveConfig`, peer hooks, and unknown directives block API adoption without changing the installed profile.
 

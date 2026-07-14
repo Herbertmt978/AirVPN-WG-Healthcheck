@@ -147,6 +147,8 @@ class PublicDocumentationTests(unittest.TestCase):
                 self.assertIn(f"`reason={reason}`", text)
         self.assertRegex(text, r"(?is)(wait|honou?r|respect).{0,100}backoff")
         self.assertRegex(text, r"(?is)phase.{0,160}(never|does not).{0,100}(key|profile|provider text)")
+        self.assertIn('`result: "ok"`', text)
+        self.assertRegex(text, r"(?is)top-level.{0,100}`error`")
         self.assertNotRegex(text, r"(?i)curl\s+(?:-[^\s]*v|--verbose)")
 
     def test_credential_lifecycle_is_documented_without_secret_cli_or_environment_input(self) -> None:
