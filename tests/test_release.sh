@@ -59,6 +59,8 @@ test_source="$(git -C "$ROOT" show "$REF:tests/test_release.sh")"
   printf 'checked-out release test does not match the requested release ref\n' >&2
   exit 1
 }
+# The assertion intentionally searches the packager source for this literal expression.
+# shellcheck disable=SC2016
 grep -F -- '"$REF^{commit}"' <<<"$package_source" >/dev/null || {
   printf 'packager does not pin the release ref to one commit\n' >&2
   exit 1
