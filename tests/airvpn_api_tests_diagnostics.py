@@ -38,6 +38,27 @@ class _GeneratorHarness:
 
 
 class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
+    def test_duplicate_json_fields_are_transient_and_redacted(self):
+        remote_secret = b"duplicate-provider-json-must-not-escape"
+        payloads = (
+            b'{"result":"ok","result":"' + remote_secret + b'"}',
+            b'{"error":"first","error":"' + remote_secret + b'"}',
+            b'{"result":"error","nested":{"field":1,"field":2}}',
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                result = self._run_generator(
+                    response=_Response(payload, content_type="application/json")
+                )
+                self.assertEqual(result.return_code, 6)
+                self.assertEqual(
+                    result.stdout,
+                    "failure\ttransient\tphase=response\treason=json\n",
+                )
+                self.assertNotIn(remote_secret.decode("ascii"), result.stdout)
+                self.assertNotIn(remote_secret.decode("ascii"), result.stderr)
+                self.assertEqual(result.output_stream.write_calls, [])
+
     def test_response_mime_encoding_status_and_size_are_fail_closed(self):
         for content_type in ("text/plain", "application/octet-stream"):
             for content_encoding in (None, "identity"):

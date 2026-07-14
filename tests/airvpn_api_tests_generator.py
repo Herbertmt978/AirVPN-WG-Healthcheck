@@ -324,7 +324,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
         remote_secret = "provider-secret-detail-should-not-escape"
         payloads = (
             {"result": "error", "error": remote_secret, "device": "missing"},
-            {"result": "No user", "options": {"device": "Default"}},
+            {"result": remote_secret, "options": {"device": "Default"}},
             {"error": remote_secret},
         )
         for payload in payloads:
