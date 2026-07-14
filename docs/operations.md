@@ -54,7 +54,7 @@ To change an API credential, use API mode with `--replace-credential`; setup val
 sudo wg-healthcheck-setup --mode api --replace-credential wg0
 ```
 
-For unattended first-time setup, create the input file outside the repository with root ownership and mode `0600`, then pass only its path. Device names and country codes are not secrets:
+For unattended first-time setup, create the input file outside the repository as a root-owned mode-`0600` regular file, then pass only its absolute normalized path. Every parent component must be root-owned, non-symlinked, and not writable by other users unless it is a root-owned sticky directory such as `/tmp`. Device names and country codes are not secrets:
 
 ```bash
 sudo wg-healthcheck-setup --non-interactive \

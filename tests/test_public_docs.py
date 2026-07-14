@@ -160,6 +160,17 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertNotRegex(text, r"(?i)--(?:airvpn-)?api[-_]?key(?:=|\s+\S)")
         self.assertNotRegex(text, r"(?im)^\s*(?:AIRVPN_)?API[_-]?KEY\s*=")
 
+    def test_unattended_credential_path_trust_is_documented(self) -> None:
+        for path in (README, OPERATIONS):
+            text = read_text(path)
+            with self.subTest(path=path.name):
+                self.assertIn("--credential-file", text)
+                self.assertRegex(text, r"(?is)absolute(?: normalized)? path")
+                self.assertRegex(text, r"(?is)parent component.{0,100}root-owned")
+                self.assertRegex(text, r"(?is)parent component.{0,180}non-symlinked")
+                self.assertRegex(text, r"(?is)parent component.{0,240}not writable by other users")
+                self.assertIn("root-owned sticky directory", text)
+
     def test_docs_state_kill_switch_and_fixed_device_limits(self) -> None:
         text = self.current_public_text().lower()
         self.assertIn("not a firewall kill switch", text)

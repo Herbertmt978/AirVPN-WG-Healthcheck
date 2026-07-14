@@ -145,7 +145,7 @@ The [configuration example](config/wg0.conf.example) is the authoritative key li
 
 The stored API credential is a root-only regular file at `/etc/wireguard/healthcheck.d/<iface>.api-key` (directory mode `0700`, file mode `0600`). Generated WireGuard profiles and candidates are also secrets. Do not put a key in a command line, shell history, environment variable, URL, log, issue, or chat.
 
-Interactive setup reads a key from the controlling terminal without echo. Automation may provide a root-owned path with `--credential-file`; that path is not a secret value. Replace an installed key only through the explicit `--replace-credential` flow after validation. Return to static mode and remove it only through the explicit `--remove-credential` flow; ordinary uninstall preserves credential and API state for recovery.
+Interactive setup reads a key from the controlling terminal without echo. Automation may provide an absolute path with `--credential-file`; the file must be a root-owned mode-`0600` regular file, and every parent component must be root-owned, non-symlinked, and not writable by other users unless it is a root-owned sticky directory such as `/tmp`. The path is not a secret value. Replace an installed key only through the explicit `--replace-credential` flow after validation. Return to static mode and remove it only through the explicit `--remove-credential` flow; ordinary uninstall preserves credential and API state for recovery.
 
 ## Install and verify
 
@@ -201,7 +201,7 @@ For v1.0 upgrades only, quiescence can tighten an empty root-owned legacy lock f
 
 Read [SECURITY.md](SECURITY.md) before reporting a vulnerability and [CONTRIBUTING.md](CONTRIBUTING.md) before sharing diagnostics. Never submit private keys, API keys, tokens, passwords, complete configuration files, or unredacted logs.
 
-For operations, troubleshooting, rollback, and removal, see [docs/operations.md](docs/operations.md). For release history, see [CHANGELOG.md](CHANGELOG.md) and the immutable [v1.0.0 release note](https://github.com/Herbertmt978/airvpn-wg-healthcheck/blob/v1.0.0/docs/releases/v1.0.0.md).
+For operations, troubleshooting, rollback, and removal, see [docs/operations.md](docs/operations.md). For release history, see [CHANGELOG.md](CHANGELOG.md), the current [v1.1.0 release note](docs/releases/v1.1.0.md), and the immutable [v1.0.0 release note](https://github.com/Herbertmt978/airvpn-wg-healthcheck/blob/v1.0.0/docs/releases/v1.0.0.md).
 
 Use [GitHub Issues](https://github.com/Herbertmt978/airvpn-wg-healthcheck/issues) for reproducible bugs and narrowly scoped feature requests. Questions about AirVPN accounts or subscriptions belong with AirVPN; this independent project cannot provide account support.
 
