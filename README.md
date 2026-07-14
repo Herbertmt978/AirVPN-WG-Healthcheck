@@ -109,6 +109,10 @@ For API mode, setup shows eligible countries from public status data before aski
 - Their order is a soft preference: health and capacity still decide within the allowlist.
 - Explicit `ALL` at setup permits every eligible country; a blank setup selection is rejected. Setup stores that choice as the canonical empty runtime allowlist.
 
+The shipped example allowlist is `GB NL BE DE IE`. Treat it as a starting point: setup
+shows the currently eligible inventory so operators can choose a narrower or different
+policy before any authenticated request.
+
 The configuration example documents `AIRVPN_PROFILE_SOURCE`, `AIRVPN_DEVICE`, and `AIRVPN_COUNTRIES`; use it as the exact accepted-settings reference.
 
 ## Requirements

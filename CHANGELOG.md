@@ -31,7 +31,8 @@ All notable changes to this project are documented here. Release numbers follow
 
 - Static endpoint-only rotation remains supported and is never an implicit fallback from
   API mode. One country is strict, multiple countries are a hard allowlist, order is a
-  soft preference, and explicit `ALL` permits every currently eligible country.
+  soft preference, and explicit `ALL` permits every currently eligible country. The
+  shipped example starts with `GB NL BE DE IE` and remains operator-configurable.
 - Setup and upgrades preserve operator files, require explicit apply and timer decisions,
   leave quiesced timers disabled for manual verification, and install every managed/setup
   runtime owner through inert upgrade guards. Quiesced v1.0 upgrades narrowly migrate an
@@ -45,7 +46,8 @@ All notable changes to this project are documented here. Release numbers follow
   only an exact local phase and optional response-reason enum for safe troubleshooting.
 - Updated the SHA-pinned GitHub artifact actions used by future release workflows
   to their Node 24 versions.
-- Authenticated generation requests AirVPN's raw single-profile output; OS-specific
+- Authenticated generation explicitly requests AirVPN's raw single-profile `format=text`
+  output; OS-specific
   archive output remains rejected at the provider response boundary.
 
 ### Security

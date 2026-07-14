@@ -490,7 +490,7 @@ test_runtime_defaults_and_fixed_paths_ignore_environment() {
     [SPEED_CHECK_INTERVAL]=900 [SPEED_CHECK_URL]='https://speed.cloudflare.com/__down?bytes=10000000'
     [SPEED_MIN_BPS]=2500000 [SPEED_TIMEOUT]=25 [SPEED_RETRY_DELAY]=5
     [AIRVPN_ROTATE_ENABLED]=0 [AIRVPN_PROFILE_SOURCE]=static [AIRVPN_DEVICE]=''
-    [AIRVPN_COUNTRIES]='GB NL BE DE FR IE'
+    [AIRVPN_COUNTRIES]='GB NL BE DE IE'
     [AIRVPN_WG_PORT]=1637 [AIRVPN_ROTATE_COOLDOWN]=1800
     [AIRVPN_STATUS_URL]='https://airvpn.org/api/status/?format=json'
     [AIRVPN_WHATISMYIP_URL]='https://airvpn.org/api/whatismyip/?format=json'
@@ -630,7 +630,7 @@ test_config_parser_accepts_template_and_whole_quoted_values() {
   assert_eq 2 "$PING_COUNT" "template numeric setting must apply" || return 1
   assert_eq static "$AIRVPN_PROFILE_SOURCE" "template must explicitly retain static mode" || return 1
   assert_eq '' "$AIRVPN_DEVICE" "static template must not invent a device" || return 1
-  assert_eq 'GB NL BE DE FR IE' "$AIRVPN_COUNTRIES" "template quoted country list must apply" || return 1
+  assert_eq 'GB NL BE DE IE' "$AIRVPN_COUNTRIES" "template quoted country list must apply" || return 1
 
   TEST_TMP="$(mktemp -d)"
   trap "rm -rf -- '$TEST_TMP'" EXIT
