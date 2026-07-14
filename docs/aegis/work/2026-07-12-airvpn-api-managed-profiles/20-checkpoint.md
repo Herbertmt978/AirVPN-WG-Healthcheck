@@ -4,9 +4,9 @@ Updated: 2026-07-14
 
 ## TodoCheckpointDraft
 
-- **Current todo:** after the provider ledger reopens, complete Task 15 download-VM
-  authenticated generator acceptance with a fresh private credential, then run the API
-  adoption, rollback, rotation, and final static/API-mode handoff drills.
+- **Current todo:** after enough provider-ledger slots reopen naturally, complete Task 15
+  download-VM authenticated generator acceptance with the fresh private credential, then
+  run the API adoption, rollback, rotation, final API-mode handoff, and five-cycle drill.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -70,8 +70,11 @@ Updated: 2026-07-14
   the newer `git archive --mtime` option; behavioral tests cover annotated tags and archive
   timestamps.
 - **Active slice:** exact candidate `b44d320` is installed and verified on the download VM
-  in static mode. Authenticated acceptance is waiting on the provider window and a fresh
-  private credential.
+  in static mode. A newly created credential supplied outside chat has passed metadata-only
+  ownership, mode, size, and shape checks without its content being read or printed. The
+  owner supplied the fixed device name and retained the existing six-country allowlist.
+  Authenticated acceptance is waiting on the rolling provider window; the latest public
+  inventory currently exposes eligible servers for five of those six countries.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
 - **Evidence refs:** response-envelope commits `5e7b4f9` and `7f75fe8`, portable-release
   commit `0e19ba6`, documentation commits `2ead395` and `2121085`, and lint annotation
@@ -84,16 +87,23 @@ Updated: 2026-07-14
   reviews returned READY. The exact `b44d320` package is installed byte-for-byte on the VM
   without changing the active static profile, health configuration, or six-attempt provider
   ledger. Manual and timer-triggered static checks passed with WireGuard up, AirVPN egress
-  verified, qBittorrent proved, no API key or recovery artifact, and the timer enabled and
-  active.
+  verified, qBittorrent proved, no installed API key or recovery artifact, and the timer
+  enabled and active. The repository remains public with only `v1.0.0` released; current
+  `origin/main` CI is green and GitHub reports no open secret-scanning alerts. Branch
+  `HEAD` differs from the installed candidate only in this checkpoint record.
 - **Blocked on:** both authenticated generator dry runs failed closed at the same
-  secret-free `phase=response` boundary. The six-attempt rolling cap is now full and will
-  not reopen naturally until 2026-07-14 17:25:27 UTC.
-- **Next step:** after 2026-07-14 17:25:27 UTC, use a fresh privately supplied credential
-  for one controlled generator dry run and record only the local phase/reason manifest. On
-  success, prove identity-pinned API adoption, rollback, bad-server rotation, qBittorrent
-  containment, and key removal before publishing. Do not reset the provider ledger or use
-  the credential that was shared in chat.
+  secret-free `phase=response` boundary. The six-attempt rolling cap is full; historical
+  slots expire naturally between 2026-07-14 17:25:27 UTC and 21:37:36 UTC. One slot is
+  sufficient for the dry run, but the two-call setup transactions must wait until two slots
+  are simultaneously available. The complete six-call acceptance cannot finish before the
+  final historical slot expires. The retained country policy must also be fully represented
+  in the fresh public eligibility inventory before setup may read the credential.
+- **Next step:** at the first natural slot, recheck the public country inventory and run
+  one controlled generator dry run only if all six selected countries are eligible. On
+  success, use later naturally reopened slots for identity-pinned API adoption, a real
+  managed rotation, verified static rollback, final API adoption, qBittorrent containment,
+  tunnel-bound egress, and five timer cycles. Do not reset the provider ledger or use the
+  credential that was shared in chat.
 
 ## ResumeStateHint
 
