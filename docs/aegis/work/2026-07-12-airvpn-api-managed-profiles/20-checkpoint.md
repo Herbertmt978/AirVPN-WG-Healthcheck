@@ -117,10 +117,10 @@ Updated: 2026-07-14
 - **Retirement:** only obsolete "no credentials anywhere" assertions retire in v1.1.
 - **Complexity:** the three reviewed production exceptions are `bin/wg-healthcheck` at
   2,214 lines, `libexec/airvpn-api` at 1,718 lines, and `install.sh` at 1,154 lines. The
-  generated managed runtime remains one 3,899-line installed owner, assembled from nine
-  fixed development fragments no longer than 666 lines. Provider tests use a 48-line
+  generated managed runtime remains one 3,935-line installed owner, assembled from nine
+  fixed development fragments no longer than 693 lines. Provider tests use a 50-line
   compatibility loader plus bounded support/groups; health, managed, and installer runners
-  are 133, 185, and 102 lines, with every split owner at or below 797 lines. Architecture
+  are 133, 185, and 102 lines, with every split owner at or below 800 lines. Architecture
   tests enforce the exact owner exceptions, 13 reviewed long blocks, registries, encodings,
   symlink boundaries, and generated-source manifest.
 - **Evidence decision:** `continue` within Task 15; deterministic, quiesced-install, safe
