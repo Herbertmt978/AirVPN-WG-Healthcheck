@@ -628,10 +628,42 @@ the actual release contract successfully.
   strict canonical WireGuard, expected-endpoint, and identity validation. Focused tests
   cover valid arbitrary labels plus HTML, ZIP, gzip, garbage, JSON, duplicate encoding,
   status-before-read, redaction, and zero-write failure behavior.
+- Exact commit `92e2890360f831a1cef6b1570c83c80396bb157d` passed a detached Ubuntu
+  24.04 gate created from a complete-history Git bundle. Generated-runtime equivalence,
+  Bash syntax, Python discovery, root/non-root health, managed and installer suites,
+  deterministic release checks, both ShellCheck passes, and systemd verification passed.
+  Pinned Gitleaks 8.30.1 found no leak across all 77 reachable commits or either extracted
+  archive. The bundle, tar, ZIP, and authoritative `SHA256SUMS` SHA-256 values were
+  `8deb1ba300764f23e33ad5e624f8f1a5be3cfacfd9736ad777875a7d5bae512c`,
+  `8624ebe9c659762ab0aa3addda8963d717452f8be441cec615ab20bba95b8668`,
+  `ded2ce3b788717b45f68d0e184acf732191662a6c8b008c075a09447e5165043`, and
+  `be2eb63519c6e8cbdca793b8af1f6e980a566d5c08315d7b624b6c98d3770f6c`.
+- The exact `92e2890` package was installed with `install.sh --quiesce wg0`. Every
+  installed program, provider helper, managed owner, setup-package file, and systemd unit
+  matched the reviewed archive byte-for-byte. The active profile, health configuration,
+  and provider state retained their pre-install digests; the timer remained runtime-masked
+  and inactive; the worker remained inactive; `wg0` remained active; qBittorrent remained
+  proved; and neither an installed credential nor a candidate/recovery artifact appeared.
+- Immediately before the final dry run, exact installed bytes and private-file metadata
+  were reverified. The active profile and health configuration still matched preflight,
+  static status reported `tunnel=up`, `pending=none`, `credential_present=false`, and
+  `qbittorrent=proved`, all five policy countries (`GB NL BE DE IE`) were publicly eligible,
+  and the unmodified provider ledger recorded five active attempts, one natural slot, and
+  zero backoff.
+- The sixth authenticated dry run used the fixed `DownloadVM` device and five-country
+  allowlist through the non-interactive setup path. It returned rc 0 with only the fixed
+  redacted success contract: the provider body passed the bounded response, strict canonical
+  WireGuard, expected-endpoint, and fixed-device identity checks. No profile, endpoint,
+  server, provider header/body, credential value, or attempt timestamp was retained or
+  disclosed.
+- The successful dry run advanced the required provider ledger to six of six active
+  attempts with `failure_class=none` and zero backoff. It left the static profile and health
+  configuration byte-identical, kept the source credential root-owned and uninstalled,
+  preserved the runtime timer mask and inactive worker, left `wg0` active and qBittorrent
+  proved, created no candidate or recovery artifact, and removed its private temporary
+  capture. The ledger was not reset, rewritten, or bypassed.
 
-Authenticated raw-profile success, API apply, live rollback/rotation, release, tag, and
-publication remain unclaimed. The current compatibility candidate still requires an exact
-Linux/package/secret gate and quiesced VM installation. The VM
-remains in verified static mode. One rolling-window attempt remains; the next authenticated
-request must wait for the recorded backoff to expire naturally, and a successful dry run
-must then wait for capacity to reopen before API-mode application.
+API apply, live rollback/rotation, release, tag, and publication remain unclaimed. The VM
+remains in verified static mode with the timer runtime-masked. The rolling ledger is full;
+API adoption must wait for the oldest attempt to expire naturally before the next
+authenticated operation.

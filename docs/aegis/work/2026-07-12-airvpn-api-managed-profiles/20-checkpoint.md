@@ -1,14 +1,14 @@
 # Todo Checkpoint: AirVPN API-Managed WireGuard Profiles
 
-Updated: 2026-07-14
+Updated: 2026-07-15
 
 ## TodoCheckpointDraft
 
-- **Current todo:** finish the bounded, body-validated generator compatibility candidate,
-  verify and install its exact package without changing the download VM's static profile,
-  then use the final naturally permitted authenticated dry run. If that dry run generates
-  and validates an identity-pinned profile, wait for rolling-window capacity to reopen
-  naturally before applying API mode; never reset or bypass the provider ledger.
+- **Current todo:** wait for one rolling-window slot to reopen naturally, then reverify the
+  exact installed runtime candidate and use the validated setup path to adopt API mode on
+  the download VM. Keep the timer runtime-masked through adoption and the complete live
+  rollback, rotation, qBittorrent, routing, and repeated-cycle acceptance sequence; never
+  reset or bypass the provider ledger.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -71,51 +71,48 @@ Updated: 2026-07-14
   immutable commit and remains reproducible on Ubuntu 22.04's Git 2.34 without relying on
   the newer `git archive --mtime` option; behavioral tests cover annotated tags and archive
   timestamps.
-- **Active slice:** exact candidate `671f5e0` is installed and verified on the download VM
-  in static mode with the timer runtime-masked and inactive. The active profile and health
-  configuration retain their preflight digests, `wg0` remains active, and no API credential
-  is installed. The root-only source credential remains outside the package and repository.
-  Five backoff-compliant authenticated attempts reached HTTP success and failed closed at
-  the response media boundary without mutation; the fifth proved that explicit
-  `application/x-wireguard-profile` negotiation did not match the provider response. France
-  has been removed from the default policy; the intended allowlist is now `GB NL BE DE IE`.
-  Public working examples omit the undocumented `format=text` query and consume the body as
-  a profile without documenting a success media type. The current test-first slice therefore
-  removes that query and treats any otherwise valid media label not identified as HTML,
-  multipart, or a known archive/compression type as advisory only. Bounded JSON handling and
-  strict WireGuard, expected-endpoint, and identity checks remain authoritative before any
-  write.
+- **Active slice:** exact runtime candidate `92e2890` is installed and verified on the
+  download VM in static mode with the timer runtime-masked and inactive. The active profile
+  and health configuration retain their preflight digests, `wg0` remains active,
+  qBittorrent remains proved, and no API credential is installed. The root-only source
+  credential remains outside the package and repository. After the recorded backoff reached
+  zero, all five configured countries (`GB NL BE DE IE`) were publicly eligible and the
+  sixth authenticated dry run succeeded: the returned profile cleared the bounded response,
+  strict WireGuard, expected-endpoint, and fixed-device identity checks. The dry run changed
+  no profile, configuration, timer, worker, interface, installed credential, candidate, or
+  recovery artifact. Its required accounting record advanced the natural ledger to six of
+  six active attempts with `failure_class=none` and no backoff. API adoption must wait for
+  the oldest slot to expire naturally.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
-- **Evidence refs:** France removal commit `a11dd5d`; exact installed candidate `671f5e0`;
-  exact package hashes `45067ad284d3436e6f656ccc15c72f47b77a89dd6bb6be0d4003491f3ccf1ffc`
-  for tar, `84183f7e94f7c71e805d8483c092174cb34b7f0cefd06c7a205014fc94b7fdc6`
-  for ZIP. The authoritative `SHA256SUMS` digest is
-  `69ed003aeb86a7e3aec6bc9ccb911b8ffbc065cb77a24d31f8115c663d632a9e`.
-  Its native-Linux gate passed the complete Python, root/non-root health, managed, installer,
-  release, Bash syntax, ShellCheck, systemd, and pinned-Gitleaks history/archive checks. The
-  fifth dry run returned only `phase=response`, `reason=media_type`; all VM postconditions
-  remained unchanged. The current compatibility RED failed only at the intended query/media
-  assertions; its focused GREEN suite now passes, including HTML, ZIP, gzip, garbage, and
-  JSON-envelope bodies under advisory labels with no writes on failure.
-- **Blocked on:** the current compatibility candidate still needs exact native-Linux,
-  package, and secret verification followed by quiesced installation. The
-  persistent provider ledger records five of six rolling-window attempts and one available
-  slot; the recorded backoff must reach zero naturally before another authenticated request.
-  The ledger will not be reset or bypassed.
-- **Next step:** commit the reviewed diff and run the exact Linux/package/secret gate,
-  install that exact package with the timer still masked, recheck the five-country public
-  inventory and provider backoff, then run one authenticated dry run. On success, preserve
-  its validated result and wait for a rolling slot to reopen before identity-pinned API
-  adoption and the later rotation/rollback/five-cycle drill.
+- **Evidence refs:** France removal commit `a11dd5d`; exact installed runtime candidate
+  `92e2890`; complete-history bundle digest
+  `8deb1ba300764f23e33ad5e624f8f1a5be3cfacfd9736ad777875a7d5bae512c`.
+  Exact package hashes are
+  `8624ebe9c659762ab0aa3addda8963d717452f8be441cec615ab20bba95b8668`
+  for tar, `ded2ce3b788717b45f68d0e184acf732191662a6c8b008c075a09447e5165043`
+  for ZIP, and `be2eb63519c6e8cbdca793b8af1f6e980a566d5c08315d7b624b6c98d3770f6c`
+  for the authoritative `SHA256SUMS`. The detached Ubuntu 24.04 gate passed the complete
+  Python, root/non-root health, managed, installer, release, Bash syntax, ShellCheck,
+  systemd, and pinned-Gitleaks history/archive checks. The sixth dry run returned rc 0 and
+  only the setup tool's fixed redacted success contract; all static-mode postconditions
+  remained unchanged and its private temporary capture was removed.
+- **Blocked on:** the persistent provider ledger now records six of six active rolling-window
+  attempts. It has no failure backoff, but API adoption must wait for the oldest attempt to
+  expire naturally. The ledger will not be reset or bypassed.
+- **Next step:** when one natural slot reopens, reverify exact installed bytes, profile and
+  configuration digests, source-credential metadata, timer/worker inactivity, `wg0`,
+  qBittorrent, recovery artifacts, five-country public eligibility, and ledger capacity.
+  Then perform one API-mode apply for fixed device `DownloadVM`, followed by the complete
+  identity-pinned adoption, rollback, rotation, and repeated-cycle live acceptance sequence.
 
 ## ResumeStateHint
 
 - Primary checkout: repository `main` at the public baseline.
 - Implementation worktree: isolated feature worktree outside the public checkout.
 - Branch: `Herb/airvpn-api-profiles`
-- Last installed implementation commit: `671f5e0`; its exact root/non-root Linux, release,
+- Last installed runtime commit: `92e2890`; its exact root/non-root Linux, release,
   reproducibility, workflow, and secret gates passed. The VM runs that byte-identical
-  candidate in verified static mode with the timer runtime-masked and inactive.
+  runtime in verified static mode with the timer runtime-masked and inactive.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -137,15 +134,13 @@ Updated: 2026-07-14
   are 133, 185, and 102 lines, with every split owner at or below 800 lines. Architecture
   tests enforce the exact owner exceptions, 13 reviewed long blocks, registries, encodings,
   symlink boundaries, and generated-source manifest.
-- **Evidence decision:** `continue` within Task 15; deterministic, quiesced-install, safe
-  failure-containment, key-removal, and static-routing evidence is accepted, while
-  authenticated raw-profile success, live rollback/rotation, release, and API-mode VM
+- **Evidence decision:** `continue` within Task 15; deterministic, quiesced-install,
+  authenticated raw-profile dry-run success, key-removal, and static-routing evidence is
+  accepted, while API-mode adoption, live rollback/rotation, release, and API-mode VM
   migration remain unclaimed.
-- **Accepted diagnostic candidate:** exact installed commit `671f5e0`; `phase=response`
-  admits only the eleven fixed reason values recorded in the design. The next candidate
-  removes the undocumented response-format query and makes a syntactically valid media
-  label advisory after explicit HTML, multipart, known archive/compression, encoding,
-  status, size, and JSON gates. It adds no persistent state or fallback and remains at the
-  frozen provider ceiling; strict profile/endpoint/identity validation still authorizes
-  every candidate. Focused provider/docs evidence and independent review are green; exact
-  Linux, package, secret, and VM evidence remains the next gate.
+- **Accepted compatibility candidate:** exact installed runtime commit `92e2890` omits the
+  undocumented response-format query and makes a syntactically valid media label advisory
+  only after explicit HTML, multipart, archive/compression, encoding, status, size, and JSON
+  gates. It adds no persistent state or fallback and remains at the frozen provider ceiling;
+  strict profile, expected-endpoint, and identity validation authorized the successful live
+  dry run. Exact Linux, package, secret, VM-install, and dry-run evidence is accepted.
