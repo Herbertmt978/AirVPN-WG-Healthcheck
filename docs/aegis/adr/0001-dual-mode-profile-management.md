@@ -154,17 +154,21 @@ exact `text/html` raw-text policy exception, but the live response returned the 
 `media_type` reason with all state unchanged, so that unproductive exception is removed
 rather than retained.
 
-The next bounded contract advertises
+The next bounded contract uses the fixed `GET` query with `system=other` and omits the
+undocumented `format=text` parameter. It advertises
 `application/x-wireguard-profile, text/plain;q=0.9, */*;q=0.01` and explicitly requests
-identity content encoding. The parameterless `application/x-wireguard-profile` response
-type follows a publicly documented
+identity content encoding. The preference for the parameterless
+`application/x-wireguard-profile` type follows a publicly documented
 [WireGuard-profile API convention](https://docs.eduvpn.org/server/v3/api.html), not a claim
-about the discarded AirVPN header. The low-priority wildcard exists only in
-request negotiation to avoid converting a supported but differently labelled response
-into HTTP 406; parser acceptance remains exact. The existing byte bound, JSON-envelope
-handling, strict WireGuard grammar, identity pinning, and expected-endpoint check remain
-mandatory before any candidate write. HTML, download-specific, wildcard, archive, and
-multipart response media types still fail closed.
+about an AirVPN success MIME type. The low-priority wildcard exists only in request
+negotiation to avoid converting a supported but differently labelled response into HTTP
+406; parser acceptance remains bounded by HTTP 200, exactly one syntactically valid
+`Content-Type`, no non-identity encoding, and the 64-KiB limit. `text/html`, every
+`multipart/*` type, and known ZIP, gzip, tar, 7z, bzip2, and xz types fail closed. One
+unquoted UTF-8/US-ASCII charset is permitted only on `application/json` or `text/*`; other valid
+parameterless labels are advisory. JSON envelopes and every non-JSON body's strict
+WireGuard grammar, expected endpoint, and identity pinning remain mandatory before any
+candidate write.
 
 That repeated result permits one narrower diagnostic: `phase=response` may add exactly one
 local reason from `status`, `encoding`, `media_missing`, `media_multiple`, `media_invalid`,
@@ -174,6 +178,11 @@ status, header, URL, response bytes, device/server identity, credential-derived 
 provider message, and they do not loosen the response or profile contract. API-managed
 operation remains acceptance-blocked until a naturally permitted request with a fresh,
 privately supplied key generates and validates a profile successfully.
+
+The fifth live dry run, on commit `671f5e0`, again failed with `phase=response` and
+`reason=media_type`. The profile, key, health configuration, timer, and live interface were
+unchanged. It consumed the fifth bounded attempt, left one rolling-window slot, and observed
+the recorded backoff. No secret, provider header, or attempt timestamp was retained.
 
 AirVPN's wider API surface was reviewed before freezing this boundary. Version 1.1 uses
 the credential-free `status` service for country/server selection, authenticated

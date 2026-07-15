@@ -348,7 +348,6 @@ Authenticated generation uses one `GET` request to the fixed URL
 parameters:
 
 - `system=other` (AirVPN's raw single-profile output, not an OS archive)
-- `format=text` (explicit raw-text response negotiation)
 - `protocols=wireguard_1_udp_<port>`
 - `servers=<exact public_name selected from the status response>`
 - `device=<explicit configured device>`
@@ -365,21 +364,24 @@ server text grammar, and the generated numeric IPv4 endpoint must equal that rec
 validation.
 
 The request has a 20-second default timeout capped at 60 seconds, rejects every redirect,
-and accepts at most 64 KiB. HTTP 200 may contain a JSON error and therefore is not treated
-as success. The helper explicitly requests AirVPN's `system=other` raw profile form, sends
-`Accept: application/x-wireguard-profile, text/plain;q=0.9, */*;q=0.01`, and sends
-`Accept-Encoding: identity`. The low-priority wildcard is a request-negotiation fallback
-only; it never widens parser acceptance. The response media allowlist is `text/plain`,
-`application/x-wireguard-profile`, `application/octet-stream`, and `application/json`.
-Only text/plain and JSON may carry one unquoted, case-insensitive `charset=utf-8` or
-`charset=us-ascii` token; the WireGuard profile and octet-stream types are parameterless.
-The profile media type follows a publicly documented WireGuard-profile API convention and
-is not a claim about the discarded live AirVPN header. Every non-JSON body must still pass
-the exact WireGuard profile and selected-endpoint grammar, so actual HTML and archive bytes
-fail before a candidate write or mutation. Declared archives, multipart data, download-specific or
-unknown media types, and unsupported content encodings remain rejected. Synthetic
-redacted response-shape fixtures provide deterministic contract tests without retaining
-credentials or generated key material.
+and accepts at most 64 KiB. It uses the fixed `system=other` raw-profile form and omits the
+undocumented `format=text` parameter. A response must be HTTP 200, have exactly one
+syntactically valid `Content-Type`, and have no non-identity content encoding. HTTP 200 may
+contain a JSON error and therefore is not itself success. The request sends
+`Accept: application/x-wireguard-profile, text/plain;q=0.9, */*;q=0.01` and
+`Accept-Encoding: identity`; the wildcard is a request-negotiation fallback only and never
+widens payload acceptance.
+
+The helper rejects `text/html`, every `multipart/*` type, and known ZIP, gzip, tar, 7z,
+bzip2, and xz archive/compression media types. A parameter is allowed only as one unquoted,
+case-insensitive `charset=utf-8` or `charset=us-ascii` on `application/json` or `text/*`; every other
+parameter is rejected. Other syntactically valid parameterless media labels are advisory,
+not a response MIME allowlist. The `application/x-wireguard-profile` preference follows a
+public WireGuard-profile API convention, not a claim about an AirVPN success MIME type.
+JSON-shaped bodies are handled as bounded envelopes. Every non-JSON body must pass the
+canonical WireGuard profile grammar, selected-endpoint check, and identity pinning before
+any candidate write or mutation. Synthetic redacted response-shape fixtures provide
+deterministic contract tests without retaining credentials or generated key material.
 
 AirVPN documents exact top-level `result: "ok"` as API success and otherwise uses `result`
 for the error message. Its current authentication boundary can instead emit a top-level
@@ -396,8 +398,7 @@ These values identify the helper branch only. They must not contain, encode,
 or cause retention of an actual status, header name or value, URL, body, device, server,
 credential-derived value, or provider message. The runtime admits only newline-exact
 allowlisted manifests. The diagnostic itself does not broaden content encodings, status
-codes, JSON envelopes, profile grammar, or request parameters; the sole media compatibility
-amendment is the separately specified parameterless WireGuard profile type above.
+codes, JSON envelopes, profile grammar, identity pinning, or request parameters.
 
 Required structure:
 
@@ -840,6 +841,11 @@ public documentation and release metadata consistently.
 - Git history and release artifacts are scanned for the supplied sentinel/test key pattern
   and general secrets before publication.
 - A live authenticated dry run uses the supplied temporary key without exposing it.
+- The fifth live dry run on commit `671f5e0` failed at `phase=response` with
+  `reason=media_type`; profile, key, health configuration, timer, and interface remained
+  unchanged. Five attempts were consumed, one rolling-window slot remained, and the
+  recorded backoff was observed. No secret, provider header, or attempt timestamp is
+  retained in this evidence.
 - Release-candidate order is fixed: complete deterministic source/package/secret checks;
   install the branch candidate on the quiesced VM; run authenticated dry-run, adoption,
   successful rotation, and rollback drill; restore a healthy VM; then merge.

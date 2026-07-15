@@ -103,14 +103,21 @@ text, URL, device, endpoint, or response body:
 - `phase=internal` means an unexpected local helper failure was contained at the secret
   boundary.
 
-Authenticated generator requests prefer `application/x-wireguard-profile`, then
-`text/plain`, and send `Accept-Encoding: identity`. The low-priority `*/*` entry in the
-request is only an HTTP negotiation fallback; it does not create wildcard parser
-acceptance. The helper admits `application/x-wireguard-profile` only without parameters,
-and the bounded body must still satisfy the strict WireGuard profile and selected-endpoint
-contract. No live provider header was retained or identified to select this policy.
-Actual HTML, archives, multipart responses, download-specific and unknown media types,
-and unsupported content encodings remain rejected before any candidate write or mutation.
+Authenticated generation uses one fixed `GET` with `system=other` and omits the
+undocumented `format=text` parameter. It prefers `application/x-wireguard-profile`, then
+`text/plain`, sends `Accept-Encoding: identity`, and gives `*/*` low priority solely for
+HTTP negotiation. A response must be HTTP 200, at most 64 KiB, have no non-identity content
+encoding, and provide exactly one syntactically valid `Content-Type`; the wildcard creates
+no wildcard parser acceptance.
+
+The helper rejects `text/html`, every `multipart/*` type, and known ZIP, gzip, tar, 7z,
+bzip2, and xz archive/compression media types. A parameter is valid only when it is the
+single unquoted `charset=utf-8` or `charset=us-ascii` parameter on `application/json` or
+`text/*`. Other syntactically valid
+parameterless labels are advisory only, not a MIME allowlist. JSON-shaped responses are
+handled as bounded JSON envelopes. Every non-JSON body must pass strict canonical WireGuard
+parsing, the selected-endpoint check, and identity pinning before any candidate write or
+mutation. No AirVPN success MIME type is asserted or inferred from this contract.
 
 The reason values describe only the helper branch that rejected the response. They never
 contain the actual status, header name or value, URL, body, device, server, or provider

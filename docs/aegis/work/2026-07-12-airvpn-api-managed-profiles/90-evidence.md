@@ -597,8 +597,41 @@ the actual release contract successfully.
   acceptance remains exact; HTML and parameterized profile types fail closed. Terra/Luna
   reviews found no secret or contract drift and requested one explicit 406-permanent
   regression assertion, which was added without changing runtime behavior.
+- Exact commit `671f5e07c935f19385ed5dd43c2236c8ec9c820a` passed the complete
+  detached Ubuntu 24.04 gate from a Git bundle: generated-runtime equivalence, Bash syntax,
+  Python discovery, root/non-root health, managed and installer suites, exact deterministic
+  release checks, both ShellCheck passes, and systemd verification. Pinned Gitleaks 8.30.1
+  found no leak across reachable history or either extracted archive. The tar, ZIP, and
+  `SHA256SUMS` SHA-256 values were respectively
+  `45067ad284d3436e6f656ccc15c72f47b77a89dd6bb6be0d4003491f3ccf1ffc`,
+  `84183f7e94f7c71e805d8483c092174cb34b7f0cefd06c7a205014fc94b7fdc6`, and
+  `69ed003aeb86a7e3aec6bc9ccb911b8ffbc065cb77a24d31f8115c663d632a9e`.
+- The exact `671f5e0` package was installed with `--quiesce wg0`. Installed files matched
+  the archive byte-for-byte; profile, health configuration, and persistent state retained
+  their pre-install digests; the timer remained runtime-masked and inactive; the worker
+  remained inactive; `wg0` remained active; no credential or candidate was installed; and
+  the root-only source credential retained its strict metadata outside the package.
+- After the recorded backoff reached zero and all five configured countries were eligible,
+  the fifth authenticated dry run used exact `671f5e0` and returned rc 64 with only
+  `phase=response`, `reason=media_type`. The provider ledger advanced from four to five of
+  six rolling-window attempts and recorded the required transient backoff. Every profile,
+  configuration, key, candidate, timer, worker, and interface postcondition remained
+  unchanged; no provider body or media value was retained or disclosed.
+- Public AirVPN working examples omit the undocumented `format=text` query and consume the
+  generator body as a profile, but no public source documents the successful response media
+  type. The next local slice was therefore started test-first: its RED run failed only
+  because the query still included that parameter and otherwise valid advisory media labels
+  were rejected before strict parsing. GREEN now omits the parameter while preserving fixed
+  origin/method/fields and identity encoding. It requires exactly one syntactically valid
+  media label, rejects HTML, multipart, and known archive/compression labels, bounds the
+  body to 64 KiB, sniffs JSON envelopes under every label, and authorizes output only after
+  strict canonical WireGuard, expected-endpoint, and identity validation. Focused tests
+  cover valid arbitrary labels plus HTML, ZIP, gzip, garbage, JSON, duplicate encoding,
+  status-before-read, redaction, and zero-write failure behavior.
 
 Authenticated raw-profile success, API apply, live rollback/rotation, release, tag, and
-publication remain unclaimed. The current exact candidate still requires its Linux/package/
-secret gate and quiesced VM installation. The VM remains in verified static mode, and the
-next authenticated request must wait for the recorded backoff to expire naturally.
+publication remain unclaimed. The current compatibility candidate still requires an exact
+Linux/package/secret gate and quiesced VM installation. The VM
+remains in verified static mode. One rolling-window attempt remains; the next authenticated
+request must wait for the recorded backoff to expire naturally, and a successful dry run
+must then wait for capacity to reopen before API-mode application.

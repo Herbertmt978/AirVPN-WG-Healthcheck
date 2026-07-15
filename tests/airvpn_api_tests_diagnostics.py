@@ -28,6 +28,15 @@ class _ContentTypeHeaders:
         return []
 
 
+class _DuplicateEncodingHeaders:
+    def get_all(self, name):
+        if name.lower() == "content-type":
+            return ["application/x-download"]
+        if name.lower() == "content-encoding":
+            return ["identity", "identity"]
+        return []
+
+
 class _CloseFailureJsonResponse(_Response):
     def __init__(self, payload, marker):
         super().__init__(payload, content_type="application/json")
@@ -76,6 +85,11 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             "text/plain; charset=us-ascii",
             "application/x-wireguard-profile",
             "APPLICATION/X-WIREGUARD-PROFILE",
+            "application/x-download",
+            "application/vnd.airvpn.profile",
+            "application/x-unknown-profile-label",
+            "text/x-wireguard; charset=utf-8",
+            "TEXT/X-WIREGUARD; CHARSET=US-ASCII",
             "application/octet-stream",
         ):
             for content_encoding in (None, "identity"):
@@ -94,6 +108,8 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
 
         wrong_status = _Response(_generator_profile())
         wrong_status.status = 201
+        duplicate_encoding = _Response(_generator_profile())
+        duplicate_encoding.headers = _DuplicateEncodingHeaders()
         transport_statuses = []
         for status in (302, 408, 500, 503):
             response = _Response(_generator_profile())
@@ -102,12 +118,14 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
         rejected = (
             (_Response(_generator_profile(), content_type=None), "media_missing"),
             (_Response(_generator_profile(), content_type="text/html"), "media_type"),
-            (_Response(_generator_profile(), content_type="application/x-download"), "media_type"),
             (_Response(_generator_profile(), content_type="application/zip"), "media_type"),
+            (_Response(_generator_profile(), content_type="application/x-gzip"), "media_type"),
+            (_Response(_generator_profile(), content_type="multipart/mixed"), "media_type"),
+            (duplicate_encoding, "encoding"),
             (
                 _Response(
                     _generator_profile(),
-                    content_type="text/plain",
+                    content_type="application/x-download",
                     content_encoding="gzip",
                 ),
                 "encoding",
@@ -126,19 +144,29 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
                 self.assertEqual(result.output_stream.write_calls, [])
                 self.assertTrue(response.closed)
 
+        self.assertEqual(wrong_status.read_calls, [])
+        self.assertEqual(duplicate_encoding.read_calls, [])
+
         for response in transport_statuses:
             with self.subTest(status=response.status):
                 result = self._run_generator(response=response)
                 self.assertEqual(result.return_code, 6)
                 self.assertEqual(result.stdout, "failure\ttransient\tphase=transport\n")
+                self.assertEqual(response.read_calls, [])
+                self.assertTrue(response.closed)
 
-    def test_response_media_type_accepts_allowlisted_media_and_charsets(self):
+    def test_response_media_type_treats_safe_syntax_as_advisory(self):
         accepted = (
             "text/plain",
             "text/plain; charset=utf-8",
             "text/plain; charset=us-ascii",
             "application/x-wireguard-profile",
             "APPLICATION/X-WIREGUARD-PROFILE",
+            "application/x-download",
+            "application/vnd.airvpn.profile",
+            "application/x-unknown-profile-label",
+            "text/x-wireguard; charset=utf-8",
+            "TEXT/X-WIREGUARD; CHARSET=US-ASCII",
             "application/octet-stream",
             "application/json",
             "application/json; charset=utf-8",
@@ -151,25 +179,57 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
                     content_type.split(";", 1)[0].lower(),
                 )
 
-    def test_profile_media_label_never_bypasses_strict_profile_parsing(self):
+    def test_compatibility_media_label_never_bypasses_strict_profile_parsing(self):
         marker = "provider-html-sentinel"
-        response = _Response(
-            f"<html><body>{marker}</body></html>".encode("ascii"),
-            content_type="application/x-wireguard-profile",
+        cases = (
+            (f"<html><body>{marker}</body></html>".encode("ascii"), "application/x-download"),
+            (b"PK\x03\x04archive", "application/vnd.airvpn.profile"),
+            (b"\x1f\x8b\x08compressed", "application/x-download"),
+            (b"not-a-wireguard-profile", "application/vnd.airvpn.profile"),
         )
+        for payload, content_type in cases:
+            with self.subTest(content_type=content_type, prefix=payload[:4]):
+                response = _Response(payload, content_type=content_type)
+                result = self._run_generator(response=response)
+                self.assertEqual(result.return_code, 6)
+                self.assertEqual(result.stdout, "failure\ttransient\tphase=profile\n")
+                self.assertEqual(
+                    result.stderr,
+                    "ERROR: authenticated provider request failed\n",
+                )
+                self.assertNotIn(marker, result.stdout)
+                self.assertNotIn(marker, result.stderr)
+                self.assertEqual(result.output_stream.write_calls, [])
+                self.assertEqual(result.output_stream.snapshot, b"")
+                self.assertEqual(response.read_calls, [airvpn_api.MAX_PROFILE_BYTES + 1])
+                self.assertTrue(response.closed)
 
-        result = self._run_generator(response=response)
-
-        self.assertEqual(result.return_code, 6)
-        self.assertEqual(result.stdout, "failure\ttransient\tphase=profile\n")
-        self.assertEqual(
-            result.stderr,
-            "ERROR: authenticated provider request failed\n",
+    def test_compatibility_media_label_still_sniffs_json_envelopes(self):
+        marker = "provider-json-under-advisory-media"
+        result = self._run_generator(
+            response=_Response(
+                json.dumps({"error": marker}).encode("ascii"),
+                content_type="application/x-download",
+            )
         )
-        self.assertNotIn(marker, result.stdout)
+        self.assertEqual(result.return_code, 4)
+        self.assertEqual(result.stdout, "")
         self.assertNotIn(marker, result.stderr)
         self.assertEqual(result.output_stream.write_calls, [])
-        self.assertEqual(result.output_stream.snapshot, b"")
+
+        result = self._run_generator(
+            response=_Response(
+                b"{" + marker.encode("ascii"),
+                content_type="application/vnd.airvpn.profile",
+            )
+        )
+        self.assertEqual(result.return_code, 6)
+        self.assertEqual(
+            result.stdout,
+            "failure\ttransient\tphase=response\treason=json\n",
+        )
+        self.assertNotIn(marker, result.stderr)
+        self.assertEqual(result.output_stream.write_calls, [])
 
     def test_response_media_reasons_are_specific_and_redacted(self):
         marker = "provider-content-type-sentinel"
@@ -196,7 +256,7 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
                 "type",
                 _Response(
                     _generator_profile(),
-                    content_type=f"application/{marker}",
+                    content_type=f"multipart/{marker}",
                 ),
                 "media_type",
             ),
@@ -242,6 +302,9 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             "application/json; charset=iso-8859-1",
             "text/plain; charset=utf-8; boundary=unexpected",
             "application/x-wireguard-profile; charset=utf-8",
+            "application/x-download; charset=utf-8",
+            "text/x-wireguard; charset=iso-8859-1",
+            'text/x-wireguard; charset="utf-8"',
         ):
             with self.subTest(parameter_value=parameter_value):
                 response = _Response(_generator_profile(), content_type=parameter_value)

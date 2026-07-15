@@ -47,12 +47,14 @@ All notable changes to this project are documented here. Release numbers follow
   only an exact local phase and optional response-reason enum for safe troubleshooting.
 - Updated the SHA-pinned GitHub artifact actions used by future release workflows
   to their Node 24 versions.
-- Authenticated generation explicitly requests AirVPN's raw single-profile `format=text`
-  output, prefers `application/x-wireguard-profile` then `text/plain`, and requests
-  identity content encoding. Its low-priority request wildcard preserves negotiation
-  reachability without widening the exact response allowlist. No live provider header is
-  retained or asserted; actual HTML, OS-specific archives, and unknown media types remain
-  rejected before candidate writing or mutation.
+- Authenticated generation uses a fixed `GET` with `system=other` and omits the
+  undocumented `format=text` parameter. It prefers `application/x-wireguard-profile`, then
+  `text/plain`, requests identity content encoding, and uses a low-priority wildcard only
+  for negotiation. Responses require HTTP 200, exactly one syntactically valid content
+  type, no non-identity encoding, and a 64-KiB bound. HTML, multipart, and known ZIP, gzip,
+  tar, 7z, bzip2, and xz types are rejected; other syntactically valid parameterless labels
+  are advisory and never bypass JSON handling, strict profile parsing, endpoint checks, or
+  identity pinning. AirVPN is not asserted to document a success MIME type.
 
 ### Security
 

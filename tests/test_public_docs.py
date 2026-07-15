@@ -172,6 +172,26 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertRegex(text, r"(?is)top-level.{0,100}`error`")
         self.assertNotRegex(text, r"(?i)curl\s+(?:-[^\s]*v|--verbose)")
 
+    def test_public_docs_match_the_advisory_generator_media_contract(self) -> None:
+        for path in (README, OPERATIONS, RELEASE_NOTE):
+            text = read_text(path)
+            with self.subTest(path=path.name):
+                self.assertRegex(
+                    text,
+                    r"(?is)(omit|without|does not send).{0,80}`format=text`",
+                )
+                self.assertRegex(text, r"(?is)HTTP 200.{0,180}(64 KiB|64-KiB)")
+                self.assertIn("identity", text.lower())
+                self.assertIn("advisory", text.lower())
+                self.assertRegex(text, r"(?i)(?:`text/html`|\bHTML\b)")
+                self.assertRegex(text, r"(?i)(?:`multipart/\*`|\bmultipart\b)")
+                self.assertRegex(text, r"(?is)JSON.{0,220}WireGuard")
+                self.assertRegex(text, r"(?is)endpoint.{0,120}identity")
+                self.assertNotRegex(
+                    text,
+                    r"(?is)(unknown|download-specific) media types.{0,80}(fail|reject)",
+                )
+
     def test_credential_lifecycle_is_documented_without_secret_cli_or_environment_input(self) -> None:
         text = self.current_public_text()
         self.assertIn("/etc/wireguard/healthcheck.d/<iface>.api-key", text)

@@ -101,14 +101,20 @@ in `result`; its current authentication boundary can instead return one non-empt
 rejections. Contradictory or malformed JSON fails closed as a retryable response-contract
 error.
 
-Authenticated generator requests prefer `application/x-wireguard-profile`, then
-`text/plain`, and explicitly request identity content encoding. A low-priority `*/*`
-request fallback preserves HTTP negotiation reachability; it never widens the response
-parser. The helper accepts the WireGuard profile media type only without parameters, and
-every non-JSON body must still pass the canonical WireGuard grammar and selected-endpoint
-check before any candidate is written. No live provider header was retained or identified
-to select this policy. Actual HTML, archives, multipart data, unsupported encodings, and
-unknown media types fail closed.
+Authenticated generation is one fixed `GET` using `system=other`; it does not send the
+undocumented `format=text` parameter. Requests prefer `application/x-wireguard-profile`,
+then `text/plain`, with low-priority `*/*`, and explicitly request identity content
+encoding. The wildcard is only an HTTP negotiation fallback and never widens payload
+acceptance. A response must be HTTP 200, no larger than 64 KiB, have no non-identity
+content encoding, and have exactly one syntactically valid `Content-Type`.
+
+`text/html`, every `multipart/*` type, and known archive/compression media types—including
+ZIP, gzip, tar, 7z, bzip2, and xz—are rejected. A parameter is allowed only as one
+unquoted `charset=utf-8` or `charset=us-ascii` on `application/json` or `text/*`. Other syntactically valid,
+parameterless media labels are advisory rather than a MIME allowlist. JSON envelopes are
+handled as response envelopes; every non-JSON body must still pass canonical WireGuard
+parsing, the selected-endpoint check, and identity pinning before any candidate is written.
+The project does not claim that AirVPN documents a success MIME type.
 
 Generated provider profiles always reject every executable hook. During identity-pinned adoption and rotation, a validated root-owned installed profile may retain repeated `PostUp` and `PostDown` commands in their original order; these remain local code executed as root by `wg-quick`. Review them before setup. `PreUp`, `PreDown`, `SaveConfig`, peer hooks, and unknown directives block API adoption without changing the installed profile.
 

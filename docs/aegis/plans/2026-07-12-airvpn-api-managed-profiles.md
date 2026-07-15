@@ -319,10 +319,11 @@ status and egress paths remain credential-free.
 **Verification:** `python3 -m unittest tests.test_airvpn_api.GeneratorBoundaryTests -v`.
 
 - [x] **Write RED tests.** Cover exact fixed URL/query/header, allowed ports, server/device
-  grammar, no redirects, only `text/plain` or `application/octet-stream` identity-encoded
-  bodies, JSON error on HTTP 200, 401/403/429/5xx/timeout classification, bounded
-  `Retry-After`, FD 3/4/5 behavior, closed descriptors, no partial candidate, and a sentinel
-  key absent from URL/argv/env/stdout/stderr/exception text.
+  grammar, no redirects, exactly one syntactically valid advisory media label, identity-only
+  encoding, bounded JSON-envelope handling, strict profile/endpoint/identity validation,
+  JSON error on HTTP 200, 401/403/429/5xx/timeout classification, bounded `Retry-After`, FD
+  3/4/5 behavior, closed descriptors, no partial candidate, and a sentinel key absent from
+  URL/argv/env/stdout/stderr/exception text.
 - [x] **Verify RED.** Require the new CLI/function tests to fail because the generator
   command is absent while all old tests pass.
 - [x] **Implement minimal client.** Add a generator-only no-redirect opener, exact GET

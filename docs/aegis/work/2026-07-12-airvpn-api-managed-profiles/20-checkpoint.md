@@ -4,10 +4,11 @@ Updated: 2026-07-14
 
 ## TodoCheckpointDraft
 
-- **Current todo:** finish the bounded WireGuard-profile media negotiation candidate,
+- **Current todo:** finish the bounded, body-validated generator compatibility candidate,
   verify and install its exact package without changing the download VM's static profile,
-  then use one naturally permitted authenticated dry run. Apply API mode only after that
-  dry run generates and validates an identity-pinned profile.
+  then use the final naturally permitted authenticated dry run. If that dry run generates
+  and validates an identity-pinned profile, wait for rolling-window capacity to reopen
+  naturally before applying API mode; never reset or bypass the provider ledger.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -70,43 +71,49 @@ Updated: 2026-07-14
   immutable commit and remains reproducible on Ubuntu 22.04's Git 2.34 without relying on
   the newer `git archive --mtime` option; behavioral tests cover annotated tags and archive
   timestamps.
-- **Active slice:** exact candidate `eadae01` is installed and verified on the download VM
+- **Active slice:** exact candidate `671f5e0` is installed and verified on the download VM
   in static mode with the timer runtime-masked and inactive. The active profile and health
   configuration retain their preflight digests, `wg0` remains active, and no API credential
   is installed. The root-only source credential remains outside the package and repository.
-  Four backoff-compliant authenticated attempts reached HTTP success and failed closed at
-  the response media boundary without mutation. France has been removed from the default
-  policy; the intended allowlist is now `GB NL BE DE IE`. The current test-first slice
-  replaces the unsuccessful HTML policy exception with exact, parameterless
-  `application/x-wireguard-profile` response acceptance and explicit identity negotiation.
+  Five backoff-compliant authenticated attempts reached HTTP success and failed closed at
+  the response media boundary without mutation; the fifth proved that explicit
+  `application/x-wireguard-profile` negotiation did not match the provider response. France
+  has been removed from the default policy; the intended allowlist is now `GB NL BE DE IE`.
+  Public working examples omit the undocumented `format=text` query and consume the body as
+  a profile without documenting a success media type. The current test-first slice therefore
+  removes that query and treats any otherwise valid media label not identified as HTML,
+  multipart, or a known archive/compression type as advisory only. Bounded JSON handling and
+  strict WireGuard, expected-endpoint, and identity checks remain authoritative before any
+  write.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
-- **Evidence refs:** France removal commit `a11dd5d`; exact installed candidate `eadae01`;
-  exact package hashes `325b6b59bd95bb2223ebf3d9e3971cf73b02f3209622e8b4320aba32312628dc`
-  for tar and `cc4e89dc88e2c0d19d295dda55aa90652aa7cccdb6c03eb2a7345712b49a2d45`
-  for ZIP. Its native-Linux gate passed Python 206/206, all root/non-root health,
-  managed, and installer suites with only intentional privilege skips, reproducible release,
-  Bash syntax, both ShellCheck versions, systemd verification, and pinned Gitleaks across
-  full history and both archives. The current media-contract RED run failed only for the
-  missing headers/new type/retained HTML path; the matching GREEN run passed all four
-  focused tests, then all 88 provider and 17 public-documentation tests passed. Independent
-  Terra/Luna reviews found no secret, parser wildcard, content-encoding, or documentation
-  drift; their one 406-classification coverage request is now included.
-- **Blocked on:** the next exact candidate still needs its native-Linux gate and quiesced
-  installation. The persistent provider ledger recorded four of six rolling-window attempts
-  and two available slots after the fourth failure; the recorded backoff must reach zero
-  naturally before another authenticated request. The ledger will not be reset or bypassed.
-- **Next step:** finish local review, commit and run the exact Linux/package/secret gate,
+- **Evidence refs:** France removal commit `a11dd5d`; exact installed candidate `671f5e0`;
+  exact package hashes `45067ad284d3436e6f656ccc15c72f47b77a89dd6bb6be0d4003491f3ccf1ffc`
+  for tar, `84183f7e94f7c71e805d8483c092174cb34b7f0cefd06c7a205014fc94b7fdc6`
+  for ZIP. The authoritative `SHA256SUMS` digest is
+  `69ed003aeb86a7e3aec6bc9ccb911b8ffbc065cb77a24d31f8115c663d632a9e`.
+  Its native-Linux gate passed the complete Python, root/non-root health, managed, installer,
+  release, Bash syntax, ShellCheck, systemd, and pinned-Gitleaks history/archive checks. The
+  fifth dry run returned only `phase=response`, `reason=media_type`; all VM postconditions
+  remained unchanged. The current compatibility RED failed only at the intended query/media
+  assertions; its focused GREEN suite now passes, including HTML, ZIP, gzip, garbage, and
+  JSON-envelope bodies under advisory labels with no writes on failure.
+- **Blocked on:** the current compatibility candidate still needs exact native-Linux,
+  package, and secret verification followed by quiesced installation. The
+  persistent provider ledger records five of six rolling-window attempts and one available
+  slot; the recorded backoff must reach zero naturally before another authenticated request.
+  The ledger will not be reset or bypassed.
+- **Next step:** commit the reviewed diff and run the exact Linux/package/secret gate,
   install that exact package with the timer still masked, recheck the five-country public
-  inventory and provider backoff, then run one authenticated dry run. On success, use the
-  remaining naturally permitted call for identity-pinned API adoption before the later
-  rotation/rollback/five-cycle drill.
+  inventory and provider backoff, then run one authenticated dry run. On success, preserve
+  its validated result and wait for a rolling slot to reopen before identity-pinned API
+  adoption and the later rotation/rollback/five-cycle drill.
 
 ## ResumeStateHint
 
 - Primary checkout: repository `main` at the public baseline.
 - Implementation worktree: isolated feature worktree outside the public checkout.
 - Branch: `Herb/airvpn-api-profiles`
-- Last installed implementation commit: `eadae01`; its exact root/non-root Linux, release,
+- Last installed implementation commit: `671f5e0`; its exact root/non-root Linux, release,
   reproducibility, workflow, and secret gates passed. The VM runs that byte-identical
   candidate in verified static mode with the timer runtime-masked and inactive.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
@@ -122,7 +129,7 @@ Updated: 2026-07-14
 - **Fallbacks:** static mode is an explicit product choice, not a managed-error fallback.
 - **Retirement:** only obsolete "no credentials anywhere" assertions retire in v1.1.
 - **Complexity:** the three reviewed production exceptions are `bin/wg-healthcheck` at
-  2,214 lines, `libexec/airvpn-api` at 1,717 lines in the current slice, and `install.sh` at
+  2,214 lines, `libexec/airvpn-api` at 1,718 lines in the current slice, and `install.sh` at
   1,154 lines. The
   generated managed runtime remains one 3,935-line installed owner, assembled from nine
   fixed development fragments no longer than 693 lines. Provider tests use a 50-line
@@ -134,9 +141,11 @@ Updated: 2026-07-14
   failure-containment, key-removal, and static-routing evidence is accepted, while
   authenticated raw-profile success, live rollback/rotation, release, and API-mode VM
   migration remain unclaimed.
-- **Accepted diagnostic candidate:** exact installed commit `eadae01`; `phase=response`
+- **Accepted diagnostic candidate:** exact installed commit `671f5e0`; `phase=response`
   admits only the eleven fixed reason values recorded in the design. The next candidate
-  changes only HTTP negotiation and the exact response-media allowlist; it removes the
-  unsuccessful HTML branch, adds no persistent state or fallback, and remains below the
-  provider ceiling. Current focused/provider/docs evidence is green; exact Linux,
-  package, secret, and VM evidence remains the next gate.
+  removes the undocumented response-format query and makes a syntactically valid media
+  label advisory after explicit HTML, multipart, known archive/compression, encoding,
+  status, size, and JSON gates. It adds no persistent state or fallback and remains at the
+  frozen provider ceiling; strict profile/endpoint/identity validation still authorizes
+  every candidate. Focused provider/docs evidence and independent review are green; exact
+  Linux, package, secret, and VM evidence remains the next gate.
