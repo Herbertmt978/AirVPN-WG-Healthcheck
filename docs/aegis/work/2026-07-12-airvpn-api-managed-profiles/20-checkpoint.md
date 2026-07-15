@@ -4,11 +4,11 @@ Updated: 2026-07-15
 
 ## TodoCheckpointDraft
 
-- **Current todo:** wait for one rolling-window slot to reopen naturally, then reverify the
-  exact installed runtime candidate and use the validated setup path to adopt API mode on
-  the download VM. Keep the timer runtime-masked through adoption and the complete live
-  rollback, rotation, qBittorrent, routing, and repeated-cycle acceptance sequence; never
-  reset or bypass the provider ledger.
+- **Current todo:** wait for three rolling-window slots to be available naturally, then
+  reverify the exact installed runtime candidate and use the validated setup path to adopt
+  API mode on the download VM. Keep the timer runtime-masked through adoption and the
+  complete live rollback, rotation, qBittorrent, routing, and repeated-cycle acceptance
+  sequence; never reset or bypass the provider ledger.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -81,8 +81,13 @@ Updated: 2026-07-15
   strict WireGuard, expected-endpoint, and fixed-device identity checks. The dry run changed
   no profile, configuration, timer, worker, interface, installed credential, candidate, or
   recovery artifact. Its required accounting record advanced the natural ledger to six of
-  six active attempts with `failure_class=none` and no backoff. API adoption must wait for
-  the oldest slot to expire naturally.
+  six active attempts with `failure_class=none` and no backoff. At the first scheduled
+  adoption gate, one slot had reopened and every VM/provider invariant passed. A direct
+  setup call-graph audit then proved that first-time static-to-API setup performs three
+  separately accounted generator attempts: prospective validation, installed-credential
+  revalidation, and activation. Starting with one slot would therefore consume capacity
+  and force rollback before adoption. No authenticated request or VM mutation was made;
+  adoption now waits for three natural slots.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
 - **Evidence refs:** France removal commit `a11dd5d`; exact installed runtime candidate
   `92e2890`; complete-history bundle digest
@@ -96,14 +101,15 @@ Updated: 2026-07-15
   systemd, and pinned-Gitleaks history/archive checks. The sixth dry run returned rc 0 and
   only the setup tool's fixed redacted success contract; all static-mode postconditions
   remained unchanged and its private temporary capture was removed.
-- **Blocked on:** the persistent provider ledger now records six of six active rolling-window
-  attempts. It has no failure backoff, but API adoption must wait for the oldest attempt to
-  expire naturally. The ledger will not be reset or bypassed.
-- **Next step:** when one natural slot reopens, reverify exact installed bytes, profile and
-  configuration digests, source-credential metadata, timer/worker inactivity, `wg0`,
-  qBittorrent, recovery artifacts, five-country public eligibility, and ledger capacity.
-  Then perform one API-mode apply for fixed device `DownloadVM`, followed by the complete
-  identity-pinned adoption, rollback, rotation, and repeated-cycle live acceptance sequence.
+- **Blocked on:** one of the three required rolling-window slots is currently available;
+  two more attempts must expire naturally before the transactional apply can complete. The
+  ledger has no failure backoff and will not be reset or bypassed.
+- **Next step:** when three natural slots are available, reverify exact installed bytes,
+  profile and configuration digests, source-credential metadata, timer/worker inactivity,
+  `wg0`, qBittorrent, recovery artifacts, five-country public eligibility, and ledger
+  capacity. Then perform one API-mode apply for fixed device `DownloadVM`, followed by the
+  complete identity-pinned adoption, rollback, rotation, and repeated-cycle live acceptance
+  sequence.
 
 ## ResumeStateHint
 

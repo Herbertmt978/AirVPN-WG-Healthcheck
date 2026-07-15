@@ -133,6 +133,14 @@ intentional safety controls, not a quota to consume or bypass. Its authenticated
 per interface, but the provider ceiling is per source IP; operators running many interfaces
 behind one address must budget and stagger their aggregate requests.
 
+First-time static-to-API setup normally uses three authenticated generator attempts: one
+prospective identity validation, one validation after the credential is installed through
+the private-file boundary, and one identity-pinned activation. All three count toward the
+six-attempt rolling limit. If earlier dry runs leave fewer than three slots, wait for enough
+slots to reopen naturally before applying; do not reset API state to make room. Setup remains
+transactional and keeps the timer disabled, but starting without sufficient capacity can
+consume a slot and then require rollback rather than completing adoption.
+
 The authenticated generator origin is fixed in code. `AIRVPN_STATUS_URL` and
 `AIRVPN_WHATISMYIP_URL` are accepted only from the root-owned configuration so controlled
 tests and trusted proxies remain possible, but they are still trust-boundary overrides.

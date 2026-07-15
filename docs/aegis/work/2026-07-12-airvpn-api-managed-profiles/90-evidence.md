@@ -662,8 +662,20 @@ the actual release contract successfully.
   preserved the runtime timer mask and inactive worker, left `wg0` active and qBittorrent
   proved, created no candidate or recovery artifact, and removed its private temporary
   capture. The ledger was not reset, rewritten, or bypassed.
+- At the first scheduled adoption gate, exact installed bytes, profile/configuration/state
+  digests, root-only source-credential metadata, timer/worker inactivity, free locks,
+  recovery-artifact absence, active `wg0`, static status, qBittorrent proof, five-country
+  public eligibility, and the strict provider ledger all passed. One of six rolling slots
+  had reopened naturally and backoff remained zero.
+- Before mutation, a direct setup call-graph review found that first-time static-to-API
+  adoption makes three separately accounted generator attempts: prospective dry-run
+  validation, installed-credential dry-run revalidation, and identity-pinned apply. With
+  only one slot, starting the transaction would consume that slot and force rollback before
+  activation. The apply was therefore deferred without an authenticated request or VM
+  mutation; the timer remains runtime-masked and static operation remains proved while two
+  more slots reopen naturally.
 
 API apply, live rollback/rotation, release, tag, and publication remain unclaimed. The VM
-remains in verified static mode with the timer runtime-masked. The rolling ledger is full;
-API adoption must wait for the oldest attempt to expire naturally before the next
-authenticated operation.
+remains in verified static mode with the timer runtime-masked. API adoption requires three
+available rolling slots; one is currently available and two more must reopen naturally
+before the single transactional apply.
