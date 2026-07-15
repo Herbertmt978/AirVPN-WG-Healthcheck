@@ -147,6 +147,18 @@ byte bounds, and strict archive/content rejection are unchanged. No response bod
 complete header set was retained, so the rejected response's exact media type is
 intentionally not asserted.
 
+A third backoff-compliant request used the refined fixed reason contract and returned
+`phase=response`, `reason=media_type`, again without changing the profile, configuration,
+credential installation, timer, or live interface. The compatibility amendment admits
+only the exact `text/html` label, optionally with one exact unquoted UTF-8 or US-ASCII
+charset token, to cover legacy PHP-style raw-text metadata. This is a bounded policy
+exception, not a claim about the discarded live header. The label conveys no HTML
+authority: the existing byte bound, JSON-envelope handling, strict WireGuard grammar,
+identity pinning, and expected-endpoint check remain mandatory before any candidate
+write. Actual HTML and every other newly unrecognized type still fail closed. This
+exception is deliberately narrower than accepting download-specific, wildcard, archive,
+or multipart media types.
+
 That repeated result permits one narrower diagnostic: `phase=response` may add exactly one
 local reason from `status`, `encoding`, `media_missing`, `media_multiple`, `media_invalid`,
 `media_type`, `media_parameter`, `read`, `size`, `json`, or `protocol`.

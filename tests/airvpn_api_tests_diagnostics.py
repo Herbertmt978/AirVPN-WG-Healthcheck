@@ -74,6 +74,10 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             "text/plain",
             "text/plain; charset=utf-8",
             "text/plain; charset=us-ascii",
+            "text/html",
+            "text/html; charset=utf-8",
+            "text/html; charset=us-ascii",
+            "TEXT/HTML; CHARSET=UTF-8",
             "application/octet-stream",
         ):
             for content_encoding in (None, "identity"):
@@ -99,7 +103,7 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             transport_statuses.append(response)
         rejected = (
             (_Response(_generator_profile(), content_type=None), "media_missing"),
-            (_Response(_generator_profile(), content_type="text/html"), "media_type"),
+            (_Response(_generator_profile(), content_type="application/x-download"), "media_type"),
             (_Response(_generator_profile(), content_type="application/zip"), "media_type"),
             (
                 _Response(
@@ -134,6 +138,10 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             "text/plain",
             "text/plain; charset=utf-8",
             "text/plain; charset=us-ascii",
+            "text/html",
+            "text/html; charset=utf-8",
+            "text/html; charset=us-ascii",
+            "TEXT/HTML; CHARSET=UTF-8",
             "application/octet-stream",
             "application/json",
             "application/json; charset=utf-8",
@@ -143,8 +151,28 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             with self.subTest(content_type=content_type):
                 self.assertEqual(
                     airvpn_api._response_media_type({"Content-Type": content_type}),
-                    content_type.split(";", 1)[0],
+                    content_type.split(";", 1)[0].lower(),
                 )
+
+    def test_html_label_never_bypasses_strict_profile_parsing(self):
+        marker = "provider-html-sentinel"
+        response = _Response(
+            f"<html><body>{marker}</body></html>".encode("ascii"),
+            content_type="text/html; charset=utf-8",
+        )
+
+        result = self._run_generator(response=response)
+
+        self.assertEqual(result.return_code, 6)
+        self.assertEqual(result.stdout, "failure\ttransient\tphase=profile\n")
+        self.assertEqual(
+            result.stderr,
+            "ERROR: authenticated provider request failed\n",
+        )
+        self.assertNotIn(marker, result.stdout)
+        self.assertNotIn(marker, result.stderr)
+        self.assertEqual(result.output_stream.write_calls, [])
+        self.assertEqual(result.output_stream.snapshot, b"")
 
     def test_response_media_reasons_are_specific_and_redacted(self):
         marker = "provider-content-type-sentinel"
@@ -216,6 +244,9 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             "application/octet-stream; charset=utf-8",
             "application/json; charset=iso-8859-1",
             "text/plain; charset=utf-8; boundary=unexpected",
+            "text/html; charset=iso-8859-1",
+            'text/html; charset="utf-8"',
+            "text/html; charset=utf-8; boundary=unexpected",
         ):
             with self.subTest(parameter_value=parameter_value):
                 response = _Response(_generator_profile(), content_type=parameter_value)

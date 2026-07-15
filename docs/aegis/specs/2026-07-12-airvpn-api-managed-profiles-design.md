@@ -366,11 +366,18 @@ validation.
 
 The request has a 20-second default timeout capped at 60 seconds, rejects every redirect,
 and accepts at most 64 KiB. HTTP 200 may contain a JSON error and therefore is not treated
-as success. The helper explicitly requests AirVPN's `system=other` raw profile form and
-accepts only the expected WireGuard text content or a bounded JSON error object; it rejects
-HTML, OS archives, multipart data, unsupported content encodings, and any unexpected
-content type. Synthetic redacted response-shape fixtures provide deterministic contract
-tests without retaining credentials or generated key material.
+as success. The helper explicitly requests AirVPN's `system=other` raw profile form. Its
+media allowlist is `text/plain`, `text/html`, `application/octet-stream`, and
+`application/json`; textual and JSON responses may carry exactly one unquoted,
+case-insensitive `charset=utf-8` or `charset=us-ascii` token, while octet-stream remains
+parameterless. `text/html` is a conservative
+compatibility-policy exception for AirVPN's raw generator endpoint, not a claim about the
+discarded live header and not permission to interpret HTML. Every non-JSON body must still
+pass the exact WireGuard profile and selected-endpoint grammar, so actual HTML and archive
+bytes fail before a candidate write or mutation. Declared archives, multipart data,
+download-specific or unknown media types, and unsupported content encodings remain
+rejected. Synthetic redacted response-shape fixtures provide deterministic contract tests
+without retaining credentials or generated key material.
 
 AirVPN documents exact top-level `result: "ok"` as API success and otherwise uses `result`
 for the error message. Its current authentication boundary can instead emit a top-level
@@ -386,8 +393,9 @@ also emit one exact local reason: `status`, `encoding`, `media_missing`, `media_
 These values identify the helper branch only. They must not contain, encode,
 or cause retention of an actual status, header name or value, URL, body, device, server,
 credential-derived value, or provider message. The runtime admits only newline-exact
-allowlisted manifests. Adding this diagnostic does not broaden the accepted media types,
-content encodings, status codes, JSON envelope, profile grammar, or request contract.
+allowlisted manifests. The diagnostic itself does not broaden content encodings, status
+codes, JSON envelopes, profile grammar, or request parameters; the sole media compatibility
+amendment is the separately specified exact `text/html` label above.
 
 Required structure:
 
