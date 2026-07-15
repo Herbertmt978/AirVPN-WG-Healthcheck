@@ -48,11 +48,11 @@ All notable changes to this project are documented here. Release numbers follow
 - Updated the SHA-pinned GitHub artifact actions used by future release workflows
   to their Node 24 versions.
 - Authenticated generation explicitly requests AirVPN's raw single-profile `format=text`
-  output. The media allowlist has a conservative exact `text/html` compatibility-policy
-  exception only when the bounded body passes the canonical WireGuard and
-  selected-endpoint grammar; no live provider header is retained or asserted. Actual HTML,
-  OS-specific archives, and unknown media types remain rejected before candidate writing
-  or mutation.
+  output, prefers `application/x-wireguard-profile` then `text/plain`, and requests
+  identity content encoding. Its low-priority request wildcard preserves negotiation
+  reachability without widening the exact response allowlist. No live provider header is
+  retained or asserted; actual HTML, OS-specific archives, and unknown media types remain
+  rejected before candidate writing or mutation.
 
 ### Security
 

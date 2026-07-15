@@ -103,14 +103,14 @@ text, URL, device, endpoint, or response body:
 - `phase=internal` means an unexpected local helper failure was contained at the secret
   boundary.
 
-As a conservative compatibility-policy exception for AirVPN's raw generator endpoint, the
-helper admits the exact `text/html` media label only without parameters or with one exact
-unquoted, case-insensitive `charset=utf-8` or `charset=us-ascii` token. No live provider
-header was retained or identified to select this exception. The helper never interprets
-HTML: the bounded body must still satisfy the strict WireGuard profile and
-selected-endpoint contract, so an actual HTML page fails as `phase=profile` before any
-candidate write or state mutation. Archives, multipart responses, download-specific and
-unknown media types remain rejected.
+Authenticated generator requests prefer `application/x-wireguard-profile`, then
+`text/plain`, and send `Accept-Encoding: identity`. The low-priority `*/*` entry in the
+request is only an HTTP negotiation fallback; it does not create wildcard parser
+acceptance. The helper admits `application/x-wireguard-profile` only without parameters,
+and the bounded body must still satisfy the strict WireGuard profile and selected-endpoint
+contract. No live provider header was retained or identified to select this policy.
+Actual HTML, archives, multipart responses, download-specific and unknown media types,
+and unsupported content encodings remain rejected before any candidate write or mutation.
 
 The reason values describe only the helper branch that rejected the response. They never
 contain the actual status, header name or value, URL, body, device, server, or provider

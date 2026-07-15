@@ -149,15 +149,22 @@ intentionally not asserted.
 
 A third backoff-compliant request used the refined fixed reason contract and returned
 `phase=response`, `reason=media_type`, again without changing the profile, configuration,
-credential installation, timer, or live interface. The compatibility amendment admits
-only the exact `text/html` label, optionally with one exact unquoted UTF-8 or US-ASCII
-charset token, to cover legacy PHP-style raw-text metadata. This is a bounded policy
-exception, not a claim about the discarded live header. The label conveys no HTML
-authority: the existing byte bound, JSON-envelope handling, strict WireGuard grammar,
-identity pinning, and expected-endpoint check remain mandatory before any candidate
-write. Actual HTML and every other newly unrecognized type still fail closed. This
-exception is deliberately narrower than accepting download-specific, wildcard, archive,
-or multipart media types.
+credential installation, timer, or live interface. A fourth implementation enabled the
+exact `text/html` raw-text policy exception, but the live response returned the same
+`media_type` reason with all state unchanged, so that unproductive exception is removed
+rather than retained.
+
+The next bounded contract advertises
+`application/x-wireguard-profile, text/plain;q=0.9, */*;q=0.01` and explicitly requests
+identity content encoding. The parameterless `application/x-wireguard-profile` response
+type follows a publicly documented
+[WireGuard-profile API convention](https://docs.eduvpn.org/server/v3/api.html), not a claim
+about the discarded AirVPN header. The low-priority wildcard exists only in
+request negotiation to avoid converting a supported but differently labelled response
+into HTTP 406; parser acceptance remains exact. The existing byte bound, JSON-envelope
+handling, strict WireGuard grammar, identity pinning, and expected-endpoint check remain
+mandatory before any candidate write. HTML, download-specific, wildcard, archive, and
+multipart response media types still fail closed.
 
 That repeated result permits one narrower diagnostic: `phase=response` may add exactly one
 local reason from `status`, `encoding`, `media_missing`, `media_multiple`, `media_invalid`,

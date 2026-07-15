@@ -572,8 +572,33 @@ the actual release contract successfully.
   egress URL overrides, aggregate multi-interface rate budgeting, and IPv4/IPv6 leak-policy
   boundaries are now explicit in the operator documentation.
 
+- After rolling-window capacity reopened naturally, a third authenticated attempt on the
+  refined reason contract returned `phase=response`, `reason=media_type`. Exact candidate
+  `eadae01` then enabled the conservative HTML-label policy and a fourth attempt returned
+  the same reason. Both attempts preserved the profile/configuration digests, left the
+  source credential uninstalled, kept the timer masked and inactive, and left `wg0` active.
+  The provider ledger recorded four of six attempts and retained its required backoff; it
+  was not reset or bypassed.
+- Exact `eadae01` passed the native-Linux root/non-root, generated-runtime, Bash syntax,
+  ShellCheck, systemd, reproducible release, checksum, and pinned Gitleaks full-history and
+  archive gates. Its tar and ZIP SHA-256 values are
+  `325b6b59bd95bb2223ebf3d9e3971cf73b02f3209622e8b4320aba32312628dc` and
+  `cc4e89dc88e2c0d19d295dda55aa90652aa7cccdb6c03eb2a7345712b49a2d45`.
+  That exact package is installed byte-for-byte on the VM in verified static mode.
+- France was removed from the shipped starting policy in commit `a11dd5d`; runtime,
+  configuration example, tests, README, changelog, and release notes consistently use
+  `GB NL BE DE IE` while preserving operator-selected countries and explicit `ALL`.
+- The next media-contract slice was implemented test-first. RED evidence showed the exact
+  missing `Accept`/`Accept-Encoding` headers, unrecognized WireGuard profile media type,
+  and still-admitted HTML path. GREEN evidence passed the four focused boundary tests,
+  all 88 provider tests, and all 17 public-documentation tests. The request now prefers
+  the publicly documented parameterless `application/x-wireguard-profile` convention,
+  then text/plain, with identity encoding and a low-priority request-only wildcard. Parser
+  acceptance remains exact; HTML and parameterized profile types fail closed. Terra/Luna
+  reviews found no secret or contract drift and requested one explicit 406-permanent
+  regression assertion, which was added without changing runtime behavior.
+
 Authenticated raw-profile success, API apply, live rollback/rotation, release, tag, and
-publication remain unclaimed. The six-attempt rolling cap does not naturally reopen until
-2026-07-14 17:25:27 UTC and will not be reset or bypassed. The VM remains in verified static
-mode; any later production migration requires both a proven generator contract and a fresh
-credential that was not shared in chat.
+publication remain unclaimed. The current exact candidate still requires its Linux/package/
+secret gate and quiesced VM installation. The VM remains in verified static mode, and the
+next authenticated request must wait for the recorded backoff to expire naturally.

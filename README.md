@@ -101,13 +101,14 @@ in `result`; its current authentication boundary can instead return one non-empt
 rejections. Contradictory or malformed JSON fails closed as a retryable response-contract
 error.
 
-As a conservative compatibility-policy exception for AirVPN's raw generator endpoint, the
-exact `text/html` label is accepted with no parameter or one exact unquoted,
-case-insensitive `charset=utf-8` or `charset=us-ascii` token. No live provider header was
-retained or identified to select this exception. The label grants no HTML semantics: the
-bounded body must still pass the canonical WireGuard grammar and selected-endpoint check
-before any candidate is written. Actual HTML, archives, multipart data, and unknown media
-types fail closed.
+Authenticated generator requests prefer `application/x-wireguard-profile`, then
+`text/plain`, and explicitly request identity content encoding. A low-priority `*/*`
+request fallback preserves HTTP negotiation reachability; it never widens the response
+parser. The helper accepts the WireGuard profile media type only without parameters, and
+every non-JSON body must still pass the canonical WireGuard grammar and selected-endpoint
+check before any candidate is written. No live provider header was retained or identified
+to select this policy. Actual HTML, archives, multipart data, unsupported encodings, and
+unknown media types fail closed.
 
 Generated provider profiles always reject every executable hook. During identity-pinned adoption and rotation, a validated root-owned installed profile may retain repeated `PostUp` and `PostDown` commands in their original order; these remain local code executed as root by `wg-quick`. Review them before setup. `PreUp`, `PreDown`, `SaveConfig`, peer hooks, and unknown directives block API adoption without changing the installed profile.
 

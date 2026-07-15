@@ -4,9 +4,10 @@ Updated: 2026-07-14
 
 ## TodoCheckpointDraft
 
-- **Current todo:** after enough provider-ledger slots reopen naturally, complete Task 15
-  download-VM authenticated generator acceptance with the fresh private credential, then
-  run the API adoption, rollback, rotation, final API-mode handoff, and five-cycle drill.
+- **Current todo:** finish the bounded WireGuard-profile media negotiation candidate,
+  verify and install its exact package without changing the download VM's static profile,
+  then use one naturally permitted authenticated dry run. Apply API mode only after that
+  dry run generates and validates an identity-pinned profile.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -69,50 +70,45 @@ Updated: 2026-07-14
   immutable commit and remains reproducible on Ubuntu 22.04's Git 2.34 without relying on
   the newer `git archive --mtime` option; behavioral tests cover annotated tags and archive
   timestamps.
-- **Active slice:** exact candidate `b44d320` is installed and verified on the download VM
-  in static mode. A newly created credential supplied outside chat has passed metadata-only
-  ownership, mode, size, and shape checks without its content being read or printed. The
-  owner supplied the fixed device name and retained the existing six-country allowlist.
-  Authenticated acceptance is waiting on the rolling provider window; the latest public
-  inventory currently exposes eligible servers for five of those six countries.
+- **Active slice:** exact candidate `eadae01` is installed and verified on the download VM
+  in static mode with the timer runtime-masked and inactive. The active profile and health
+  configuration retain their preflight digests, `wg0` remains active, and no API credential
+  is installed. The root-only source credential remains outside the package and repository.
+  Four backoff-compliant authenticated attempts reached HTTP success and failed closed at
+  the response media boundary without mutation. France has been removed from the default
+  policy; the intended allowlist is now `GB NL BE DE IE`. The current test-first slice
+  replaces the unsuccessful HTML policy exception with exact, parameterless
+  `application/x-wireguard-profile` response acceptance and explicit identity negotiation.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
-- **Evidence refs:** response-envelope commits `5e7b4f9` and `7f75fe8`, portable-release
-  commit `0e19ba6`, documentation commits `2ead395` and `2121085`, and lint annotation
-  commit `b44d320`. Exact `b44d320` native-Linux verification: Python root 206/206;
-  static/runtime root and non-root 89/89 each; managed root 125/125 and non-root 120 passed
-  with five intentional root-only skips; installer root 58 passed with one intentional skip
-  and non-root 59/59; 27-file annotated-tag release checks; generated-runtime, Bash syntax,
-  systemd, and ShellCheck 0.9/0.11 gates passed. Pinned Gitleaks found no leaks through the
-  release candidate's history or either extracted archive. Independent Terra/Luna final
-  reviews returned READY. The exact `b44d320` package is installed byte-for-byte on the VM
-  without changing the active static profile, health configuration, or six-attempt provider
-  ledger. Manual and timer-triggered static checks passed with WireGuard up, AirVPN egress
-  verified, qBittorrent proved, no installed API key or recovery artifact, and the timer
-  enabled and active. The repository remains public with only `v1.0.0` released; current
-  `origin/main` CI is green and GitHub reports no open secret-scanning alerts. Branch
-  `HEAD` differs from the installed candidate only in this checkpoint record.
-- **Blocked on:** both authenticated generator dry runs failed closed at the same
-  secret-free `phase=response` boundary. The six-attempt rolling cap is full; historical
-  slots expire naturally between 2026-07-14 17:25:27 UTC and 21:37:36 UTC. One slot is
-  sufficient for the dry run, but the two-call setup transactions must wait until two slots
-  are simultaneously available. The complete six-call acceptance cannot finish before the
-  final historical slot expires. The retained country policy must also be fully represented
-  in the fresh public eligibility inventory before setup may read the credential.
-- **Next step:** at the first natural slot, recheck the public country inventory and run
-  one controlled generator dry run only if all six selected countries are eligible. On
-  success, use later naturally reopened slots for identity-pinned API adoption, a real
-  managed rotation, verified static rollback, final API adoption, qBittorrent containment,
-  tunnel-bound egress, and five timer cycles. Do not reset the provider ledger or use the
-  credential that was shared in chat.
+- **Evidence refs:** France removal commit `a11dd5d`; exact installed candidate `eadae01`;
+  exact package hashes `325b6b59bd95bb2223ebf3d9e3971cf73b02f3209622e8b4320aba32312628dc`
+  for tar and `cc4e89dc88e2c0d19d295dda55aa90652aa7cccdb6c03eb2a7345712b49a2d45`
+  for ZIP. Its native-Linux gate passed Python 206/206, all root/non-root health,
+  managed, and installer suites with only intentional privilege skips, reproducible release,
+  Bash syntax, both ShellCheck versions, systemd verification, and pinned Gitleaks across
+  full history and both archives. The current media-contract RED run failed only for the
+  missing headers/new type/retained HTML path; the matching GREEN run passed all four
+  focused tests, then all 88 provider and 17 public-documentation tests passed. Independent
+  Terra/Luna reviews found no secret, parser wildcard, content-encoding, or documentation
+  drift; their one 406-classification coverage request is now included.
+- **Blocked on:** the next exact candidate still needs its native-Linux gate and quiesced
+  installation. The persistent provider ledger recorded four of six rolling-window attempts
+  and two available slots after the fourth failure; the recorded backoff must reach zero
+  naturally before another authenticated request. The ledger will not be reset or bypassed.
+- **Next step:** finish local review, commit and run the exact Linux/package/secret gate,
+  install that exact package with the timer still masked, recheck the five-country public
+  inventory and provider backoff, then run one authenticated dry run. On success, use the
+  remaining naturally permitted call for identity-pinned API adoption before the later
+  rotation/rollback/five-cycle drill.
 
 ## ResumeStateHint
 
 - Primary checkout: repository `main` at the public baseline.
 - Implementation worktree: isolated feature worktree outside the public checkout.
 - Branch: `Herb/airvpn-api-profiles`
-- Last accepted implementation commit: `b44d320`; its exact root/non-root Linux, release,
+- Last installed implementation commit: `eadae01`; its exact root/non-root Linux, release,
   reproducibility, workflow, and secret gates passed. The VM runs that byte-identical
-  candidate in verified static mode with the timer enabled and active.
+  candidate in verified static mode with the timer runtime-masked and inactive.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -126,7 +122,8 @@ Updated: 2026-07-14
 - **Fallbacks:** static mode is an explicit product choice, not a managed-error fallback.
 - **Retirement:** only obsolete "no credentials anywhere" assertions retire in v1.1.
 - **Complexity:** the three reviewed production exceptions are `bin/wg-healthcheck` at
-  2,214 lines, `libexec/airvpn-api` at 1,718 lines, and `install.sh` at 1,154 lines. The
+  2,214 lines, `libexec/airvpn-api` at 1,717 lines in the current slice, and `install.sh` at
+  1,154 lines. The
   generated managed runtime remains one 3,935-line installed owner, assembled from nine
   fixed development fragments no longer than 693 lines. Provider tests use a 50-line
   compatibility loader plus bounded support/groups; health, managed, and installer runners
@@ -137,12 +134,9 @@ Updated: 2026-07-14
   failure-containment, key-removal, and static-routing evidence is accepted, while
   authenticated raw-profile success, live rollback/rotation, release, and API-mode VM
   migration remain unclaimed.
-- **Accepted diagnostic candidate:** exact commit `b44d320`; `phase=response` may add only
-  one local value from
-  `status`, `encoding`, `media`, `read`, `size`, `json`, or `protocol`. Current-tree Linux
-  and exact-commit verification passed Python 206/206, root/non-root health 89/89 each,
-  managed root 125/125 and non-root 120 with five intentional skips, installer root 58 with
-  one intentional skip and non-root 59/59, architecture 11/11, generated-source drift,
-  Bash syntax, ShellCheck, systemd, workflow, 27-file reproducible release, and redacted
-  Gitleaks history/tree/archive scans. Two independent Terra reviews and one Luna
-  documentation/API-scope review returned READY.
+- **Accepted diagnostic candidate:** exact installed commit `eadae01`; `phase=response`
+  admits only the eleven fixed reason values recorded in the design. The next candidate
+  changes only HTTP negotiation and the exact response-media allowlist; it removes the
+  unsuccessful HTML branch, adds no persistent state or fallback, and remains below the
+  provider ceiling. Current focused/provider/docs evidence is green; exact Linux,
+  package, secret, and VM evidence remains the next gate.

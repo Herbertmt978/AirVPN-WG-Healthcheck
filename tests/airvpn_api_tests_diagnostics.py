@@ -74,10 +74,8 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             "text/plain",
             "text/plain; charset=utf-8",
             "text/plain; charset=us-ascii",
-            "text/html",
-            "text/html; charset=utf-8",
-            "text/html; charset=us-ascii",
-            "TEXT/HTML; CHARSET=UTF-8",
+            "application/x-wireguard-profile",
+            "APPLICATION/X-WIREGUARD-PROFILE",
             "application/octet-stream",
         ):
             for content_encoding in (None, "identity"):
@@ -103,6 +101,7 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             transport_statuses.append(response)
         rejected = (
             (_Response(_generator_profile(), content_type=None), "media_missing"),
+            (_Response(_generator_profile(), content_type="text/html"), "media_type"),
             (_Response(_generator_profile(), content_type="application/x-download"), "media_type"),
             (_Response(_generator_profile(), content_type="application/zip"), "media_type"),
             (
@@ -138,10 +137,8 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             "text/plain",
             "text/plain; charset=utf-8",
             "text/plain; charset=us-ascii",
-            "text/html",
-            "text/html; charset=utf-8",
-            "text/html; charset=us-ascii",
-            "TEXT/HTML; CHARSET=UTF-8",
+            "application/x-wireguard-profile",
+            "APPLICATION/X-WIREGUARD-PROFILE",
             "application/octet-stream",
             "application/json",
             "application/json; charset=utf-8",
@@ -154,11 +151,11 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
                     content_type.split(";", 1)[0].lower(),
                 )
 
-    def test_html_label_never_bypasses_strict_profile_parsing(self):
+    def test_profile_media_label_never_bypasses_strict_profile_parsing(self):
         marker = "provider-html-sentinel"
         response = _Response(
             f"<html><body>{marker}</body></html>".encode("ascii"),
-            content_type="text/html; charset=utf-8",
+            content_type="application/x-wireguard-profile",
         )
 
         result = self._run_generator(response=response)
@@ -244,9 +241,7 @@ class GeneratorDiagnosticsTests(_GeneratorHarness, unittest.TestCase):
             "application/octet-stream; charset=utf-8",
             "application/json; charset=iso-8859-1",
             "text/plain; charset=utf-8; boundary=unexpected",
-            "text/html; charset=iso-8859-1",
-            'text/html; charset="utf-8"',
-            "text/html; charset=utf-8; boundary=unexpected",
+            "application/x-wireguard-profile; charset=utf-8",
         ):
             with self.subTest(parameter_value=parameter_value):
                 response = _Response(_generator_profile(), content_type=parameter_value)

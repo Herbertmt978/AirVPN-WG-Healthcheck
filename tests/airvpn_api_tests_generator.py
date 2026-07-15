@@ -205,6 +205,11 @@ class GeneratorBoundaryTests(unittest.TestCase):
         headers = {name.lower(): value for name, value in request.header_items()}
         self.assertEqual(headers["api-key"], self.API_KEY[:-1].decode("ascii"))
         self.assertEqual(headers["user-agent"], "wg-healthcheck/airvpn")
+        self.assertEqual(
+            headers["accept"],
+            "application/x-wireguard-profile, text/plain;q=0.9, */*;q=0.01",
+        )
+        self.assertEqual(headers["accept-encoding"], "identity")
         self.assertEqual(result.opener.open.call_args.kwargs, {"timeout": 1.0})
         self.assertEqual(len(result.build_opener.call_args.args), 1)
         redirect_handler = result.build_opener.call_args.args[0]
@@ -375,6 +380,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
             (401, 4),
             (403, 4),
             (404, 4),
+            (406, 4),
             (429, 5),
             (500, 6),
             (503, 6),

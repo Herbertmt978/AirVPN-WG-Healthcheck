@@ -1291,12 +1291,12 @@ def _response_media_type(headers):
         raise _generator_response_error(GeneratorTransientResponseReason.MEDIA_INVALID)
     parts = [part.strip() for part in content_type.split(";")]
     media_type = parts[0].lower()
-    if media_type not in ("text/plain", "text/html",
-                          "application/octet-stream", "application/json"):
+    if media_type not in ("text/plain", "application/x-wireguard-profile",
+                           "application/octet-stream", "application/json"):
         raise _generator_response_error(GeneratorTransientResponseReason.MEDIA_TYPE)
     parameters = parts[1:]
     if parameters:
-        allowed = media_type in ("text/plain", "text/html", "application/json") and \
+        allowed = media_type in ("text/plain", "application/json") and \
             len(parameters) == 1 and parameters[0].lower() in ("charset=utf-8", "charset=us-ascii")
         if not allowed:
             raise _generator_response_error(GeneratorTransientResponseReason.MEDIA_PARAMETER)
@@ -1492,10 +1492,9 @@ def _generate_profile_secret_body(
 
         request = urllib.request.Request(
             _generator_url(server, device, port),
-            headers={
-                "API-KEY": api_key,
-                "User-Agent": "wg-healthcheck/airvpn",
-            },
+            headers={"API-KEY": api_key, "User-Agent": "wg-healthcheck/airvpn",
+                     "Accept": "application/x-wireguard-profile, text/plain;q=0.9, */*;q=0.01",
+                     "Accept-Encoding": "identity"},
             method="GET",
         )
         response = _open_generator_response(request, timeout)
