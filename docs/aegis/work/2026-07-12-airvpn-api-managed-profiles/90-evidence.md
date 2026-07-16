@@ -777,3 +777,8 @@ paired rollback drill and controlled successful rotation.
   without retaining or disclosing its response or address. Provider-state bytes and the
   timer mask remained unchanged. No authenticated provider request was made after the
   failed controlled rotation, during the fix, packaging, deployment, or postflight.
+- The existing `resume-airvpn-final-dry-run` heartbeat was updated rather than duplicated.
+  It is scheduled for 11:30 BST on 2026-07-16 and requires exact corrected bytes, every live
+  safety postcondition, zero backoff, and one natural slot before exactly one controlled
+  rotation with no retry. It keeps the timer masked and defers five-cycle observation,
+  credential replacement, merge, tag, and publication to later reviewed stages.

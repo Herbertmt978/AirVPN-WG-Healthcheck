@@ -6,9 +6,9 @@ Updated: 2026-07-16
 
 - **Current todo:** keep exact corrected runtime `f0beafc` installed with the timer
   runtime-masked and make no further authenticated provider request in this evidence slice.
-  Refresh the continuation automation so a later clean preflight may use one natural
-  rolling-window slot for one controlled rotation; never reset, rewrite, or bypass the
-  provider ledger.
+  The existing continuation heartbeat is scheduled for 11:30 BST on 2026-07-16 and may use
+  one natural rolling-window slot for exactly one controlled rotation after a complete clean
+  preflight; never reset, rewrite, or bypass the provider ledger.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -105,8 +105,8 @@ Updated: 2026-07-16
   for the authoritative `SHA256SUMS`. Pinned Gitleaks 8.30.1 passed reachable history and
   both extracted archives.
 - **Blocked on:** no external blocker. A deliberate no-retry safety hold remains in force
-  for the rest of this slice. The ledger has no failure backoff and will not be reset,
-  rewritten, or bypassed.
+  for the rest of this slice until the scheduled continuation. The ledger has no failure
+  backoff and will not be reset, rewritten, or bypassed.
 - **Next step:** after the updated continuation revalidates exact `f0beafc` installed bytes
   and every VM safety postcondition, use at most one naturally available slot for exactly
   one controlled rotation. Keep the timer masked until that succeeds, then observe five
