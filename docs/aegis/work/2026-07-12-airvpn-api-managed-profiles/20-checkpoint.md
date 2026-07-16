@@ -4,11 +4,11 @@ Updated: 2026-07-16
 
 ## TodoCheckpointDraft
 
-- **Current todo:** commit the fully gated DNS-ownership correction and install its exact
-  reviewed runtime bytes on the download VM while the timer remains runtime-masked. Make
-  no further authenticated provider request in this evidence slice. Only a later clean preflight may
-  use one natural rolling-window slot for one controlled rotation; never reset, rewrite, or
-  bypass the provider ledger.
+- **Current todo:** keep exact corrected runtime `f0beafc` installed with the timer
+  runtime-masked and make no further authenticated provider request in this evidence slice.
+  Refresh the continuation automation so a later clean preflight may use one natural
+  rolling-window slot for one controlled rotation; never reset, rewrite, or bypass the
+  provider ledger.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -71,7 +71,7 @@ Updated: 2026-07-16
   immutable commit and remains reproducible on Ubuntu 22.04's Git 2.34 without relying on
   the newer `git archive --mtime` option; behavioral tests cover annotated tags and archive
   timestamps.
-- **Active slice:** exact runtime candidate `92e2890` remains installed on the download VM
+- **Active slice:** exact runtime candidate `f0beafc` is installed on the download VM
   in API mode with fixed device `DownloadVM` and country policy `GB NL BE DE IE`. A planned
   post-candidate health failure used one authenticated attempt and proved transactional
   rollback to the exact original profile, healthy AirVPN egress, qBittorrent containment,
@@ -85,45 +85,44 @@ Updated: 2026-07-16
   and state digest `9b115b763697c03e8d6aa14a1327691689510e872e134d9ae5dc61c7383c991e`.
   The health-configuration digest remains
   `768763e6a611952a857e103ffbc6338aa5644c2cdfc7bac6e7332befdf1faaad`.
-  A fully gated local test-first correction makes identity-pinned adoption and rotation
-  preserve the installed numeric `DNS` policy, including absence, alongside local `Table` and post hooks;
+  Its test-first correction makes identity-pinned adoption and rotation preserve the
+  installed numeric `DNS` policy, including absence, alongside local `Table` and post hooks;
   provider peer material remains authoritative. Ubuntu 22.04 and 24.04 root/non-root,
   ShellCheck, systemd, reproducible release, actionlint, and redacted worktree secret gates
-  pass. That correction is not installed yet.
+  pass. The quiesced upgrade changed only the reviewed provider-helper bytes; the active
+  profile, exact pre-managed snapshot and transaction backup, API configuration, provider
+  state, key metadata, timer mask, worker, locks, and recovery-artifact state remained
+  unchanged. `wg0`, public tunnel-bound AirVPN egress, and qBittorrent proof pass. No
+  authenticated provider request occurred during packaging, deployment, or postflight.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
-- **Evidence refs:** France removal commit `a11dd5d`; exact installed runtime candidate
-  `92e2890`; complete-history bundle digest
-  `8deb1ba300764f23e33ad5e624f8f1a5be3cfacfd9736ad777875a7d5bae512c`.
+- **Evidence refs:** France removal commit `a11dd5d`; exact installed corrected runtime
+  candidate `f0beafc`; complete-history bundle digest
+  `7d0657a974e8443d23501a1b96af31287b8c3ebcafc0eff3939a9a671035ca5e`.
   Exact package hashes are
-  `8624ebe9c659762ab0aa3addda8963d717452f8be441cec615ab20bba95b8668`
-  for tar, `ded2ce3b788717b45f68d0e184acf732191662a6c8b008c075a09447e5165043`
-  for ZIP, and `be2eb63519c6e8cbdca793b8af1f6e980a566d5c08315d7b624b6c98d3770f6c`
-  for the authoritative `SHA256SUMS`. The detached Ubuntu 24.04 gate passed the complete
-  Python, root/non-root health, managed, installer, release, Bash syntax, ShellCheck,
-  systemd, and pinned-Gitleaks history/archive checks. The sixth dry run returned rc 0 and
-  only the setup tool's fixed redacted success contract; all static-mode postconditions
-  remained unchanged and its private temporary capture was removed.
+  `eba46513cd454cf829489c5607c453f165ac64e68f55da6574a19c7ac5765095`
+  for tar, `2453a854c1478873723802279aedefb0453e6f6cbc1a803d8fdf0017fa25e038`
+  for ZIP, and `398b6f1423e6f238e13ebd8bc0791ea4f15903438fc02b5a98dbdf6239feb253`
+  for the authoritative `SHA256SUMS`. Pinned Gitleaks 8.30.1 passed reachable history and
+  both extracted archives.
 - **Blocked on:** no external blocker. A deliberate no-retry safety hold remains in force
-  for this slice until the corrected code has completed deterministic review, been committed,
-  and been installed byte-for-byte. The ledger has no failure backoff and will not be reset,
+  for the rest of this slice. The ledger has no failure backoff and will not be reset,
   rewritten, or bypassed.
-- **Next step:** complete and commit the corrected candidate, install it through the
-  quiesced upgrade path without an authenticated request, and reverify every VM safety
-  postcondition. A later natural-capacity continuation may then perform exactly one
-  controlled rotation. Keep the timer masked until that succeeds, then observe five healthy
-  timer cycles, replace the chat-supplied test credential with a fresh owner credential,
-  and proceed to the protected-main and `v1.1.0` release gates.
+- **Next step:** after the updated continuation revalidates exact `f0beafc` installed bytes
+  and every VM safety postcondition, use at most one naturally available slot for exactly
+  one controlled rotation. Keep the timer masked until that succeeds, then observe five
+  healthy timer cycles, replace the chat-supplied test credential with a fresh owner
+  credential, and proceed to the protected-main and `v1.1.0` release gates.
 
 ## ResumeStateHint
 
 - Primary checkout: repository `main` at the public baseline.
 - Implementation worktree: isolated feature worktree outside the public checkout.
 - Branch: `Herb/airvpn-api-profiles`
-- Last installed runtime commit: `92e2890`; its exact root/non-root Linux, release,
-  reproducibility, workflow, and secret gates passed. The VM runs that byte-identical
-  runtime in verified API mode with an exact pre-managed rollback snapshot and the timer
-  runtime-masked and inactive. Its generated-DNS ownership defect has now been reproduced
-  live and corrected locally, but the corrected candidate is not yet installed.
+- Last installed runtime commit: `f0beafc`; its exact root/non-root Linux, release,
+  reproducibility, workflow, and secret gates passed. The VM runs its byte-identical
+  provider helper in verified API mode with an exact pre-managed rollback snapshot and the
+  timer runtime-masked and inactive. Profile, configuration, provider state, and root-only
+  credential metadata remain unchanged from the accepted rollback state.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -160,3 +159,9 @@ Updated: 2026-07-16
   dry run. Its identity-pinned composer incorrectly inherited provider `DNS`, so it is no
   longer an accepted rotation candidate. Existing Linux, package, secret, VM-install, and
   dry-run evidence remains factual.
+- **Accepted corrected candidate:** exact installed runtime commit `f0beafc` changes only
+  identity-pinned DNS ownership in the provider helper, adds regression/documentation
+  coverage, and introduces no parser field, fallback, executable directive, provider
+  authority, persistent state, or authenticated request. Exact dual-Ubuntu, package,
+  history/archive secret, VM-install, public-egress, and no-authentication evidence is
+  accepted for the next controlled rotation.

@@ -749,3 +749,31 @@ paired rollback drill and controlled successful rotation.
   reproducible release gate. Actionlint passed and pinned Gitleaks 8.30.1 found no leak in
   the current worktree. No VM mutation or authenticated provider request occurred during
   either deterministic matrix.
+- Commit `f0beafc2aef0930a78a2f425eab61a4e2e01267a` records the corrected DNS ownership,
+  regression coverage, operator/public documentation, and live failure evidence. A complete
+  bundle of reachable refs has SHA-256
+  `7d0657a974e8443d23501a1b96af31287b8c3ebcafc0eff3939a9a671035ca5e`.
+  The exact commit passed fresh Python and release-contract verification before packaging.
+- The exact tar, ZIP, and authoritative `SHA256SUMS` SHA-256 values are respectively
+  `eba46513cd454cf829489c5607c453f165ac64e68f55da6574a19c7ac5765095`,
+  `2453a854c1478873723802279aedefb0453e6f6cbc1a803d8fdf0017fa25e038`,
+  and `398b6f1423e6f238e13ebd8bc0791ea4f15903438fc02b5a98dbdf6239feb253`.
+  Pinned Gitleaks 8.30.1 found no leak in reachable history or either extracted archive.
+- Before deployment, DownloadVM matched exact installed `92e2890` program/setup/systemd
+  bytes and the expected profile, pre-managed snapshot, transaction backup, API
+  configuration, and provider-state digests. Source and installed credentials passed
+  root-only metadata checks without being read. The runtime mask, inactive timer/worker,
+  free locks, clean recovery state, active `wg0`, API status, qBittorrent proof, and country
+  policy `GB NL BE DE IE` all passed.
+- The hash-verified package was transferred through private root-only staging and installed
+  once with `install.sh --quiesce wg0`. The installed provider helper now has exact reviewed
+  SHA-256 `d4d41226d3d77bee97f7994d221a3f1124f5b094a9db8fb423b1c6f2cacd0653`;
+  every other installed program, setup-package file, and systemd unit remained byte-identical.
+  The active profile, pre-managed snapshot, transaction backup, API configuration, provider
+  state, and credential metadata remained unchanged. Timer and worker remain inactive under
+  the runtime mask; locks are free; recovery artifacts are absent; `wg0` and qBittorrent
+  remain proved; and private package/install staging was removed.
+- A final public `whatismyip` request bound to `wg0` passed the strict AirVPN egress parser
+  without retaining or disclosing its response or address. Provider-state bytes and the
+  timer mask remained unchanged. No authenticated provider request was made after the
+  failed controlled rotation, during the fix, packaging, deployment, or postflight.
