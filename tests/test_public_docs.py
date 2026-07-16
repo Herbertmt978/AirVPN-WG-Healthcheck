@@ -138,6 +138,20 @@ class PublicDocumentationTests(unittest.TestCase):
         self.assertRegex(text, r"(?is)(provider|generated).{0,180}reject.{0,100}hook")
         self.assertRegex(text, r"(?is)(root|installed).{0,180}(retain|preserv).{0,100}PostUp")
 
+    def test_docs_explain_pinned_dns_ownership_and_provision_dependency(self) -> None:
+        text = self.readme + "\n" + read_text(OPERATIONS)
+        self.assertRegex(
+            text,
+            r"(?is)(identity-pinned|rotation).{0,180}(preserve|retain).{0,120}`DNS`",
+        )
+        self.assertRegex(text, r"(?is)`DNS`.{0,100}(absence|no `DNS` directive)")
+        self.assertRegex(text, r"(?is)(first|fresh).{0,80}provision.{0,220}resolvconf")
+        self.assertRegex(
+            text,
+            r"(?is)(when|if).{0,120}(profile|AirVPN).{0,80}(contains|includes).{0,20}`DNS`",
+        )
+        self.assertRegex(text, r"(?is)wg-quick.{0,120}resolvconf")
+
     def test_docs_state_exact_api_managed_profile_directory_permissions(self) -> None:
         text = self.readme + "\n" + read_text(OPERATIONS)
         self.assertRegex(

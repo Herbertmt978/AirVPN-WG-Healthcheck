@@ -393,7 +393,7 @@ class ProfileRenderingTests(unittest.TestCase):
                         forged,
                     )
 
-    def test_identity_pinning_preserves_only_validated_table(self):
+    def test_identity_pinning_preserves_local_dns_and_table(self):
         current = self._parse(
             _wireguard_profile(
                 dns=("9.9.9.9",),
@@ -414,12 +414,14 @@ class ProfileRenderingTests(unittest.TestCase):
         )
 
         pinned = self._compose(current, generated)
+        pinned_without_dns = self._compose(replace(current, dns=()), generated)
 
         self.assertEqual(pinned.address, current.address)
         self.assertEqual(pinned.private_key, current.private_key)
         self.assertEqual(pinned.table, "123")
         self.assertEqual(pinned.mtu, generated.mtu)
-        self.assertEqual(pinned.dns, generated.dns)
+        self.assertEqual(pinned.dns, current.dns)
+        self.assertEqual(pinned_without_dns.dns, ())
         self.assertEqual(pinned.public_key, generated.public_key)
         self.assertEqual(pinned.preshared_key, generated.preshared_key)
         self.assertEqual(pinned.endpoint, generated.endpoint)

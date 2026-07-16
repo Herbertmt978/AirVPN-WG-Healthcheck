@@ -4,11 +4,11 @@ Updated: 2026-07-16
 
 ## TodoCheckpointDraft
 
-- **Current todo:** wait for three rolling-window slots to be available naturally, then
-  reverify the exact installed runtime candidate and use the validated setup path to adopt
-  API mode on the download VM. Keep the timer runtime-masked through adoption and the
-  complete live rollback, rotation, qBittorrent, routing, and repeated-cycle acceptance
-  sequence; never reset or bypass the provider ledger.
+- **Current todo:** commit the fully gated DNS-ownership correction and install its exact
+  reviewed runtime bytes on the download VM while the timer remains runtime-masked. Make
+  no further authenticated provider request in this evidence slice. Only a later clean preflight may
+  use one natural rolling-window slot for one controlled rotation; never reset, rewrite, or
+  bypass the provider ledger.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -71,24 +71,25 @@ Updated: 2026-07-16
   immutable commit and remains reproducible on Ubuntu 22.04's Git 2.34 without relying on
   the newer `git archive --mtime` option; behavioral tests cover annotated tags and archive
   timestamps.
-- **Active slice:** exact runtime candidate `92e2890` is installed and verified on the
-  download VM in API mode with fixed device `DownloadVM` and country policy
-  `GB NL BE DE IE`. After three rolling slots reopened naturally, the complete preflight
-  reverified exact installed bytes, the static profile/configuration/state digests,
-  root-only source-credential metadata, inactive units and free locks, recovery cleanliness,
-  active `wg0`, qBittorrent proof, public country eligibility, and zero backoff. One
-  non-interactive API apply then returned rc 0 with the exact fixed redacted setup contract;
-  it made the three separately accounted generator attempts required for prospective
-  validation, installed-credential revalidation, and identity-pinned activation. The live
-  profile remains byte-identical to the reviewed static profile and the new root-only
-  pre-managed snapshot is its exact copy. The installed credential has strict root-only
-  metadata, API status is healthy, AirVPN egress and qBittorrent TCP/UDP routing/listeners
-  are proved, all transaction/recovery artifacts are clear, and the timer and worker remain
-  inactive under the runtime mask. The canonical health-configuration and provider-state
-  digests are now `768763e6a611952a857e103ffbc6338aa5644c2cdfc7bac6e7332befdf1faaad`
-  and `2b0dffb5fa92b4ec74709cbbcc83c25672b6d227fdb500fcdb70c33e2040c874`.
-  The natural ledger correctly records six active attempts, `failure_class=none`, no
-  exclusions, and zero backoff; it was not reset, rewritten, or bypassed.
+- **Active slice:** exact runtime candidate `92e2890` remains installed on the download VM
+  in API mode with fixed device `DownloadVM` and country policy `GB NL BE DE IE`. A planned
+  post-candidate health failure used one authenticated attempt and proved transactional
+  rollback to the exact original profile, healthy AirVPN egress, qBittorrent containment,
+  cleared recovery artifacts, and continued timer masking. The following controlled
+  rotation used exactly one further authenticated attempt and failed during candidate
+  tunnel start because the generated candidate introduced `DNS` while the working profile
+  had no local resolver directive or `resolvconf` integration. Transaction handling again
+  restored the original profile exactly; API status, `wg0`, AirVPN egress, qBittorrent,
+  locks, artifacts, timer masking, and worker inactivity all remain safe. The strict ledger
+  now records five active attempts, one natural slot, two exclusions, no failure backoff,
+  and state digest `9b115b763697c03e8d6aa14a1327691689510e872e134d9ae5dc61c7383c991e`.
+  The health-configuration digest remains
+  `768763e6a611952a857e103ffbc6338aa5644c2cdfc7bac6e7332befdf1faaad`.
+  A fully gated local test-first correction makes identity-pinned adoption and rotation
+  preserve the installed numeric `DNS` policy, including absence, alongside local `Table` and post hooks;
+  provider peer material remains authoritative. Ubuntu 22.04 and 24.04 root/non-root,
+  ShellCheck, systemd, reproducible release, actionlint, and redacted worktree secret gates
+  pass. That correction is not installed yet.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
 - **Evidence refs:** France removal commit `a11dd5d`; exact installed runtime candidate
   `92e2890`; complete-history bundle digest
@@ -102,16 +103,16 @@ Updated: 2026-07-16
   systemd, and pinned-Gitleaks history/archive checks. The sixth dry run returned rc 0 and
   only the setup tool's fixed redacted success contract; all static-mode postconditions
   remained unchanged and its private temporary capture was removed.
-- **Blocked on:** the successful adoption consumed the three naturally available slots, so
-  the ledger is temporarily six of six. Two attempts must expire naturally before the
-  planned rollback-and-successful-rotation pair can run without interruption. The ledger
-  has no failure backoff and will not be reset or bypassed.
-- **Next step:** when two natural slots are available, reverify the exact API-mode candidate
-  and every live safety postcondition, then execute the approved post-candidate verification
-  failure/rollback drill followed by one successful controlled rotation. Keep the timer
-  masked until both transactions pass, then observe five healthy timer cycles, replace the
-  chat-supplied test credential with a fresh owner credential, and proceed to the exact
-  protected-main and `v1.1.0` release gate.
+- **Blocked on:** no external blocker. A deliberate no-retry safety hold remains in force
+  for this slice until the corrected code has completed deterministic review, been committed,
+  and been installed byte-for-byte. The ledger has no failure backoff and will not be reset,
+  rewritten, or bypassed.
+- **Next step:** complete and commit the corrected candidate, install it through the
+  quiesced upgrade path without an authenticated request, and reverify every VM safety
+  postcondition. A later natural-capacity continuation may then perform exactly one
+  controlled rotation. Keep the timer masked until that succeeds, then observe five healthy
+  timer cycles, replace the chat-supplied test credential with a fresh owner credential,
+  and proceed to the protected-main and `v1.1.0` release gates.
 
 ## ResumeStateHint
 
@@ -121,7 +122,8 @@ Updated: 2026-07-16
 - Last installed runtime commit: `92e2890`; its exact root/non-root Linux, release,
   reproducibility, workflow, and secret gates passed. The VM runs that byte-identical
   runtime in verified API mode with an exact pre-managed rollback snapshot and the timer
-  runtime-masked and inactive.
+  runtime-masked and inactive. Its generated-DNS ownership defect has now been reproduced
+  live and corrected locally, but the corrected candidate is not yet installed.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -145,12 +147,16 @@ Updated: 2026-07-16
   symlink boundaries, and generated-source manifest.
 - **Evidence decision:** `continue` within Task 15; deterministic, quiesced-install,
   authenticated raw-profile dry-run, transactional API adoption, exact rollback snapshot,
-  AirVPN egress, and qBittorrent routing/listener evidence is accepted. Live rollback,
-  controlled rotation, five-cycle observation, fresh production credential replacement,
-  release, and final API-mode migration acceptance remain unclaimed.
-- **Accepted compatibility candidate:** exact installed runtime commit `92e2890` omits the
+  deliberate post-candidate failure rollback, AirVPN egress, and qBittorrent routing/listener
+  evidence is accepted. The failed controlled rotation is accepted only as safe rollback
+  evidence, not as successful rotation acceptance. Successful rotation, five-cycle
+  observation, fresh production credential replacement, release, and final API-mode
+  migration acceptance remain unclaimed.
+- **Superseded compatibility baseline:** exact installed runtime commit `92e2890` omits the
   undocumented response-format query and makes a syntactically valid media label advisory
   only after explicit HTML, multipart, archive/compression, encoding, status, size, and JSON
   gates. It adds no persistent state or fallback and remains at the frozen provider ceiling;
   strict profile, expected-endpoint, and identity validation authorized the successful live
-  dry run. Exact Linux, package, secret, VM-install, and dry-run evidence is accepted.
+  dry run. Its identity-pinned composer incorrectly inherited provider `DNS`, so it is no
+  longer an accepted rotation candidate. Existing Linux, package, secret, VM-install, and
+  dry-run evidence remains factual.

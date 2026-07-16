@@ -512,7 +512,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
         self.assertNotIn("retry_after=", result.stderr)
         self.assertNotIn(huge_value, result.stderr)
 
-    def test_pin_identity_reads_fd5_and_preserves_local_table_and_post_hooks(self):
+    def test_pin_identity_preserves_local_dns_table_and_post_hooks_from_fd5(self):
         private_key = _random_wireguard_key()
         address = "10.20.30.40/32"
         hooks = (
@@ -529,6 +529,7 @@ class GeneratorBoundaryTests(unittest.TestCase):
         installed = _generator_profile(
             private_key=private_key,
             address=address,
+            dns=("9.9.9.9", "149.112.112.112"),
             table="123",
             endpoint="198.51.100.9:1637",
             interface_extra=hooks,
@@ -549,6 +550,8 @@ class GeneratorBoundaryTests(unittest.TestCase):
         rendered = airvpn_api._parse_trusted_installed_profile(result.output_stream.snapshot)
         self.assertEqual(rendered.profile.private_key, private_key)
         self.assertEqual(str(rendered.profile.address), address)
+        self.assertEqual(rendered.profile.dns, ("9.9.9.9", "149.112.112.112"))
+        self.assertNotIn(b"10.128.0.1", result.output_stream.snapshot)
         self.assertEqual(rendered.profile.table, "123")
         self.assertEqual(rendered.interface_hooks, hooks)
         with self.assertRaises(airvpn_api.AirVPNAPIError):

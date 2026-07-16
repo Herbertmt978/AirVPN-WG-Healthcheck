@@ -711,3 +711,41 @@ production-credential replacement, protected-main integration, release, tag, and
 remain unclaimed. The VM remains healthy in verified API mode with the timer runtime-masked.
 The adoption returned the ledger to six of six; two slots must reopen naturally before the
 paired rollback drill and controlled successful rotation.
+
+- After capacity reopened naturally, the planned post-candidate verification failure drill
+  used exactly one authenticated attempt and no retry. The candidate was rejected by the
+  deliberately unreachable speed threshold, and the transaction restored the original
+  active profile byte-for-byte. AirVPN egress, `wg0`, qBittorrent routing/listeners, free
+  locks, cleared recovery artifacts, inactive worker, and the runtime-masked timer all
+  passed. The strict ledger then recorded four active attempts, two natural slots, one
+  exclusion, and zero backoff; it was not reset, rewritten, or bypassed.
+- The following controlled rotation passed a fresh local preflight and used exactly one
+  additional authenticated attempt with no retry. Candidate tunnel start failed, and the
+  transaction again restored the original profile byte-for-byte. The pre-managed snapshot
+  and transaction backup both matched that original profile, the API runtime remained
+  healthy, AirVPN egress and qBittorrent remained proved, all recovery artifacts cleared,
+  locks were free, and timer and worker remained inactive under the runtime mask.
+- Fixed-enum, server-side classification identified `candidate_network`,
+  `tunnel_start_failed`, and `resolver_failure` without retaining or disclosing raw journal
+  text, provider data, endpoint, server, address, egress address, or credential material.
+  The generated candidate carried `DNS` while the validated working profile did not, so
+  `wg-quick` attempted an unavailable `resolvconf` integration. Provider state now has
+  digest `9b115b763697c03e8d6aa14a1327691689510e872e134d9ae5dc61c7383c991e`
+  and records five active attempts, one natural slot, two exclusions, no failure backoff,
+  and a verified-rollback status. No further authenticated request is authorized in this
+  evidence slice.
+- The ownership defect was reproduced test-first at both the canonical composer and fixed
+  fd5 generator boundary. Identity-pinned candidates now preserve the validated installed
+  numeric `DNS` policy, including absence, together with local `Table` and retained
+  `PostUp`/`PostDown`; generated AirVPN peer fields remain authoritative. Fresh provisioning
+  still retains validated provider DNS when present and conditionally requires the host's
+  `wg-quick` resolver backend. Focused absent-DNS, non-empty-DNS, and public-documentation
+  tests pass. A clean tracked Ubuntu 24.04 export passed generated-runtime equivalence,
+  Bash syntax, 213 Python contracts, root and non-root health, managed-profile and installer
+  suites, both ShellCheck passes, exact installed modes, systemd verification, and the
+  reproducible 27-file release gate before commit or installation.
+- The same clean tracked candidate passed the complete Ubuntu 22.04 minimum-version matrix
+  with Python 3.10, Git 2.34, ShellCheck 0.8, systemd 249, all root/non-root suites, and the
+  reproducible release gate. Actionlint passed and pinned Gitleaks 8.30.1 found no leak in
+  the current worktree. No VM mutation or authenticated provider request occurred during
+  either deterministic matrix.

@@ -295,13 +295,14 @@ candidates; the pre-managed snapshot preserves original bytes.
   `test_renderer_has_fixed_header_order_spacing_and_terminal_newline`,
   `test_parse_render_parse_is_stable`,
   `test_identity_compares_private_key_and_address_without_exposure`,
-  `test_identity_pinning_preserves_only_validated_table`, and
+  `test_identity_pinning_preserves_local_dns_and_table`, and
   `test_profile_and_manifest_repr_are_redacted`.
 - [x] **Verify RED.** Require failures for missing renderer/identity functions.
 - [x] **Implement minimal rendering.** Implement `render_wireguard_profile` with fixed field
   order and a fixed generated header. Implement `profiles_have_same_identity` with
-  `hmac.compare_digest`; composition copies only the validated current `Table` and requires
-  exact private-key/address equality.
+  `hmac.compare_digest`; composition copies the validated current `DNS` policy and `Table`
+  and requires exact private-key/address equality. This preserves the absence of local
+  resolver integration during identity-pinned rotation.
 - [x] **Verify GREEN.** Run focused and full Python tests plus
   `python3 -m py_compile libexec/airvpn-api`.
 - [x] **Commit.** `git commit -m "Render pinned managed profiles"`.

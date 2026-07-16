@@ -39,6 +39,19 @@ call account/session `userinfo`, `disconnect`, or `notification`, and it leaves 
 
 Provider-generated profiles reject every hook. The fixed fd5 adoption path may preserve only repeated `PostUp` and `PostDown` commands from the validated root-owned installed profile, in their original order. These commands already run as root through `wg-quick`; review them before enabling API mode. The profile must be a root-owned mode-`0600` regular file, and its immediate directory (normally `/etc/wireguard`) must be a root-owned, non-symlinked directory with exact mode `0700`. `PreUp`, `PreDown`, `SaveConfig`, hooks under `[Peer]`, and unknown directives fail before the authenticated request or profile mutation. The pre-managed snapshot still retains the exact original file for static rollback.
 
+### DNS policy and fresh provisioning
+
+Identity-pinned adoption and rotation preserve the installed profile's validated numeric
+`DNS` directive exactly, including its absence. Provider DNS never replaces that local
+policy during rotation. An installed `DNS = ...` directive is consumed by `wg-quick` and
+therefore still requires a working `resolvconf`-compatible resolver backend on the host.
+
+First provisioning has no installed policy to preserve, so it retains validated DNS when
+AirVPN's generated profile includes `DNS`. In that case, install and test a
+`resolvconf`-compatible backend appropriate for the operating system before provisioning a
+missing profile. Setup fails closed and rolls back if `wg-quick` cannot apply that resolver
+configuration; do not enable the timer until the manual health check succeeds.
+
 ## Credential lifecycle
 
 Activate or replace the account key through [AirVPN API settings](https://airvpn.org/apisettings/),

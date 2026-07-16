@@ -608,7 +608,7 @@ def profiles_have_same_identity(
 def _compose_pinned_profile(
     current: WireGuardProfile, generated: WireGuardProfile
 ) -> WireGuardProfile:
-    """Pin current identity and local Table around newly generated profile data."""
+    """Pin current identity and local interface policy around generated peer data."""
 
     current = _normalize_wireguard_profile(current)
     generated = _normalize_wireguard_profile(generated)
@@ -619,7 +619,7 @@ def _compose_pinned_profile(
             address=current.address,
             private_key=current.private_key,
             mtu=generated.mtu,
-            dns=generated.dns,
+            dns=current.dns,
             table=current.table,
             public_key=generated.public_key,
             preshared_key=generated.preshared_key,

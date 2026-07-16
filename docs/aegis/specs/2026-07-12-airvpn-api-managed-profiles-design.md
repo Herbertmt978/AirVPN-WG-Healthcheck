@@ -428,8 +428,11 @@ their exact original directive text and significant whitespace. `PreUp`,
 additional peer still block adoption before HTTP or mutation. Runtime rotation requires the
 generated interface private key and IPv4 address to equal the current values before any
 qBittorrent or tunnel mutation. Candidate rendering uses those unchanged interface values,
-the validated optional local `Table`, retained local post hooks, and newly generated AirVPN
-peer fields. Generated/provider hooks can never cross into that private wrapper.
+the validated optional local `DNS` policy (including absence), the validated optional local
+`Table`, retained local post hooks, and newly generated AirVPN peer fields. Provider DNS
+remains available to explicit first provisioning, where no installed policy exists; that
+path requires the host's `wg-quick` resolver backend when the generated profile supplies
+`DNS`. Generated/provider hooks can never cross into the private wrapper.
 
 For first provisioning without an existing profile, only the canonical allowlisted
 generated profile is installed. The installer itself never provisions implicitly.

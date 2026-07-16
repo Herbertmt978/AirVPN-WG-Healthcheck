@@ -116,7 +116,14 @@ handled as response envelopes; every non-JSON body must still pass canonical Wir
 parsing, the selected-endpoint check, and identity pinning before any candidate is written.
 The project does not claim that AirVPN documents a success MIME type.
 
-Generated provider profiles always reject every executable hook. During identity-pinned adoption and rotation, a validated root-owned installed profile may retain repeated `PostUp` and `PostDown` commands in their original order; these remain local code executed as root by `wg-quick`. Review them before setup. `PreUp`, `PreDown`, `SaveConfig`, peer hooks, and unknown directives block API adoption without changing the installed profile.
+Generated provider profiles always reject every executable hook. During identity-pinned
+adoption and rotation, the candidate preserves the validated installed profile's numeric
+`DNS` policy (including no `DNS` directive), `Table`, and repeated `PostUp`/`PostDown`
+commands in their original order while replacing the AirVPN peer material. This prevents a
+rotation from silently adding local resolver integration. The post hooks remain local code
+executed as root by `wg-quick`; review them before setup. `PreUp`, `PreDown`, `SaveConfig`,
+peer hooks, and unknown directives block API adoption without changing the installed
+profile.
 
 For API mode, setup shows eligible countries from public status data before asking for the key:
 

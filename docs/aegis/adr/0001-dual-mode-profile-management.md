@@ -136,6 +136,16 @@ directory and supplies it on fixed fd5. No provider field can be reclassified as
 installed hook. This compatibility repair does not authorize another helper increase or
 relax the future extraction/superseding-decision trigger.
 
+The Task 15 controlled rotation exposed the same ownership boundary for numeric `DNS`:
+AirVPN's generated profile carried a resolver directive while the working installed profile
+did not, so `wg-quick` attempted an unavailable local `resolvconf` integration. The managed
+transaction restored the prior profile exactly. Identity-pinned composition now preserves
+the installed `DNS` value or absence alongside local `Table` and post hooks; only peer
+material comes from the new provider profile. Explicit first provisioning remains
+provider-driven because no installed DNS policy exists and therefore documents a compatible
+resolver backend as a prerequisite when the generated profile supplies `DNS`. No parser
+field, executable directive, fallback, or provider authority was added.
+
 The first request that reached AirVPN used `system=linux` and was rejected at the response
 boundary before profile parsing. Public AirVPN raw-configuration examples use
 `system=other`, so the generator now requests that raw single-profile form. A second

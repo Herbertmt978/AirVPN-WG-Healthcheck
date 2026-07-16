@@ -55,6 +55,11 @@ All notable changes to this project are documented here. Release numbers follow
   tar, 7z, bzip2, and xz types are rejected; other syntactically valid parameterless labels
   are advisory and never bypass JSON handling, strict profile parsing, endpoint checks, or
   identity pinning. AirVPN is not asserted to document a success MIME type.
+- Identity-pinned adoption and rotation preserve the installed numeric DNS policy,
+  including an absent `DNS` directive, so generated peer refreshes cannot silently add a
+  host resolver dependency. Fresh provisioning still retains validated provider DNS when
+  present; a working `resolvconf`-compatible backend is therefore required when the
+  generated profile contains `DNS`.
 
 ### Security
 
