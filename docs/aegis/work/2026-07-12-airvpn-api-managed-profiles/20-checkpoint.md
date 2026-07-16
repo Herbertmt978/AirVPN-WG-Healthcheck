@@ -1,6 +1,6 @@
 # Todo Checkpoint: AirVPN API-Managed WireGuard Profiles
 
-Updated: 2026-07-15
+Updated: 2026-07-16
 
 ## TodoCheckpointDraft
 
@@ -72,22 +72,23 @@ Updated: 2026-07-15
   the newer `git archive --mtime` option; behavioral tests cover annotated tags and archive
   timestamps.
 - **Active slice:** exact runtime candidate `92e2890` is installed and verified on the
-  download VM in static mode with the timer runtime-masked and inactive. The active profile
-  and health configuration retain their preflight digests, `wg0` remains active,
-  qBittorrent remains proved, and no API credential is installed. The root-only source
-  credential remains outside the package and repository. After the recorded backoff reached
-  zero, all five configured countries (`GB NL BE DE IE`) were publicly eligible and the
-  sixth authenticated dry run succeeded: the returned profile cleared the bounded response,
-  strict WireGuard, expected-endpoint, and fixed-device identity checks. The dry run changed
-  no profile, configuration, timer, worker, interface, installed credential, candidate, or
-  recovery artifact. Its required accounting record advanced the natural ledger to six of
-  six active attempts with `failure_class=none` and no backoff. At the first scheduled
-  adoption gate, one slot had reopened and every VM/provider invariant passed. A direct
-  setup call-graph audit then proved that first-time static-to-API setup performs three
-  separately accounted generator attempts: prospective validation, installed-credential
-  revalidation, and activation. Starting with one slot would therefore consume capacity
-  and force rollback before adoption. No authenticated request or VM mutation was made;
-  adoption now waits for three natural slots.
+  download VM in API mode with fixed device `DownloadVM` and country policy
+  `GB NL BE DE IE`. After three rolling slots reopened naturally, the complete preflight
+  reverified exact installed bytes, the static profile/configuration/state digests,
+  root-only source-credential metadata, inactive units and free locks, recovery cleanliness,
+  active `wg0`, qBittorrent proof, public country eligibility, and zero backoff. One
+  non-interactive API apply then returned rc 0 with the exact fixed redacted setup contract;
+  it made the three separately accounted generator attempts required for prospective
+  validation, installed-credential revalidation, and identity-pinned activation. The live
+  profile remains byte-identical to the reviewed static profile and the new root-only
+  pre-managed snapshot is its exact copy. The installed credential has strict root-only
+  metadata, API status is healthy, AirVPN egress and qBittorrent TCP/UDP routing/listeners
+  are proved, all transaction/recovery artifacts are clear, and the timer and worker remain
+  inactive under the runtime mask. The canonical health-configuration and provider-state
+  digests are now `768763e6a611952a857e103ffbc6338aa5644c2cdfc7bac6e7332befdf1faaad`
+  and `2b0dffb5fa92b4ec74709cbbcc83c25672b6d227fdb500fcdb70c33e2040c874`.
+  The natural ledger correctly records six active attempts, `failure_class=none`, no
+  exclusions, and zero backoff; it was not reset, rewritten, or bypassed.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
 - **Evidence refs:** France removal commit `a11dd5d`; exact installed runtime candidate
   `92e2890`; complete-history bundle digest
@@ -101,15 +102,16 @@ Updated: 2026-07-15
   systemd, and pinned-Gitleaks history/archive checks. The sixth dry run returned rc 0 and
   only the setup tool's fixed redacted success contract; all static-mode postconditions
   remained unchanged and its private temporary capture was removed.
-- **Blocked on:** one of the three required rolling-window slots is currently available;
-  two more attempts must expire naturally before the transactional apply can complete. The
-  ledger has no failure backoff and will not be reset or bypassed.
-- **Next step:** when three natural slots are available, reverify exact installed bytes,
-  profile and configuration digests, source-credential metadata, timer/worker inactivity,
-  `wg0`, qBittorrent, recovery artifacts, five-country public eligibility, and ledger
-  capacity. Then perform one API-mode apply for fixed device `DownloadVM`, followed by the
-  complete identity-pinned adoption, rollback, rotation, and repeated-cycle live acceptance
-  sequence.
+- **Blocked on:** the successful adoption consumed the three naturally available slots, so
+  the ledger is temporarily six of six. Two attempts must expire naturally before the
+  planned rollback-and-successful-rotation pair can run without interruption. The ledger
+  has no failure backoff and will not be reset or bypassed.
+- **Next step:** when two natural slots are available, reverify the exact API-mode candidate
+  and every live safety postcondition, then execute the approved post-candidate verification
+  failure/rollback drill followed by one successful controlled rotation. Keep the timer
+  masked until both transactions pass, then observe five healthy timer cycles, replace the
+  chat-supplied test credential with a fresh owner credential, and proceed to the exact
+  protected-main and `v1.1.0` release gate.
 
 ## ResumeStateHint
 
@@ -118,7 +120,8 @@ Updated: 2026-07-15
 - Branch: `Herb/airvpn-api-profiles`
 - Last installed runtime commit: `92e2890`; its exact root/non-root Linux, release,
   reproducibility, workflow, and secret gates passed. The VM runs that byte-identical
-  runtime in verified static mode with the timer runtime-masked and inactive.
+  runtime in verified API mode with an exact pre-managed rollback snapshot and the timer
+  runtime-masked and inactive.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -141,9 +144,10 @@ Updated: 2026-07-15
   tests enforce the exact owner exceptions, 13 reviewed long blocks, registries, encodings,
   symlink boundaries, and generated-source manifest.
 - **Evidence decision:** `continue` within Task 15; deterministic, quiesced-install,
-  authenticated raw-profile dry-run success, key-removal, and static-routing evidence is
-  accepted, while API-mode adoption, live rollback/rotation, release, and API-mode VM
-  migration remain unclaimed.
+  authenticated raw-profile dry-run, transactional API adoption, exact rollback snapshot,
+  AirVPN egress, and qBittorrent routing/listener evidence is accepted. Live rollback,
+  controlled rotation, five-cycle observation, fresh production credential replacement,
+  release, and final API-mode migration acceptance remain unclaimed.
 - **Accepted compatibility candidate:** exact installed runtime commit `92e2890` omits the
   undocumented response-format query and makes a syntactically valid media label advisory
   only after explicit HTML, multipart, archive/compression, encoding, status, size, and JSON

@@ -674,8 +674,40 @@ the actual release contract successfully.
   activation. The apply was therefore deferred without an authenticated request or VM
   mutation; the timer remains runtime-masked and static operation remains proved while two
   more slots reopen naturally.
+- After three slots reopened naturally, the adoption preflight again matched the clean
+  feature candidate and exact installed `92e2890` bytes. The static profile, health
+  configuration, and provider-state digests matched their reviewed values; the root-only
+  source credential was inspected by metadata only; no installed credential or recovery
+  artifact existed; timer and worker were inactive under the runtime mask; all locks were
+  free; `wg0` and qBittorrent were proved; all five policy countries were publicly eligible;
+  and the strict provider ledger exposed exactly three available slots with zero backoff.
+- Exactly one non-interactive API apply used fixed device `DownloadVM`, countries
+  `GB NL BE DE IE`, and the root-only out-of-repository credential file while leaving the
+  timer disabled. It returned rc 0, empty stderr, and byte-for-byte the setup tool's fixed
+  redacted twelve-line success contract. No retry was made. The prospective validation,
+  installed-credential revalidation, and identity-pinned activation each consumed their
+  required durable ledger attempt.
+- Post-adoption verification proved that the active profile remained byte-identical to the
+  reviewed static profile and that `/etc/wireguard/wg0.conf.pre-managed` is an exact
+  root-owned mode-0600 rollback copy. The installed credential is a root-owned mode-0600
+  65-byte regular file and was never read or printed during verification. API configuration,
+  live interface identity, fresh handshake, required route/rule, tunnel-bound AirVPN egress,
+  and qBittorrent TCP/UDP process ownership all passed. API status reported an active tunnel,
+  a healthy or recovered fresh check, present credential, no pending transaction, and proved
+  qBittorrent state. Timer and worker remained inactive under the runtime mask, locks were
+  free, and every candidate, pending, safety, setup-journal, setup-snapshot, and staging
+  artifact was absent.
+- The committed API health-configuration digest is
+  `768763e6a611952a857e103ffbc6338aa5644c2cdfc7bac6e7332befdf1faaad`;
+  the strict successor provider-state digest is
+  `2b0dffb5fa92b4ec74709cbbcc83c25672b6d227fdb500fcdb70c33e2040c874`.
+  The ledger correctly contains six active attempts, no exclusions, `failure_class=none`,
+  zero backoff, and metadata bound to the installed credential. No attempt epoch, profile,
+  server, endpoint, address, egress address, provider response/header, credential, or stored
+  access secret was retained or disclosed.
 
-API apply, live rollback/rotation, release, tag, and publication remain unclaimed. The VM
-remains in verified static mode with the timer runtime-masked. API adoption requires three
-available rolling slots; one is currently available and two more must reopen naturally
-before the single transactional apply.
+API adoption is accepted. Live rollback/rotation, five-cycle timer observation, fresh
+production-credential replacement, protected-main integration, release, tag, and publication
+remain unclaimed. The VM remains healthy in verified API mode with the timer runtime-masked.
+The adoption returned the ledger to six of six; two slots must reopen naturally before the
+paired rollback drill and controlled successful rotation.
