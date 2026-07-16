@@ -753,7 +753,7 @@ remains available.
 **Verification:** redacted evidence from systemd, profile hashes/modes, AirVPN egress,
 qBittorrent ownership, and route probes.
 
-- [ ] **Create the preflight evidence bundle.** Record version, enabled/running state,
+- [x] **Create the preflight evidence bundle.** Record version, enabled/running state,
   owner/modes and SHA-256 hashes without contents, qB state, last status, and absence of a
   pending marker and safety record. Preserve a root-only rollback bundle and verified v1.0
   package. Stop and mask timer, stop worker, wait inactive, and acquire/check the interface
@@ -764,7 +764,7 @@ qBittorrent ownership, and route probes.
   unchanged, and stop if identity or managed allowlist does not match. Two
   backoff-compliant attempts reached `phase=response`; neither generated a profile or
   mutated the live configuration, and the test credential was removed.
-- [ ] **Install/apply and drill rollback.** Install the branch with `--quiesce`; adopt with
+- [x] **Install/apply and drill rollback.** Install the branch with `--quiesce`; adopt with
   timer disabled; force post-candidate speed verification to fail with a temporary
   impossible threshold so the old profile is restored without making rollback speed a
   postcondition. Verify exact old hash/mode, cleared or reconciled journal and safety

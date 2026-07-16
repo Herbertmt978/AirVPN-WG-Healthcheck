@@ -782,3 +782,44 @@ paired rollback drill and controlled successful rotation.
   safety postcondition, zero backoff, and one natural slot before exactly one controlled
   rotation with no retry. It keeps the timer masked and defers five-cycle observation,
   credential replacement, merge, tag, and publication to later reviewed stages.
+- At the scheduled continuation, local branch `43d7077f60319df768c89e36afbcfcc872abc42d`
+  was clean and DownloadVM matched every exact reviewed runtime/setup/systemd byte, including
+  provider-helper SHA-256
+  `d4d41226d3d77bee97f7994d221a3f1124f5b094a9db8fb423b1c6f2cacd0653`.
+  The original active profile, immutable pre-managed snapshot, old-profile transaction
+  backup, API configuration, and provider state matched their accepted digests. Source and
+  installed credentials passed root-only regular-file mode/size metadata checks without
+  being read. The timer and worker were inactive under the runtime mask; setup, interface,
+  and global locks were free; recovery and staging artifacts were absent; `wg0` and
+  qBittorrent were proved; policy was exactly `GB NL BE DE IE`; and all five policy countries
+  remained in the current credential-free eligible inventory.
+- The strict provider-state parser confirmed five active authenticated attempts, one natural
+  rolling slot, two active exclusions, `failure_class=none`, zero backoff, and exact binding
+  to fixed device `DownloadVM` and the installed credential metadata. The preflight read the
+  ledger only for validation and aggregates; it did not reset, rewrite, bypass, or disclose
+  any attempt epoch, exclusion name, or provider response.
+- Exactly one `wg-healthcheck rotate wg0 --apply` invocation then consumed that slot. It
+  returned success with the exact redacted manifest contract, and no retry was made. The
+  active profile changed while private identity and local `Table` policy remained unchanged;
+  the corrected composer preserved the installed absence of `DNS`. The immutable
+  pre-managed snapshot was unchanged, and the secure transaction backup retained the exact
+  old profile.
+- Postflight proved the fixed recovered status and rotation records, one newly durable
+  authenticated attempt, six active attempts, zero rolling slots, two active exclusions,
+  and zero backoff. Provider-state SHA-256 is
+  `66d1f14c2e288d5ba9475be9e8115c23e847574e9ed8d2085acffbbaed7e93bf`;
+  accepted active-profile SHA-256 is
+  `f44c0bc6e5ed5d690b5b23d42fbdec0816f3dcc11c9e05c289d95cd1327f8499`.
+  Fresh single-peer handshake and tunnel-bound AirVPN egress checks passed without retaining
+  their server, endpoint, address, profile, or provider response. qBittorrent retained the
+  same immutable container identity and passed its configured TCP/UDP listener ownership
+  proof. Candidate, pending, safety, setup-journal, snapshot, staging, and transaction temp
+  artifacts were absent; locks were free; root-only key metadata remained valid; and timer
+  and worker remained inactive under the runtime mask.
+- Successful controlled rotation acceptance is complete. Five consecutive healthy timer
+  cycles, fresh production-credential replacement, protected-main integration, release,
+  tag, and publication remain deliberately unclaimed.
+- The docs-only handoff passed `git diff --check`, all 19 public-documentation contracts,
+  all 11 architecture contracts from a clean tracked Linux export, and pinned Gitleaks
+  8.30.1 over the complete worktree with redaction enabled. No credential, provider payload,
+  endpoint, address, server, or generated profile was added to the repository evidence.

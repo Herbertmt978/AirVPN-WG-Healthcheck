@@ -4,11 +4,11 @@ Updated: 2026-07-16
 
 ## TodoCheckpointDraft
 
-- **Current todo:** keep exact corrected runtime `f0beafc` installed with the timer
-  runtime-masked and make no further authenticated provider request in this evidence slice.
-  The existing continuation heartbeat is scheduled for 11:30 BST on 2026-07-16 and may use
-  one natural rolling-window slot for exactly one controlled rotation after a complete clean
-  preflight; never reset, rewrite, or bypass the provider ledger.
+- **Current todo:** preserve the accepted `f0beafc` controlled-rotation result with the
+  timer runtime-masked. The next reviewed continuation may enable the timer only while it
+  observes five consecutive healthy cycles, then must return the VM to a masked, inactive
+  state before fresh production-credential replacement. No further authenticated request
+  is authorized in this slice; never reset, rewrite, or bypass the provider ledger.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -71,29 +71,26 @@ Updated: 2026-07-16
   immutable commit and remains reproducible on Ubuntu 22.04's Git 2.34 without relying on
   the newer `git archive --mtime` option; behavioral tests cover annotated tags and archive
   timestamps.
-- **Active slice:** exact runtime candidate `f0beafc` is installed on the download VM
-  in API mode with fixed device `DownloadVM` and country policy `GB NL BE DE IE`. A planned
-  post-candidate health failure used one authenticated attempt and proved transactional
-  rollback to the exact original profile, healthy AirVPN egress, qBittorrent containment,
-  cleared recovery artifacts, and continued timer masking. The following controlled
-  rotation used exactly one further authenticated attempt and failed during candidate
-  tunnel start because the generated candidate introduced `DNS` while the working profile
-  had no local resolver directive or `resolvconf` integration. Transaction handling again
-  restored the original profile exactly; API status, `wg0`, AirVPN egress, qBittorrent,
-  locks, artifacts, timer masking, and worker inactivity all remain safe. The strict ledger
-  now records five active attempts, one natural slot, two exclusions, no failure backoff,
-  and state digest `9b115b763697c03e8d6aa14a1327691689510e872e134d9ae5dc61c7383c991e`.
-  The health-configuration digest remains
+- **Active slice:** exact runtime candidate `f0beafc` is installed on the download VM in API
+  mode with fixed device `DownloadVM` and country policy `GB NL BE DE IE`. After the earlier
+  deliberate rollback drill and resolver-failure rollback, a fresh complete preflight
+  matched every reviewed installed byte, configuration/snapshot digest, root-only
+  credential boundary, inactive runtime mask, free lock, recovery postcondition, live
+  tunnel/qBittorrent proof, public country inventory, and strict provider-state rule. It
+  exposed one natural rolling slot and zero backoff. Exactly one non-interactive controlled
+  rotation then succeeded with no retry. The active profile changed while its private
+  identity and local `Table` policy remained fixed and local `DNS` remained absent. The
+  pre-managed rollback snapshot was unchanged and the transaction backup retained the old
+  profile. A fresh handshake, single peer, tunnel-bound AirVPN egress, qBittorrent TCP/UDP
+  ownership with the same immutable container, cleared recovery/staging artifacts, free
+  locks, and fixed recovered status/rotation records all passed. The timer and worker remain
+  inactive under the runtime mask. The strict ledger now records six active attempts, zero
+  rolling slots, two active exclusions, no failure backoff, and state digest
+  `66d1f14c2e288d5ba9475be9e8115c23e847574e9ed8d2085acffbbaed7e93bf`.
+  The accepted active-profile digest is
+  `f44c0bc6e5ed5d690b5b23d42fbdec0816f3dcc11c9e05c289d95cd1327f8499`;
+  the health-configuration digest remains
   `768763e6a611952a857e103ffbc6338aa5644c2cdfc7bac6e7332befdf1faaad`.
-  Its test-first correction makes identity-pinned adoption and rotation preserve the
-  installed numeric `DNS` policy, including absence, alongside local `Table` and post hooks;
-  provider peer material remains authoritative. Ubuntu 22.04 and 24.04 root/non-root,
-  ShellCheck, systemd, reproducible release, actionlint, and redacted worktree secret gates
-  pass. The quiesced upgrade changed only the reviewed provider-helper bytes; the active
-  profile, exact pre-managed snapshot and transaction backup, API configuration, provider
-  state, key metadata, timer mask, worker, locks, and recovery-artifact state remained
-  unchanged. `wg0`, public tunnel-bound AirVPN egress, and qBittorrent proof pass. No
-  authenticated provider request occurred during packaging, deployment, or postflight.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
 - **Evidence refs:** France removal commit `a11dd5d`; exact installed corrected runtime
   candidate `f0beafc`; complete-history bundle digest
@@ -104,14 +101,14 @@ Updated: 2026-07-16
   for ZIP, and `398b6f1423e6f238e13ebd8bc0791ea4f15903438fc02b5a98dbdf6239feb253`
   for the authoritative `SHA256SUMS`. Pinned Gitleaks 8.30.1 passed reachable history and
   both extracted archives.
-- **Blocked on:** no external blocker. A deliberate no-retry safety hold remains in force
-  for the rest of this slice until the scheduled continuation. The ledger has no failure
-  backoff and will not be reset, rewritten, or bypassed.
-- **Next step:** after the updated continuation revalidates exact `f0beafc` installed bytes
-  and every VM safety postcondition, use at most one naturally available slot for exactly
-  one controlled rotation. Keep the timer masked until that succeeds, then observe five
-  healthy timer cycles, replace the chat-supplied test credential with a fresh owner
-  credential, and proceed to the protected-main and `v1.1.0` release gates.
+- **Blocked on:** no external blocker for the five-cycle observation. The authenticated
+  ledger is naturally full and will not be reset, rewritten, or bypassed; healthy timer
+  cycles require no authenticated request.
+- **Next step:** revalidate the exact accepted active profile and provider state, observe
+  five consecutive healthy one-minute timer cycles under active supervision, then disable
+  and runtime-mask the timer again. Replace the chat-supplied test credential with a fresh
+  owner credential before unattended operation, protected-main integration, or the
+  `v1.1.0` release gates.
 
 ## ResumeStateHint
 
@@ -120,9 +117,12 @@ Updated: 2026-07-16
 - Branch: `Herb/airvpn-api-profiles`
 - Last installed runtime commit: `f0beafc`; its exact root/non-root Linux, release,
   reproducibility, workflow, and secret gates passed. The VM runs its byte-identical
-  provider helper in verified API mode with an exact pre-managed rollback snapshot and the
-  timer runtime-masked and inactive. Profile, configuration, provider state, and root-only
-  credential metadata remain unchanged from the accepted rollback state.
+  provider helper in verified API mode after one successful controlled rotation. The
+  accepted active profile and state digests are respectively
+  `f44c0bc6e5ed5d690b5b23d42fbdec0816f3dcc11c9e05c289d95cd1327f8499` and
+  `66d1f14c2e288d5ba9475be9e8115c23e847574e9ed8d2085acffbbaed7e93bf`.
+  The exact pre-managed rollback snapshot remains available; the timer is runtime-masked
+  and inactive; recovery artifacts are clear; and both credential paths remain root-only.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -146,9 +146,8 @@ Updated: 2026-07-16
   symlink boundaries, and generated-source manifest.
 - **Evidence decision:** `continue` within Task 15; deterministic, quiesced-install,
   authenticated raw-profile dry-run, transactional API adoption, exact rollback snapshot,
-  deliberate post-candidate failure rollback, AirVPN egress, and qBittorrent routing/listener
-  evidence is accepted. The failed controlled rotation is accepted only as safe rollback
-  evidence, not as successful rotation acceptance. Successful rotation, five-cycle
+  deliberate post-candidate failure rollback, corrected successful controlled rotation,
+  AirVPN egress, and qBittorrent routing/listener evidence are accepted. Five-cycle
   observation, fresh production credential replacement, release, and final API-mode
   migration acceptance remain unclaimed.
 - **Superseded compatibility baseline:** exact installed runtime commit `92e2890` omits the
@@ -163,5 +162,6 @@ Updated: 2026-07-16
   identity-pinned DNS ownership in the provider helper, adds regression/documentation
   coverage, and introduces no parser field, fallback, executable directive, provider
   authority, persistent state, or authenticated request. Exact dual-Ubuntu, package,
-  history/archive secret, VM-install, public-egress, and no-authentication evidence is
-  accepted for the next controlled rotation.
+  history/archive secret and VM-install evidence passed. Its first corrected controlled
+  rotation preserved the local no-DNS policy and private identity while adopting verified
+  provider peer material; the live rotation result is accepted.
