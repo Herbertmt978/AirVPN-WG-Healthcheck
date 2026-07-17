@@ -1,14 +1,16 @@
 # Todo Checkpoint: AirVPN API-Managed WireGuard Profiles
 
-Updated: 2026-07-16
+Updated: 2026-07-17
 
 ## TodoCheckpointDraft
 
-- **Current todo:** preserve the accepted `f0beafc` controlled-rotation result with the
-  timer runtime-masked. The next reviewed continuation may enable the timer only while it
-  observes five consecutive healthy cycles, then must return the VM to a masked, inactive
-  state before fresh production-credential replacement. No further authenticated request
-  is authorized in this slice; never reset, rewrite, or bypass the provider ledger.
+- **Current todo:** preserve the accepted `f0beafc` controlled rotation and the five
+  consecutive healthy timer cycles now observed with no authenticated request. The timer
+  is runtime-masked again and the exact reviewed health configuration is restored. Task 15
+  remains open only because the single credential-free, tunnel-bound `whatismyip`
+  postflight did not pass after the cycles. Do not repeat the rotation or five-cycle run;
+  the next reviewed continuation is one egress-only proof after a deliberate pause, with
+  the timer still masked. Never reset, rewrite, or bypass the provider ledger.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -91,6 +93,30 @@ Updated: 2026-07-16
   `f44c0bc6e5ed5d690b5b23d42fbdec0816f3dcc11c9e05c289d95cd1327f8499`;
   the health-configuration digest remains
   `768763e6a611952a857e103ffbc6338aa5644c2cdfc7bac6e7332befdf1faaad`.
+- **Five-cycle observation:** a fresh read-only preflight found the reviewed branch clean,
+  all installed/runtime/profile/configuration bytes exact, both credential files valid by
+  metadata only, all recovery artifacts absent, all locks free, `wg0` active, qBittorrent
+  proved, policy `GB NL BE DE IE`, all policy countries publicly eligible, zero backoff,
+  and all six rolling slots naturally reopened. Because the installed configuration
+  intentionally enables managed rotation, the observation made one temporary, atomic,
+  root-only change to `AIRVPN_ROTATE_ENABLED=0`; an exact backup lived only in the private
+  runtime directory. The standard timer was unmasked and started without persistent
+  enablement. Five distinct one-minute records then passed exactly as
+  `healthy/all_checks_passed`. Each accepted cycle retained the active-profile,
+  pre-managed snapshot, transaction backup, provider-state, private-identity and no-DNS
+  invariants; qBittorrent ownership remained proved; and no recovery artifact or held lock
+  appeared. Cleanup stopped both units, restored the exact reviewed configuration,
+  removed the temporary backup, and reinstated the runtime mask. No authenticated request
+  or durable provider-state write occurred.
+- **Incomplete postflight:** the one credential-free, tunnel-bound AirVPN egress proof run
+  after cleanup did not pass and was not retried. A separate redacted read-only audit then
+  proved the exact configuration/profile/snapshot/backup/provider-state/helper bytes,
+  root-only key metadata, masked inactive units, free locks, cleared artifacts, healthy
+  final status, active `wg0`, and qBittorrent binding. The current container was created
+  before the five-cycle window, ruling out container replacement during observation. The
+  public egress proof is therefore the only unresolved Task 15 gate; no provider response,
+  address, server, endpoint, profile material, credential, or attempt epoch was retained or
+  disclosed.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
 - **Evidence refs:** France removal commit `a11dd5d`; exact installed corrected runtime
   candidate `f0beafc`; complete-history bundle digest
@@ -101,14 +127,14 @@ Updated: 2026-07-16
   for ZIP, and `398b6f1423e6f238e13ebd8bc0791ea4f15903438fc02b5a98dbdf6239feb253`
   for the authoritative `SHA256SUMS`. Pinned Gitleaks 8.30.1 passed reachable history and
   both extracted archives.
-- **Blocked on:** no external blocker for the five-cycle observation. The authenticated
-  ledger is naturally full and will not be reset, rewritten, or bypassed; healthy timer
-  cycles require no authenticated request.
-- **Next step:** revalidate the exact accepted active profile and provider state, observe
-  five consecutive healthy one-minute timer cycles under active supervision, then disable
-  and runtime-mask the timer again. Replace the chat-supplied test credential with a fresh
-  owner credential before unattended operation, protected-main integration, or the
-  `v1.1.0` release gates.
+- **Blocked on:** a fresh credential-free, tunnel-bound AirVPN egress proof after the
+  redacted post-cycle request failed. The successful rotation and five healthy cycles are
+  preserved and must not be repeated to work around this gate.
+- **Next step:** after a deliberate pause, revalidate the exact masked/inactive postflight
+  state and perform one egress-only public proof through `wg0`, with no authenticated
+  request and no timer enablement. If it passes, replace the chat-supplied test credential
+  with a fresh owner credential before unattended operation, protected-main integration,
+  or the `v1.1.0` release gates.
 
 ## ResumeStateHint
 
@@ -121,8 +147,11 @@ Updated: 2026-07-16
   accepted active profile and state digests are respectively
   `f44c0bc6e5ed5d690b5b23d42fbdec0816f3dcc11c9e05c289d95cd1327f8499` and
   `66d1f14c2e288d5ba9475be9e8115c23e847574e9ed8d2085acffbbaed7e93bf`.
-  The exact pre-managed rollback snapshot remains available; the timer is runtime-masked
-  and inactive; recovery artifacts are clear; and both credential paths remain root-only.
+  The exact pre-managed rollback snapshot remains available; five healthy timer cycles
+  passed without a provider-state write; the exact health configuration was restored; the
+  timer is runtime-masked and inactive; recovery artifacts are clear; and both credential
+  paths remain root-only. The post-cycle public egress proof remains unresolved and must be
+  retried only as a separate credential-free continuation.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
@@ -147,9 +176,9 @@ Updated: 2026-07-16
 - **Evidence decision:** `continue` within Task 15; deterministic, quiesced-install,
   authenticated raw-profile dry-run, transactional API adoption, exact rollback snapshot,
   deliberate post-candidate failure rollback, corrected successful controlled rotation,
-  AirVPN egress, and qBittorrent routing/listener evidence are accepted. Five-cycle
-  observation, fresh production credential replacement, release, and final API-mode
-  migration acceptance remain unclaimed.
+  AirVPN egress, qBittorrent routing/listener evidence, and five consecutive healthy timer
+  cycles are accepted. The post-cycle egress-only proof, fresh production credential
+  replacement, release, and final API-mode migration acceptance remain unclaimed.
 - **Superseded compatibility baseline:** exact installed runtime commit `92e2890` omits the
   undocumented response-format query and makes a syntactically valid media label advisory
   only after explicit HTML, multipart, archive/compression, encoding, status, size, and JSON

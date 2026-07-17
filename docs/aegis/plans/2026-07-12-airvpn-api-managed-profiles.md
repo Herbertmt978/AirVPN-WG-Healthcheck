@@ -772,7 +772,10 @@ qBittorrent ownership, and route probes.
 - [ ] **Verify successful API operation.** Restore the health config exactly, run one
   controlled managed rotation, verify interface identity, handshake, route/rule, AirVPN
   egress, qB TCP/UDP ownership, and public-peer source routing or the documented substitute;
-  then observe five successful timer cycles.
+  then observe five successful timer cycles. The controlled rotation and five exact
+  `healthy/all_checks_passed` cycles are accepted, with the timer remasked and reviewed
+  configuration restored. Keep this item open until one separate post-cycle public egress
+  proof passes; the first proof failed redacted and was not retried.
 - [ ] **Remove the test key and establish final mode.** Unlink/sync the supplied test key.
   Install and validate a fresh owner-provided production key, or restore verified static
   mode and report the API migration as still open. Commit no remote runtime material.

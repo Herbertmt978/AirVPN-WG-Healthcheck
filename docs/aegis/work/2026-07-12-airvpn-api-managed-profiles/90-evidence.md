@@ -823,3 +823,29 @@ paired rollback drill and controlled successful rotation.
   all 11 architecture contracts from a clean tracked Linux export, and pinned Gitleaks
   8.30.1 over the complete worktree with redaction enabled. No credential, provider payload,
   endpoint, address, server, or generated profile was added to the repository evidence.
+- On 2026-07-17, a fresh redacted preflight found branch `8da7f710b453f620218949101a65dd18885d3c01`
+  clean and DownloadVM still byte-identical to the accepted runtime and live state. Both
+  credentials passed root-only metadata checks without being read. Timer/worker inactivity,
+  the runtime mask, free setup/interface/global locks, cleared recovery/staging artifacts,
+  active `wg0`, qBittorrent ownership, exact `GB NL BE DE IE` policy, current public country
+  eligibility, strict provider state, zero backoff, and six naturally reopened rolling
+  slots all passed. No authenticated request was made.
+- To make failure recovery credential-free during the supervised observation, the exact
+  reviewed health configuration was copied to a root-only runtime backup and atomically
+  changed only from enabled managed rotation to `AIRVPN_ROTATE_ENABLED=0`. The standard
+  timer was unmasked and started without persistent enablement. Five distinct one-minute
+  service records then passed exactly as `healthy/all_checks_passed`. Every accepted cycle
+  retained the active profile, private identity, absence of local DNS, immutable
+  pre-managed snapshot, old-profile transaction backup and provider-state digests. The
+  latter proves zero durable authenticated attempts. qBittorrent routing/listener ownership,
+  its container identity, active tunnel state, clear recovery artifacts and free locks also
+  passed throughout.
+- The bounded cleanup stopped both units, restored the reviewed configuration byte-for-byte,
+  removed its private runtime backup, and reinstated the runtime mask. The final
+  credential-free, tunnel-bound `whatismyip` proof did not pass, so the overall Task 15 gate
+  remains open and the proof was not retried. A separate read-only containment audit proved
+  the exact configuration, profile, snapshots, provider state and provider helper; valid
+  root-only key metadata; healthy final status; active `wg0`; proved qBittorrent binding;
+  unchanged container provenance predating the cycle window; free locks; cleared artifacts;
+  and masked inactive units. No provider response, egress address, server, endpoint, profile
+  material, credential, attempt epoch or raw log was retained or disclosed.
