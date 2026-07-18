@@ -849,3 +849,11 @@ paired rollback drill and controlled successful rotation.
   unchanged container provenance predating the cycle window; free locks; cleared artifacts;
   and masked inactive units. No provider response, egress address, server, endpoint, profile
   material, credential, attempt epoch or raw log was retained or disclosed.
+- On 2026-07-18 the user stopped the egress-proof heartbeat before another proof was run.
+  The automation was deleted rather than left active or repurposed. A final read-only VM
+  check found the committed evidence branch clean; exact runtime/configuration/profile/
+  snapshot/provider-state/helper bytes; exact API device and `GB NL BE DE IE` policy;
+  valid root-only credential metadata without reading either key; runtime-masked inactive
+  units; free locks; cleared recovery artifacts; healthy API-mode status; a fresh `wg0`
+  handshake; and proved qBittorrent binding. No public or authenticated provider request,
+  rotation, timer cycle, profile generation, ledger write, or runtime mutation occurred.

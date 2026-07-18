@@ -1,6 +1,6 @@
 # Todo Checkpoint: AirVPN API-Managed WireGuard Profiles
 
-Updated: 2026-07-17
+Updated: 2026-07-18
 
 ## TodoCheckpointDraft
 
@@ -9,8 +9,9 @@ Updated: 2026-07-17
   is runtime-masked again and the exact reviewed health configuration is restored. Task 15
   remains open only because the single credential-free, tunnel-bound `whatismyip`
   postflight did not pass after the cycles. Do not repeat the rotation or five-cycle run;
-  the next reviewed continuation is one egress-only proof after a deliberate pause, with
-  the timer still masked. Never reset, rewrite, or bypass the provider ledger.
+  the remaining continuation is one egress-only proof with the timer still masked. The
+  user stopped the continuation heartbeat on 2026-07-18, so no automated retry is armed.
+  Never reset, rewrite, or bypass the provider ledger.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -129,12 +130,13 @@ Updated: 2026-07-17
   both extracted archives.
 - **Blocked on:** a fresh credential-free, tunnel-bound AirVPN egress proof after the
   redacted post-cycle request failed. The successful rotation and five healthy cycles are
-  preserved and must not be repeated to work around this gate.
-- **Next step:** after a deliberate pause, revalidate the exact masked/inactive postflight
-  state and perform one egress-only public proof through `wg0`, with no authenticated
-  request and no timer enablement. If it passes, replace the chat-supplied test credential
-  with a fresh owner credential before unattended operation, protected-main integration,
-  or the `v1.1.0` release gates.
+  preserved and must not be repeated to work around this gate. The user has stopped the
+  egress-proof automation; there is no pending wake-up.
+- **Next step:** only when the user asks to resume, revalidate the exact masked/inactive
+  postflight state and perform one egress-only public proof through `wg0`, with no
+  authenticated request and no timer enablement. If it passes, replace the chat-supplied
+  test credential with a fresh owner credential before unattended operation,
+  protected-main integration, or the `v1.1.0` release gates.
 
 ## ResumeStateHint
 
@@ -151,7 +153,8 @@ Updated: 2026-07-17
   passed without a provider-state write; the exact health configuration was restored; the
   timer is runtime-masked and inactive; recovery artifacts are clear; and both credential
   paths remain root-only. The post-cycle public egress proof remains unresolved and must be
-  retried only as a separate credential-free continuation.
+  retried only as a separate credential-free continuation. Its heartbeat was deleted at
+  the user's request; resume manually rather than assuming a scheduled wake-up.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
