@@ -5,13 +5,14 @@ Updated: 2026-07-18
 ## TodoCheckpointDraft
 
 - **Current todo:** preserve the accepted `f0beafc` controlled rotation and the five
-  consecutive healthy timer cycles now observed with no authenticated request. The timer
-  is runtime-masked again and the exact reviewed health configuration is restored. Task 15
-  remains open only because the single credential-free, tunnel-bound `whatismyip`
-  postflight did not pass after the cycles. Do not repeat the rotation or five-cycle run;
-  the remaining continuation is one egress-only proof with the timer still masked. The
-  user stopped the continuation heartbeat on 2026-07-18, so no automated retry is armed.
-  Never reset, rewrite, or bypass the provider ledger.
+  supervised healthy cycles. DownloadVM now also has its own persistent
+  `wg-healthcheck@wg0.timer` enabled in API mode with the exact reviewed configuration.
+  Its activation cycle and a distinct one-minute recurrence both passed as
+  `healthy/all_checks_passed` without changing the profile or provider ledger. The Codex
+  continuation heartbeat remains deleted; it is unrelated to the VM timer. Task 15 still
+  has one evidence-only gap because the fresh credential-free, tunnel-bound `whatismyip`
+  result was inconclusive and was not retried. Never reset, rewrite, or bypass the provider
+  ledger.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -109,15 +110,27 @@ Updated: 2026-07-18
   appeared. Cleanup stopped both units, restored the exact reviewed configuration,
   removed the temporary backup, and reinstated the runtime mask. No authenticated request
   or durable provider-state write occurred.
-- **Incomplete postflight:** the one credential-free, tunnel-bound AirVPN egress proof run
-  after cleanup did not pass and was not retried. A separate redacted read-only audit then
-  proved the exact configuration/profile/snapshot/backup/provider-state/helper bytes,
-  root-only key metadata, masked inactive units, free locks, cleared artifacts, healthy
-  final status, active `wg0`, and qBittorrent binding. The current container was created
-  before the five-cycle window, ruling out container replacement during observation. The
-  public egress proof is therefore the only unresolved Task 15 gate; no provider response,
-  address, server, endpoint, profile material, credential, or attempt epoch was retained or
-  disclosed.
+- **Production activation:** the user attested that the root-only source credential had
+  been replaced with a new, never-shared production key. A metadata-only and silent byte
+  comparison found the installed credential already identical to that source, so no
+  replacement transaction or authenticated generator request was made. Exact hashes,
+  key metadata, active tunnel, qBittorrent proof, free locks, and clear recovery artifacts
+  passed immediately before activation. The runtime mask was removed and the standard
+  timer was persistently enabled. Its immediate timer-owned check and a distinct normal
+  one-minute recurrence both completed `healthy/all_checks_passed`; the active profile,
+  configuration, snapshots, backup, and strict provider ledger remained byte-identical.
+  Only the healthy control path ran, so no authenticated generation or rotation path was
+  invoked. The worker returned inactive and observation artifacts were removed while the
+  timer remained active.
+- **Incomplete egress evidence:** a fresh credential-free request was made before timer
+  activation and its private response was deleted in the guaranteed cleanup path. The
+  acceptance wrapper incorrectly required the provider helper's safe country display to
+  be an ISO code, while the reviewed helper contract and regression test permit a country
+  name. Because the discarded result cannot be reconstructed, this attempt is recorded as
+  inconclusive rather than passed or failed, and it was not retried. The earlier accepted
+  controlled-rotation egress proof still applies to the unchanged active profile, but the
+  fresh evidence-only public egress gate remains unclaimed. No response, address, server,
+  endpoint, profile material, credential, or attempt epoch was retained or disclosed.
 - **Pending:** implementation Tasks 15-16 from the approved plan.
 - **Evidence refs:** France removal commit `a11dd5d`; exact installed corrected runtime
   candidate `f0beafc`; complete-history bundle digest
@@ -128,15 +141,15 @@ Updated: 2026-07-18
   for ZIP, and `398b6f1423e6f238e13ebd8bc0791ea4f15903438fc02b5a98dbdf6239feb253`
   for the authoritative `SHA256SUMS`. Pinned Gitleaks 8.30.1 passed reachable history and
   both extracted archives.
-- **Blocked on:** a fresh credential-free, tunnel-bound AirVPN egress proof after the
-  redacted post-cycle request failed. The successful rotation and five healthy cycles are
-  preserved and must not be repeated to work around this gate. The user has stopped the
-  egress-proof automation; there is no pending wake-up.
-- **Next step:** only when the user asks to resume, revalidate the exact masked/inactive
-  postflight state and perform one egress-only public proof through `wg0`, with no
-  authenticated request and no timer enablement. If it passes, replace the chat-supplied
-  test credential with a fresh owner credential before unattended operation,
-  protected-main integration, or the `v1.1.0` release gates.
+- **Blocked on:** release evidence still needs one fresh credential-free, tunnel-bound
+  AirVPN egress proof. The successful rotation, supervised cycles, production credential,
+  and now-enabled VM timer are preserved and must not be repeated to work around this
+  evidence gap. The Codex egress-proof automation is deleted; no continuation is armed.
+- **Next step:** revalidate the enabled healthy runtime and perform one separately reviewed
+  egress-only public proof through `wg0`, with no authenticated request and no timer or
+  profile mutation. If it passes, continue protected-main integration and the `v1.1.0`
+  release gates. Do not disable the VM timer merely because the Codex continuation was
+  removed.
 
 ## ResumeStateHint
 
@@ -149,15 +162,17 @@ Updated: 2026-07-18
   accepted active profile and state digests are respectively
   `f44c0bc6e5ed5d690b5b23d42fbdec0816f3dcc11c9e05c289d95cd1327f8499` and
   `66d1f14c2e288d5ba9475be9e8115c23e847574e9ed8d2085acffbbaed7e93bf`.
-  The exact pre-managed rollback snapshot remains available; five healthy timer cycles
-  passed without a provider-state write; the exact health configuration was restored; the
-  timer is runtime-masked and inactive; recovery artifacts are clear; and both credential
-  paths remain root-only. The post-cycle public egress proof remains unresolved and must be
-  retried only as a separate credential-free continuation. Its heartbeat was deleted at
-  the user's request; resume manually rather than assuming a scheduled wake-up.
+  The exact pre-managed rollback snapshot remains available; five supervised cycles and
+  two later production-timer cycles passed without a provider-state write. The exact health
+  configuration is active, the VM timer is persistently enabled and active, the worker is
+  idle between checks, recovery artifacts are clear, and both credential paths remain
+  root-only. The user attests that their matching content is a fresh production key. The
+  post-cycle public egress proof remains unresolved and must be retried only as a separate
+  credential-free continuation. Its Codex heartbeat was deleted at the user's request;
+  do not confuse that deletion with the enabled VM timer.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
-- Never use the supplied API key in source, fixtures, arguments, logs, or public CI.
+- Never use any API key in source, fixtures, arguments, logs, or public CI.
 
 ## DriftCheckDraft
 
@@ -179,9 +194,10 @@ Updated: 2026-07-18
 - **Evidence decision:** `continue` within Task 15; deterministic, quiesced-install,
   authenticated raw-profile dry-run, transactional API adoption, exact rollback snapshot,
   deliberate post-candidate failure rollback, corrected successful controlled rotation,
-  AirVPN egress, qBittorrent routing/listener evidence, and five consecutive healthy timer
-  cycles are accepted. The post-cycle egress-only proof, fresh production credential
-  replacement, release, and final API-mode migration acceptance remain unclaimed.
+  AirVPN egress, qBittorrent routing/listener evidence, five consecutive supervised timer
+  cycles, a fresh production credential, persistent VM-timer activation, and two healthy
+  production-timer cycles are accepted. The fresh egress-only proof, release, and
+  protected-main integration remain unclaimed.
 - **Superseded compatibility baseline:** exact installed runtime commit `92e2890` omits the
   undocumented response-format query and makes a syntactically valid media label advisory
   only after explicit HTML, multipart, archive/compression, encoding, status, size, and JSON

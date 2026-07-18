@@ -747,8 +747,10 @@ device lifecycle scope.
 **Why:** deterministic tests cannot prove the live AirVPN generator, tunnel, Docker, and
 policy-routing integration.
 
-**Impact/compatibility:** timer stays disabled throughout; verified v1.0/static rollback
-remains available.
+**Impact/compatibility:** the timer stayed disabled throughout destructive acceptance and
+was enabled only after the user attested credential freshness, strict metadata/equality
+checks passed, and the live state was healthy; verified v1.0/static rollback remains
+available.
 
 **Verification:** redacted evidence from systemd, profile hashes/modes, AirVPN egress,
 qBittorrent ownership, and route probes.
@@ -774,11 +776,15 @@ qBittorrent ownership, and route probes.
   egress, qB TCP/UDP ownership, and public-peer source routing or the documented substitute;
   then observe five successful timer cycles. The controlled rotation and five exact
   `healthy/all_checks_passed` cycles are accepted, with the timer remasked and reviewed
-  configuration restored. Keep this item open until one separate post-cycle public egress
-  proof passes; the first proof failed redacted and was not retried.
-- [ ] **Remove the test key and establish final mode.** Unlink/sync the supplied test key.
-  Install and validate a fresh owner-provided production key, or restore verified static
-  mode and report the API migration as still open. Commit no remote runtime material.
+  configuration restored. The production VM timer was subsequently enabled and its first
+  two distinct checks passed without a profile or provider-state write. Keep this item open
+  until one separate post-cycle public egress proof passes; the first proof failed redacted,
+  and a later proof was inconclusive because of an overly strict local acceptance wrapper.
+  Neither was retried.
+- [x] **Remove the test key and establish final mode.** The user attested that the source is
+  a new, never-shared production key; strict metadata checks and a silent equality check
+  proved the installed credential already matches it. API mode and the persistent VM timer
+  are active. No credential content or remote runtime material was committed.
 
 ## Task 16: Merge, publish, and verify `v1.1.0`
 

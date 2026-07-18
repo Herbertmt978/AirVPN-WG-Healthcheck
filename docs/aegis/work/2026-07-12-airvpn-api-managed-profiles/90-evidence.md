@@ -857,3 +857,41 @@ paired rollback drill and controlled successful rotation.
   units; free locks; cleared recovery artifacts; healthy API-mode status; a fresh `wg0`
   handshake; and proved qBittorrent binding. No public or authenticated provider request,
   rotation, timer cycle, profile generation, ledger write, or runtime mutation occurred.
+- The user subsequently confirmed that the root-only source file contains a new,
+  never-shared production credential. A silent comparison found the installed credential
+  already byte-identical to that source, with both paths still root-owned regular mode-0600
+  files. The setup replacement path was therefore not invoked and no authenticated
+  generator capacity was consumed. Neither credential content nor a derived identifier was
+  printed, logged, or added to the repository.
+- One fresh credential-free request was issued through `wg0` before production timer
+  activation. Its private response was removed in guaranteed cleanup. The local acceptance
+  wrapper required an ISO country code even though the reviewed provider helper deliberately
+  emits a sanitized country display name when one is available, as its regression test
+  confirms. The result could not be reconstructed after cleanup, so the attempt is recorded
+  as inconclusive and was not retried. No provider response, egress address, server,
+  endpoint, profile material, credential, or attempt epoch was retained or disclosed.
+- A separate read-only containment audit then matched the accepted profile, health
+  configuration, pre-managed snapshot, transaction backup, provider state, and provider
+  helper digests. Both credentials passed strict metadata and silent equality checks;
+  `wg0` had a fresh single-peer handshake; API policy was exactly fixed device `DownloadVM`
+  and countries `GB NL BE DE IE` with managed rotation enabled; qBittorrent was proved;
+  all locks were free; recovery and probe artifacts were absent; and the timer/worker were
+  still inactive under the runtime mask.
+- The runtime mask was removed and DownloadVM's own
+  `wg-healthcheck@wg0.timer` was persistently enabled. Its immediate timer-owned check and
+  a separate normal one-minute recurrence both completed exactly as
+  `healthy/all_checks_passed`. After each observation the timer was enabled and active, the
+  worker was inactive, qBittorrent and the tunnel remained proved, and observation artifacts
+  were absent. The active profile, health configuration, rollback snapshots, transaction
+  backup, and strict provider ledger retained their accepted digests. Both checks took only
+  the healthy control path, so no authenticated generation or rotation path ran during
+  activation. The deleted Codex heartbeat remains deleted and is operationally independent
+  from this enabled VM timer.
+- A later read-only snapshot, after further timer opportunity, still found the timer enabled
+  and active, the worker idle, final status healthy, `wg0` active with a fresh single peer,
+  and qBittorrent proved. Profile, configuration, both rollback copies, provider state, and
+  provider-helper digests were exact; production-key metadata/equality and API policy were
+  exact; and every acceptance/recovery artifact was absent. The evidence-only change passed
+  `git diff --check`, all 19 public-documentation contracts, all 11 architecture contracts
+  from a clean tracked Linux export, independent factual/secret review, and pinned Gitleaks
+  8.30.1 over the current worktree with redaction enabled.
