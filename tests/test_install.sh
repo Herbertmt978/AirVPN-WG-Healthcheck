@@ -896,7 +896,7 @@ test_ci_workflow_is_deterministic_and_smoke_isolated() {
     'continue-on-error: true'
     'uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1'
     'persist-credentials: false'
-    'uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0'
+    'uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0'
     "python3 -m unittest discover -s tests -p 'test_*.py' -v"
     'bash tests/test_wg_healthcheck.sh'
     'bash tests/test_install.sh'
