@@ -771,7 +771,7 @@ qBittorrent ownership, and route probes.
   impossible threshold so the old profile is restored without making rollback speed a
   postcondition. Verify exact old hash/mode, cleared or reconciled journal and safety
   record, healthy tunnel, and restored qB binding.
-- [ ] **Verify successful API operation.** Restore the health config exactly, run one
+- [x] **Verify successful API operation.** Restore the health config exactly, run one
   controlled managed rotation, verify interface identity, handshake, route/rule, AirVPN
   egress, qB TCP/UDP ownership, and public-peer source routing or the documented substitute;
   then observe five successful timer cycles. The controlled rotation and five exact
@@ -780,7 +780,10 @@ qBittorrent ownership, and route probes.
   two distinct checks passed without a profile or provider-state write. Keep this item open
   until one separate post-cycle public egress proof passes; the first proof failed redacted,
   and a later proof was inconclusive because of an overly strict local acceptance wrapper.
-  Neither was retried.
+  On 2026-07-29 a new, separately reviewed credential-free proof passed through `wg0`, with
+  no authenticated request and guaranteed private-response cleanup. The live profile and
+  provider state had also advanced from the activation baseline while the seven-day service
+  history remained clean, consistent with successful unattended managed rotation.
 - [x] **Remove the test key and establish final mode.** The user attested that the source is
   a new, never-shared production key; strict metadata checks and a silent equality check
   proved the installed credential already matches it. API mode and the persistent VM timer

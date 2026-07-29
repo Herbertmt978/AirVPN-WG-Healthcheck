@@ -895,3 +895,25 @@ paired rollback drill and controlled successful rotation.
   `git diff --check`, all 19 public-documentation contracts, all 11 architecture contracts
   from a clean tracked Linux export, independent factual/secret review, and pinned Gitleaks
   8.30.1 over the current worktree with redaction enabled.
+- On 2026-07-29, a fresh live status check found installed version `1.1.0`, the persistent
+  VM timer enabled and active, the worker idle between runs, current
+  `healthy/all_checks_passed` status, exact fixed-device and `GB NL BE DE IE` policy,
+  secure root-only credential metadata, a fresh single-peer WireGuard handshake, proved
+  qBittorrent binding, clear recovery artifacts, and no service-failure signatures in the
+  preceding seven-day journal window. The provider state and active profile had both
+  advanced from their 2026-07-18 activation baselines while the service history remained
+  clean, the expected durable signature of managed rotation rather than static operation.
+- The same check made exactly one credential-free `whatismyip` request bound to `wg0`.
+  The installed strict provider parser accepted AirVPN egress. The response lived only in a
+  fixed root-owned mode-0600 runtime file and was removed in the guaranteed cleanup path.
+  No API key was opened for that request, no authenticated provider call was made, and no
+  response, egress address, server, endpoint, profile material, credential, or attempt epoch
+  was retained or disclosed. This closes the final Task 15 live-acceptance gate.
+- Current public `main` added project funding metadata and upgraded the SHA-pinned checkout
+  and Python setup Actions after the feature branch diverged. Those commits were merged
+  into the release candidate without rewriting history. The v1.1 split installer-test
+  owner was retained in place of the obsolete monolithic `main` copy, and its canonical
+  workflow assertions were updated to the same new immutable Action SHAs. The Windows
+  contract run reached and passed that merged workflow assertion; its POSIX-mode and
+  `flock` cases remain delegated to the required Ubuntu 22.04/24.04 release matrix rather
+  than being waived.

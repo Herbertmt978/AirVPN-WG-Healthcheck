@@ -6,7 +6,7 @@ All notable changes to this project are documented here. Release numbers follow
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-07-13
+## [1.1.0] - 2026-07-29
 
 ### Added
 

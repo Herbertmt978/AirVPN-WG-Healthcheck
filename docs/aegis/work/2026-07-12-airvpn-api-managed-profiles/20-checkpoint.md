@@ -1,18 +1,16 @@
 # Todo Checkpoint: AirVPN API-Managed WireGuard Profiles
 
-Updated: 2026-07-18
+Updated: 2026-07-29
 
 ## TodoCheckpointDraft
 
-- **Current todo:** preserve the accepted `f0beafc` controlled rotation and the five
-  supervised healthy cycles. DownloadVM now also has its own persistent
-  `wg-healthcheck@wg0.timer` enabled in API mode with the exact reviewed configuration.
-  Its activation cycle and a distinct one-minute recurrence both passed as
-  `healthy/all_checks_passed` without changing the profile or provider ledger. The Codex
-  continuation heartbeat remains deleted; it is unrelated to the VM timer. Task 15 still
-  has one evidence-only gap because the fresh credential-free, tunnel-bound `whatismyip`
-  result was inconclusive and was not retried. Never reset, rewrite, or bypass the provider
-  ledger.
+- **Current todo:** complete Task 16 protected-main integration and publish `v1.1.0` from
+  the exact reviewed tree. DownloadVM's persistent `wg-healthcheck@wg0.timer` remains
+  enabled in API mode. A 2026-07-29 live check found a clean seven-day service history,
+  current `healthy/all_checks_passed` status, a fresh tunnel handshake, proved qBittorrent
+  binding, advanced provider state and an updated active profile consistent with managed
+  rotation, and a successful credential-free AirVPN egress proof. Task 15 is complete.
+  Never reset, rewrite, or bypass the provider ledger.
 - **Completed:** repository/API reconnaissance; approved design and MIT choice; reviewed
   16-task implementation plan; country-selection and recovery amendments; isolated
   worktree; Task 1 strict profile parsing and credential-free country discovery; Task 2
@@ -122,16 +120,13 @@ Updated: 2026-07-18
   Only the healthy control path ran, so no authenticated generation or rotation path was
   invoked. The worker returned inactive and observation artifacts were removed while the
   timer remained active.
-- **Incomplete egress evidence:** a fresh credential-free request was made before timer
-  activation and its private response was deleted in the guaranteed cleanup path. The
-  acceptance wrapper incorrectly required the provider helper's safe country display to
-  be an ISO code, while the reviewed helper contract and regression test permit a country
-  name. Because the discarded result cannot be reconstructed, this attempt is recorded as
-  inconclusive rather than passed or failed, and it was not retried. The earlier accepted
-  controlled-rotation egress proof still applies to the unchanged active profile, but the
-  fresh evidence-only public egress gate remains unclaimed. No response, address, server,
-  endpoint, profile material, credential, or attempt epoch was retained or disclosed.
-- **Pending:** implementation Tasks 15-16 from the approved plan.
+- **Completed egress evidence:** on 2026-07-29, a fresh credential-free request bound to
+  `wg0` passed the installed strict AirVPN egress parser. The response lived only in a
+  root-owned mode-0600 runtime file and was removed in the guaranteed cleanup path. The
+  request used no API key and made no authenticated provider call. No response, address,
+  server, endpoint, profile material, credential, or attempt epoch was retained or
+  disclosed.
+- **Pending:** implementation Task 16 from the approved plan.
 - **Evidence refs:** France removal commit `a11dd5d`; exact installed corrected runtime
   candidate `f0beafc`; complete-history bundle digest
   `7d0657a974e8443d23501a1b96af31287b8c3ebcafc0eff3939a9a671035ca5e`.
@@ -141,15 +136,12 @@ Updated: 2026-07-18
   for ZIP, and `398b6f1423e6f238e13ebd8bc0791ea4f15903438fc02b5a98dbdf6239feb253`
   for the authoritative `SHA256SUMS`. Pinned Gitleaks 8.30.1 passed reachable history and
   both extracted archives.
-- **Blocked on:** release evidence still needs one fresh credential-free, tunnel-bound
-  AirVPN egress proof. The successful rotation, supervised cycles, production credential,
-  and now-enabled VM timer are preserved and must not be repeated to work around this
-  evidence gap. The Codex egress-proof automation is deleted; no continuation is armed.
-- **Next step:** revalidate the enabled healthy runtime and perform one separately reviewed
-  egress-only public proof through `wg0`, with no authenticated request and no timer or
-  profile mutation. If it passes, continue protected-main integration and the `v1.1.0`
-  release gates. Do not disable the VM timer merely because the Codex continuation was
-  removed.
+- **Blocked on:** no live-acceptance blocker remains. Publication still requires the exact
+  local/package/secret matrix, protected-main CI, annotated tag CI, and downloaded-asset
+  verification.
+- **Next step:** run the complete integrated-candidate release gates, merge through the
+  protected `main` check, create and push only annotated `v1.1.0`, then verify the published
+  assets. Do not disable the VM timer during repository release administration.
 
 ## ResumeStateHint
 
@@ -159,7 +151,7 @@ Updated: 2026-07-18
 - Last installed runtime commit: `f0beafc`; its exact root/non-root Linux, release,
   reproducibility, workflow, and secret gates passed. The VM runs its byte-identical
   provider helper in verified API mode after one successful controlled rotation. The
-  accepted active profile and state digests are respectively
+  pre-activation profile and state digests were respectively
   `f44c0bc6e5ed5d690b5b23d42fbdec0816f3dcc11c9e05c289d95cd1327f8499` and
   `66d1f14c2e288d5ba9475be9e8115c23e847574e9ed8d2085acffbbaed7e93bf`.
   The exact pre-managed rollback snapshot remains available; five supervised cycles and
@@ -167,9 +159,11 @@ Updated: 2026-07-18
   configuration is active, the VM timer is persistently enabled and active, the worker is
   idle between checks, recovery artifacts are clear, and both credential paths remain
   root-only. The user attests that their matching content is a fresh production key. The
-  post-cycle public egress proof remains unresolved and must be retried only as a separate
-  credential-free continuation. Its Codex heartbeat was deleted at the user's request;
-  do not confuse that deletion with the enabled VM timer.
+  2026-07-29 live status remained healthy with a clean seven-day service history; both the
+  active profile and provider state had advanced from those baselines, consistent with
+  managed rotation. A fresh credential-free AirVPN egress proof passed and its private
+  response was removed. The Codex heartbeat remains deleted; do not confuse that deletion
+  with the enabled VM timer.
 - Re-read `10-intent.md`, the approved spec, the implementation plan, `git status`, and
   baseline test output before resuming.
 - Never use any API key in source, fixtures, arguments, logs, or public CI.
@@ -191,13 +185,14 @@ Updated: 2026-07-18
   are 133, 185, and 102 lines, with every split owner at or below 800 lines. Architecture
   tests enforce the exact owner exceptions, 13 reviewed long blocks, registries, encodings,
   symlink boundaries, and generated-source manifest.
-- **Evidence decision:** `continue` within Task 15; deterministic, quiesced-install,
+- **Evidence decision:** `continue` into Task 16; deterministic, quiesced-install,
   authenticated raw-profile dry-run, transactional API adoption, exact rollback snapshot,
   deliberate post-candidate failure rollback, corrected successful controlled rotation,
   AirVPN egress, qBittorrent routing/listener evidence, five consecutive supervised timer
   cycles, a fresh production credential, persistent VM-timer activation, and two healthy
-  production-timer cycles are accepted. The fresh egress-only proof, release, and
-  protected-main integration remain unclaimed.
+  production-timer cycles, subsequent managed state/profile advancement, a clean seven-day
+  timer history, and the fresh egress-only proof are accepted. Release and protected-main
+  integration remain unclaimed.
 - **Superseded compatibility baseline:** exact installed runtime commit `92e2890` omits the
   undocumented response-format query and makes a syntactically valid media label advisory
   only after explicit HTML, multipart, archive/compression, encoding, status, size, and JSON
