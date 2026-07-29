@@ -1,5 +1,4 @@
 import contextlib
-import fcntl
 import importlib.machinery
 import importlib.util
 import io
@@ -349,14 +348,13 @@ class SetupCliTests(unittest.TestCase):
                 ):
                     setup.open_credential_file(str(good))
 
-            base_fd = os.open(good, os.O_RDONLY | os.O_CLOEXEC)
-            self.addCleanup(os.close, base_fd)
-            high_fd = fcntl.fcntl(base_fd, fcntl.F_DUPFD_CLOEXEC, 1024)
+            high_fd = setup.MAX_PRIVATE_FD + 1
             with mock.patch.object(
                 setup.private_io, "_open_absolute_nofollow", return_value=high_fd
-            ):
+            ), mock.patch.object(setup.os, "close") as close:
                 with self.assertRaisesRegex(setup.SetupError, "descriptor range"):
                     setup.open_credential_file(str(good))
+            close.assert_called_once_with(high_fd)
 
     def test_runtime_validation_uses_distinct_fixed_private_fds_and_no_shell(self):
         calls = []
