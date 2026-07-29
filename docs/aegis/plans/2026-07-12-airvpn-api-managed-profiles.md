@@ -1,0 +1,840 @@
+# Implementation Plan: AirVPN API-Managed WireGuard Profiles
+
+## Goal
+
+Ship `v1.1.0` as a dual-mode product: preserve the existing static,
+credential-free healthcheck and add an explicitly selected API-managed mode that can
+provision, adopt, rotate, verify, and roll back an AirVPN WireGuard profile without
+exposing credentials or running untrusted profile content as root. Publish the MIT-licensed
+release and migrate the download VM through a controlled rollback drill.
+
+## Architecture
+
+- `bin/wg-healthcheck` remains the stable healthcheck entry point and owns CLI dispatch,
+  common tunnel verification, static endpoint recovery, and mode selection.
+- `libexec/wg-healthcheck-managed` is a securely sourced Bash module that owns API state,
+  managed-profile transactions, qBittorrent containment, safety records, and v2
+  reconciliation. Static timer runs do not source it unless a pre-mode classifier finds a
+  safety record or v2 journal that must be reconciled.
+- `libexec/airvpn-api` remains the Python provider boundary and gains strict profile
+  parsing, fixed-origin authenticated generation, canonical rendering, identity pinning,
+  and descriptor-only secret/profile transport.
+- `bin/wg-healthcheck-setup` is a standard-library Python operator tool that owns hidden
+  credential input, two-mode setup, safe configuration rewrites, and fixed-argument
+  orchestration. It never owns tunnel transactions.
+- The installer owns managed code/directories but preserves profiles, credentials,
+  pre-managed snapshots, pending journals, safety records, and persistent API state.
+
+## Tech stack
+
+- Bash 5.1+, Python 3.10+ standard library, systemd 249+, WireGuard tools, iproute2,
+  curl, GNU coreutils, util-linux, Docker when qBittorrent management is configured.
+- Python `unittest`, isolated Bash harnesses, ShellCheck, `systemd-analyze verify`,
+  actionlint, Gitleaks, GitHub Actions, GitHub CLI, and reproducible release scripts.
+
+## Baseline and authority references
+
+- Approved design:
+  `docs/aegis/specs/2026-07-12-airvpn-api-managed-profiles-design.md`
+- Architecture baseline:
+  `docs/aegis/baseline/2026-07-12-initial-baseline.md`
+- Public contracts: `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`
+- Existing owners: `bin/wg-healthcheck`, `libexec/airvpn-api`, `install.sh`, `systemd/`,
+  `scripts/package-release.sh`, and `tests/`
+- Provider authority: AirVPN API Explorer, public status endpoint, generator endpoint,
+  technical specifications, and official device lifecycle statements cited by the spec.
+
+## Compatibility boundary
+
+- `wg-healthcheck <iface>` and `wg-healthcheck --version` remain valid.
+- Existing health configurations remain valid and default to
+  `AIRVPN_PROFILE_SOURCE=static` without opening a key.
+- Static endpoint rotation and the v1 one-line pending marker remain supported.
+- The installer never overwrites an existing WireGuard profile, health configuration,
+  credential, pre-managed snapshot, backup, candidate, marker, safety record, or API state.
+- Public CI remains deterministic and credential-free.
+- API-managed mode never falls back to endpoint-only mutation after an authenticated
+  failure; switching modes is an explicit operator action.
+- Device creation, renewal, deletion, and port-forward management remain excluded.
+
+## Verification
+
+Each behavior slice follows RED → GREEN → focused regression → commit. Completion requires:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+bash tests/test_wg_healthcheck.sh
+bash tests/test_wg_managed_profiles.sh
+bash tests/test_install.sh
+bash tests/test_release.sh --ref HEAD
+bash scripts/build-managed-module.sh --check
+bash -n bin/wg-healthcheck libexec/wg-healthcheck-managed libexec/wg-healthcheck-managed.d/*.bash install.sh scripts/*.sh tests/*.sh tests/lib/*.sh tests/install/*.sh tests/wg_healthcheck/*.sh tests/wg_managed/*.sh
+shellcheck -s bash -x -S style bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh tests/lib/wg_healthcheck_test_support.sh tests/lib/wg_managed_test_support.sh tests/wg_healthcheck/*.sh tests/wg_managed/*.sh
+shellcheck -s bash -x -S style -e SC2034 libexec/wg-healthcheck-managed.d/*.bash
+systemd-analyze verify systemd/wg-healthcheck@.service systemd/wg-healthcheck@.timer
+actionlint
+```
+
+The exact outgoing history, extracted archives, and deployed runtime tree are scanned with
+redacted Gitleaks. Live acceptance additionally proves AirVPN egress, policy routing,
+qBittorrent TCP/UDP ownership, public-peer source routing when peers are available, and
+verified rollback on the download VM.
+
+## Plan basis
+
+### Facts
+
+- The public branch is clean and the static transaction already provides atomic backup,
+  pending-state reconciliation, postcondition verification, and full-file rollback.
+- AirVPN exposes a public status API and an authenticated generator that returns a raw
+  WireGuard profile, sometimes using HTTP 200 for error payloads.
+- The current Bash entry point already exceeds 1,000 lines, so managed logic needs a
+  separate securely loaded owner.
+- The current project intentionally rejects account credentials and has tests asserting
+  that boundary; those assertions must become dual-mode secret-boundary tests.
+- The owner approved the MIT License and `v1.1.0` scope.
+
+### Assumptions pinned by the approved design
+
+- The API-managed path uses an existing fixed AirVPN device and IPv4 entry address 1.
+- Runtime rotation must preserve the interface private key and IPv4 `/32` address.
+- Provider profiles permit only canonical fields and optional validated `Table`; every
+  provider hook and `SaveConfig` are rejected. A private fixed-fd installed-profile path
+  may retain only ordered `PostUp`/`PostDown` commands already owned by root.
+- The supplied API key is for acceptance testing only. A fresh key not shared in chat is
+  required before leaving the VM in production API mode.
+
+### Unknowns resolved by explicit gates
+
+- Live response values are never captured. A local-only response reason enum identifies
+  whether the strict gate rejected status, encoding, media type, read, size, JSON, or local
+  protocol handling. A contradiction with the approved allowlists stops the live test and
+  requires a spec amendment before code accepts another response shape.
+- The VM's root-only profile may contain routing hooks. Adoption retains validated repeated
+  `PostUp`/`PostDown` commands without admitting hooks from provider output; other hooks or
+  unsupported content keep the VM in static mode without mutation.
+- Public torrent peers may be absent during the acceptance window. After 60 seconds, the
+  deterministic substitute is process-owned TCP/UDP binding plus a process-bound route and
+  AirVPN egress probe, with the absence reported.
+
+## Ripple Signal Triage
+
+- Configuration grammar changes expand into the template, setup writer, installer tests,
+  README reference, migration docs, and release notes.
+- Profile mutation expands into qBittorrent state, route/rule verification, v1/v2 pending
+  reconciliation, downgrade rules, and uninstall preservation.
+- New installed files expand into package allowlists, archive-mode tests, systemd verify,
+  CI syntax checks, and release secret scans.
+- Credential handling expands into core-dump policy, process arguments/environment,
+  journaling/status redaction, support guidance, VM transfer, and removal/rotation.
+- Version and license changes expand into runtime version, `VERSION`, README examples,
+  changelog links, release notes, package contents, and GitHub metadata.
+
+## File map
+
+### Create
+
+- `libexec/wg-healthcheck-managed`
+- `bin/wg-healthcheck-setup`
+- `tests/test_wg_managed_profiles.sh`
+- `tests/test_setup.py`
+- `tests/test_public_docs.py`
+- `docs/operations.md`
+- `docs/releases/v1.1.0.md`
+- `docs/aegis/adr/0001-dual-mode-profile-management.md`
+- `LICENSE`
+
+### Modify
+
+- `libexec/airvpn-api`
+- `bin/wg-healthcheck`
+- `config/wg0.conf.example`
+- `install.sh`
+- `systemd/wg-healthcheck@.service`
+- `tests/test_airvpn_api.py`
+- `tests/test_wg_healthcheck.sh`
+- `tests/test_install.sh`
+- `tests/test_release.sh`
+- `scripts/package-release.sh`
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
+- `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `VERSION`
+- `docs/aegis/INDEX.md`
+
+## Critical code contracts
+
+### Provider model and CLI
+
+The immutable, redacted `WireGuardProfile` dataclass has these exact fields:
+`address: ipaddress.IPv4Interface`, `private_key: str`, `mtu: int`,
+`dns: tuple[str, ...]`, `table: str | None`, `public_key: str`,
+`preshared_key: str`, `endpoint: str`, `allowed_ips: str`, and
+`persistent_keepalive: int`.
+
+The exact public function signatures are:
+
+- `parse_wireguard_profile(payload: bytes, *, expected_endpoint: str | None = None) -> WireGuardProfile`
+- `render_wireguard_profile(profile: WireGuardProfile) -> bytes`
+- `profiles_have_same_identity(expected: WireGuardProfile, candidate: WireGuardProfile) -> bool`
+
+```text
+airvpn-api generate-profile
+  --server NAME
+  --device NAME
+  --expected-endpoint IPV4:PORT
+  [--timeout SECONDS]
+  [--pin-identity]
+
+airvpn-api list-countries
+  [--url HTTPS_STATUS_URL]
+  [--timeout SECONDS]
+```
+
+Credential input is fixed FD 3, canonical profile output is fixed FD 4, and
+`--pin-identity` reads the installed profile from fixed FD 5. The descriptor numbers are
+not configurable. Safe stdout is exactly one TSV manifest; stderr is a bounded generic
+error. Expected exit classes are 2 contract/validation, 3 no candidate, 4 permanent
+auth/device, 5 rate limit, 6 transient provider/network, and 7 identity mismatch.
+
+`list-countries` is credential-free and prints one sorted TSV row per eligible country:
+uppercase code, sanitized name, and healthy IPv4/WireGuard-capable server count.
+
+The existing credential-free `select` command gains repeatable
+`--exclude-server NAME` options, defaulting to none and capped at 16. Exclusions use the
+same bounded server-name grammar and are applied before deterministic scoring.
+
+### Runtime CLI
+
+```text
+wg-healthcheck <iface>
+wg-healthcheck provision <iface> --dry-run [--credential-fd N] [--settings-fd N]
+wg-healthcheck provision <iface> --apply [--credential-fd N]
+wg-healthcheck adopt <iface> --dry-run [--credential-fd N] [--settings-fd N]
+wg-healthcheck adopt <iface> --apply [--credential-fd N]
+wg-healthcheck rotate <iface> --dry-run|--apply
+wg-healthcheck restore-static <iface> --dry-run|--apply
+wg-healthcheck reset-api-state <iface> --dry-run|--apply
+wg-healthcheck status <iface> [--json]
+wg-healthcheck --version
+```
+
+Credential descriptor overrides are accepted only by explicit root administrative
+provision/adopt dry-run/apply commands. The non-secret settings descriptor is accepted
+only on their dry-run forms. Both carry descriptor numbers, never values.
+
+### Setup CLI
+
+```text
+wg-healthcheck-setup [OPTIONS] <iface>
+  --mode static|api
+  --dry-run | --apply
+  --enable-timer | --leave-timer-disabled
+  --device NAME
+  --countries "GB NL ..."
+  --credential-file ABSOLUTE_PATH
+  --non-interactive
+  --restore-pre-managed
+  --replace-credential
+  --remove-credential
+  --reset-api-state
+```
+
+## Task 1: Strict generated-profile parser
+
+**Files:** modify `tests/test_airvpn_api.py`, `libexec/airvpn-api`.
+
+**Why:** raw provider output must never become executable root configuration.
+
+**Impact/compatibility:** existing `select` and `verify-egress` APIs, TSV output, URL
+validation, and exit codes remain unchanged.
+
+**Verification:** `python3 -m unittest tests.test_airvpn_api.ProfileParsingTests -v`.
+
+- [x] **Write RED tests.** Add `ProfileParsingTests` with
+  `test_redacted_real_success_shape_parses`,
+  `test_duplicate_sections_fields_and_extra_peer_are_rejected`,
+  `test_hooks_saveconfig_unknown_directives_and_shell_syntax_are_rejected`,
+  `test_noncanonical_or_zero_wireguard_keys_are_rejected`,
+  `test_address_requires_one_ipv4_32`,
+  `test_hostname_ipv6_and_wrong_endpoint_are_rejected`,
+  `test_mtu_keepalive_and_allowed_ips_are_exact`, and
+  `test_control_non_utf8_bare_cr_long_line_and_oversize_are_rejected`. Generate valid
+  dummy keys with `base64.b64encode(bytes([value]) * 32)` so no key-like fixture is stored.
+  In the same RED change, add
+  `test_list_countries_is_credential_free_and_sorted`,
+  `test_list_countries_requires_a_healthy_valid_ipv4_server`, and
+  `test_list_countries_rejects_duplicate_conflicting_or_malformed_codes`. Expected output
+  is exact `CODE<TAB>name<TAB>count` with no key/header access.
+- [x] **Verify RED.** Run the class command and require failures for missing
+  `parse_wireguard_profile` rather than import or fixture errors.
+- [x] **Implement minimal parser.** Add the `WireGuardProfile` dataclass and a bounded
+  64-KiB, 64-line, 1-KiB-line UTF-8 parser. Require one `[Interface]` followed by one
+  `[Peer]`; allow `Address`, `PrivateKey`, `MTU`, optional numeric `DNS`, optional validated
+  `Table`, then `PublicKey`, `PresharedKey`, `Endpoint`, `AllowedIPs`, and
+  `PersistentKeepalive`. Reject every other directive and require MTU 1320, keepalive 15,
+  IPv4 `/32`, numeric endpoint, and `0.0.0.0/0`. Add `list_eligible_countries` over the
+  already validated public server list and the `list-countries` subcommand without any
+  credential path.
+- [x] **Verify GREEN.** Run the class command and the complete existing Python test file;
+  require all prior tests unchanged.
+- [x] **Commit.** `git commit -m "Validate generated WireGuard profiles"`.
+
+## Task 2: Canonical rendering and identity pinning
+
+**Files:** modify `tests/test_airvpn_api.py`, `libexec/airvpn-api`.
+
+**Why:** candidates need deterministic bytes and must retain the fixed AirVPN device
+identity without exposing it.
+
+**Impact/compatibility:** canonical rendering replaces comments/formatting only in managed
+candidates; the pre-managed snapshot preserves original bytes.
+
+**Verification:** `python3 -m unittest tests.test_airvpn_api.ProfileRenderingTests -v`.
+
+- [x] **Write RED tests.** Add tests named
+  `test_renderer_has_fixed_header_order_spacing_and_terminal_newline`,
+  `test_parse_render_parse_is_stable`,
+  `test_identity_compares_private_key_and_address_without_exposure`,
+  `test_identity_pinning_preserves_local_dns_and_table`, and
+  `test_profile_and_manifest_repr_are_redacted`.
+- [x] **Verify RED.** Require failures for missing renderer/identity functions.
+- [x] **Implement minimal rendering.** Implement `render_wireguard_profile` with fixed field
+  order and a fixed generated header. Implement `profiles_have_same_identity` with
+  `hmac.compare_digest`; composition copies the validated current `DNS` policy and `Table`
+  and requires exact private-key/address equality. This preserves the absence of local
+  resolver integration during identity-pinned rotation.
+- [x] **Verify GREEN.** Run focused and full Python tests plus
+  `python3 -m py_compile libexec/airvpn-api`.
+- [x] **Commit.** `git commit -m "Render pinned managed profiles"`.
+
+## Task 3: Fixed-origin authenticated generation and descriptor transport
+
+**Files:** modify `tests/test_airvpn_api.py`, `libexec/airvpn-api`.
+
+**Why:** the API key and generated private material must never enter observable process
+surfaces.
+
+**Impact/compatibility:** the credential is opened only by `generate-profile`; public
+status and egress paths remain credential-free.
+
+**Verification:** `python3 -m unittest tests.test_airvpn_api.GeneratorBoundaryTests -v`.
+
+- [x] **Write RED tests.** Cover exact fixed URL/query/header, allowed ports, server/device
+  grammar, no redirects, exactly one syntactically valid advisory media label, identity-only
+  encoding, bounded JSON-envelope handling, strict profile/endpoint/identity validation,
+  JSON error on HTTP 200, 401/403/429/5xx/timeout classification, bounded `Retry-After`, FD
+  3/4/5 behavior, closed descriptors, no partial candidate, and a sentinel key absent from
+  URL/argv/env/stdout/stderr/exception text.
+- [x] **Verify RED.** Require the new CLI/function tests to fail because the generator
+  command is absent while all old tests pass.
+- [x] **Implement minimal client.** Add a generator-only no-redirect opener, exact GET
+  parameters from the approved spec, a 64-KiB response cap, exact 64-lowercase-hex key
+  validation, canonical render after full validation, atomic full write to FD 4, optional
+  identity read from FD 5, and one redacted TSV manifest. Close private descriptors in
+  `finally` and never include remote bodies or headers in errors.
+- [x] **Verify GREEN.** Run focused/full Python tests and compile check; inspect a spawned
+  process test proving the sentinel is absent from `/proc/<pid>/cmdline` and `environ`.
+- [x] **Commit.** `git commit -m "Add authenticated AirVPN profile generation"`.
+
+## Task 4: Runtime CLI, configuration, and secure module boundary
+
+**Files:** create `libexec/wg-healthcheck-managed`, `tests/test_wg_managed_profiles.sh`;
+modify `bin/wg-healthcheck`, `config/wg0.conf.example`, `tests/test_wg_healthcheck.sh`.
+
+**Why:** administrative operations need explicit safety flags while the static timer
+contract and credential isolation remain intact.
+
+**Impact/compatibility:** legacy invocation is unchanged. New config defaults are static.
+
+**Verification:** focused Bash runners, then both Bash test files.
+
+- [x] **Write RED tests.** In the existing suite cover legacy/version dispatch, strict
+  mutating flags, provision-only missing-profile allowance, new config keys, API device/
+  port grammar, country normalization (unique uppercase two-letter codes, maximum 32,
+  empty meaning explicit all), fixed paths, and static mode never stat/open/source
+  credential/API code. In the managed suite cover installed-key paths that are missing,
+  symlinked, oversized, multiline, non-ASCII, wrong-owner, wrong-mode, or under an unsafe
+  parent, and require failure before provider, candidate, Docker, or network events.
+  In the new suite cover root-owned mode-0644 managed-module validation and rejection of
+  symlink/writable source or parent. Add pre-mode pending classification tests proving
+  static/no-marker does not source the module, static/v2 loads it only for reconciliation,
+  and API/v1 runs the built-in endpoint reconciler before managed dispatch.
+- [x] **Verify RED.** Run
+  `bash tests/test_wg_healthcheck.sh` and
+  `bash tests/test_wg_managed_profiles.sh`; require only the named new contracts to fail.
+- [x] **Implement minimal dispatch.** Add `parse_cli`, `load_command_context`, and
+  `dispatch_command`; new defaults `AIRVPN_PROFILE_SOURCE=static`, `AIRVPN_DEVICE=`; fixed
+  key/state/lock/candidate/pre-managed paths; and `load_managed_module` that validates
+  root owner, mode 0644, regular non-symlink file, and non-writable parent. Source the
+  module only for API mode or explicit managed commands. Add `open_installed_api_key` that
+  validates the root-owned mode-0700 parent and root-owned regular non-symlink mode-0600,
+  bounded, one-record file before opening a private descriptor; the provider independently
+  validates record bytes. Classify a pending marker before mode dispatch and load only the
+  owner required by its version.
+- [x] **Verify GREEN.** Run both suites, Bash syntax, and ShellCheck on the two runtime
+  files. Confirm current static tests remain byte-for-byte behavior compatible.
+- [x] **Commit.** `git commit -m "Add dual-mode runtime dispatch"`.
+
+## Task 5: Persistent API state and lock discipline
+
+**Files:** modify `libexec/wg-healthcheck-managed`, `libexec/airvpn-api`,
+`tests/test_wg_managed_profiles.sh`, `tests/test_airvpn_api.py`.
+
+**Why:** timer-driven generation must survive reboot without request storms or repeated
+bad-server selection.
+
+**Impact/compatibility:** state is never read in static mode; corrupt state blocks only
+authenticated mutation.
+
+**Verification:** `bash tests/test_wg_managed_profiles.sh api_state` through the suite's
+name filter.
+
+- [x] **Write RED tests.** Add strict round-trip/security, rolling six-attempt cap,
+  five-minute-to-six-hour backoff, 24-hour `Retry-After` ceiling, 16-entry/six-hour
+  exclusion set, credential-stat/device reset, clock regression, corrupt-state blocking,
+  interface-before-global lock order, and a two-process/two-interface blocking-provider
+  test proving maximum authenticated concurrency one and lock release before Docker/
+  tunnel work. Add provider tests for repeated `--exclude-server` (maximum 16), filtering
+  before scoring, invalid names, and backward-compatible empty exclusions. Add integration
+  failure → persisted exclusion → alternate selection → expiry/re-eligibility coverage.
+  Add explicit administrative dry-run coverage proving auth/device suppression bypass,
+  attempt accounting, daily/rate/transient limits retained, success clearing suppression,
+  failure reclassification, and timer runs remaining suppressed.
+- [x] **Verify RED.** Require missing state functions to fail without touching candidate,
+  Docker, or tunnel doubles.
+- [x] **Implement minimal state owner.** Add strict versioned read/write/prune functions,
+  atomic mode-0600 writes under root mode-0700 `/var/lib/wg-healthcheck`, credential
+  device/inode/mtime/size metadata, fixed lock order, and release of the global API lock
+  immediately after response/outcome persistence. Extend `select_candidate` with an empty-
+  default exclusion collection and `select` with repeatable `--exclude-server`; record a
+  failed managed candidate before rollback and supply only unexpired entries on the next
+  API selection. Add an explicit-admin-dry-run flag that bypasses only auth/device
+  suppression and clears it only after a successful validation.
+- [x] **Verify GREEN.** Run focused/full managed tests, syntax, and ShellCheck.
+- [x] **Commit.** `git commit -m "Persist managed API backoff state"`.
+
+## Task 6: Versioned managed journal and v1 compatibility
+
+**Files:** modify `libexec/wg-healthcheck-managed`, `bin/wg-healthcheck`,
+`tests/test_wg_managed_profiles.sh`, `tests/test_wg_healthcheck.sh`.
+
+**Why:** a full-profile switch needs digest-bound crash recovery and must not strand a v1
+pending transaction after upgrade.
+
+**Impact/compatibility:** endpoint-only marker functions remain canonical for static mode;
+the reconciliation dispatcher recognizes both versions.
+
+**Verification:** focused journal tests plus all current pending/rollback tests.
+
+- [x] **Write RED tests.** Cover canonical v2 fields/phases/modes, duplicate/unknown/
+  malformed rejection, file and directory sync order, digest verification before every
+  transition, active-file classification, digest mismatch fail-closed behavior, v1 marker
+  reconciliation, and v1 static rotation regression.
+- [x] **Verify RED.** Require new v2 tests to fail while existing v1 tests remain green.
+- [x] **Implement minimal journal.** Add SHA-256 validation, strict v2 parser/writer,
+  same-directory atomic barriers, phase transitions, digest classifier, and
+  `reconcile_pending_rotation` dispatch. A mismatch retains the marker and returns failure;
+  it never restores or deletes by guess.
+- [x] **Verify GREEN.** Run focused managed tests and every existing durability/
+  interruption/reconciliation test.
+- [x] **Commit.** `git commit -m "Journal managed profile transactions"`.
+
+## Task 7: qBittorrent sequencing and verified managed rollback
+
+**Files:** modify `libexec/wg-healthcheck-managed`, `bin/wg-healthcheck`,
+`tests/test_wg_managed_profiles.sh`, and `tests/test_wg_healthcheck.sh`.
+
+**Why:** qBittorrent must not run during an unverified full-profile transition, and a
+crash between journal cleanup and candidate commit must never leave the profile without an
+authoritative recovery owner.
+
+**Impact/compatibility:** static endpoint behavior and ordinary missing-binding restart
+remain unchanged.
+
+**Verification:** focused managed transaction tests, then all Bash tests.
+
+- [x] **Write RED tests.** Cover running/stopped/unmanaged container detection,
+  stop-before-down, stop failure abort, old-config down ordering, staged digest check,
+  candidate install/up, start-after-network-verification, TCP/UDP proof, previously
+  stopped preservation, failure rollback, rollback failure leaving the client stopped,
+  and crash injection at every phase. Add exact active-to-candidate and
+  backup-to-candidate identity tests for private key, canonical IPv4 `/32`, and optional
+  `Table`, including malformed/duplicate inputs and a canary absent from output, logs,
+  tracing, helper arguments, and pipelines. Add strict safety-record schema, cross-field,
+  permission, durability, state-transition, and recovery-classification tests, including
+  invalid or orphan journals without a safety record. Inject an external qBittorrent
+  restart at every forward/rollback containment checkpoint, recreate
+  a container under the same name, drift the configured tuple, and fail journal unlink,
+  journal parent sync, safety transition, final unlink, and final parent sync. Prove every
+  path retains a rollback owner or a committed candidate owner and that rolled-back
+  candidates never leave a success rotation stamp.
+- [x] **Verify RED.** Require ordering assertions to fail before any implementation and
+  confirm no static regression.
+- [x] **Implement minimal transaction.** Add a status-only secret-safe identity comparator;
+  strict durable `pending|committed|finalizing` safety-record owner; immutable Docker-ID/
+  configuration tuple capture; containment checkpoints; and exact stop/restore/final-state
+  proofs. Keep the v2 journal as phase evidence. Down uses the old installed profile and
+  the candidate is installed only after tunnel-down. Remove/sync candidate and journal
+  while the safety record is still `pending`, atomically commit the safety record, then
+  write cooldown/status as post-commit best effort and remove the safety record last.
+  Reclassify the visible safety state after any transition/durability error and never
+  roll back a visible committed candidate.
+  Pending reconciliation restores exact backup bytes/mode/owner, verifies the old tunnel,
+  restores qBittorrent only when the recorded immutable identity and current tuple still
+  match, and retains the safety record on every incomplete postcondition.
+- [x] **Verify GREEN.** Run focused/full managed tests, full static tests, syntax, and
+  ShellCheck.
+- [x] **Commit follow-up without amending the provisional commit.**
+  `git commit -m "Harden managed profile recovery ownership"`.
+
+## Task 8: Provision, adopt, rotate, restore, and status commands
+
+**Files:** modify `libexec/wg-healthcheck-managed`, `bin/wg-healthcheck`,
+`tests/test_wg_managed_profiles.sh`, `tests/test_wg_healthcheck.sh`.
+
+**Why:** operators and setup need safe, scriptable lifecycle operations and secret-free
+evidence.
+
+**Impact/compatibility:** every mutation is explicit; normal timer recovery remains the
+only legacy no-flag path.
+
+**Verification:** focused command tests plus both Bash suites.
+
+- [x] **Write RED tests.** Cover redacted/non-mutating dry runs; provision refusing an
+  existing/symlink path; durable first install; adoption identity match/mismatch and exact
+  pre-managed snapshot; rotate dry-run/apply; static restoration; credential descriptor
+  override; text/JSON status schema; credential presence checked by `stat` only; and every
+  command refusing non-root mutation. Add
+  `test_timer_health_speed_and_qb_failures_dispatch_managed_rotation_in_api_mode` and
+  `test_timer_failures_keep_static_endpoint_dispatch_in_static_mode` so unattended API
+  recovery is proved rather than only administrative rotation. Add reset-state dry-run,
+  worker/timer/lock/pending refusal, corrupt-state apply reset, and directory durability
+  tests. Require adopt/restore/mode-change/credential-removal/state-reset commands to refuse
+  v1 or v2 unresolved markers and every managed safety record.
+- [x] **Verify RED.** Require only missing command owners to fail and assert zero Docker/
+  network events for all dry runs.
+- [x] **Implement minimal commands.** Wire provider FD contracts, candidate staging,
+  snapshot creation, managed transaction calls, mode changes through strict atomic config
+  rewrite, explicit static restore, and deterministic status rendering with no address,
+  endpoint, device key, API key, or profile content. Make the normal health/speed/
+  qBittorrent recovery dispatcher call managed rotation only when
+  `AIRVPN_PROFILE_SOURCE=api` and rotation is enabled; never downgrade that path to static
+  endpoint mutation after failure. Implement `reset-api-state` inside the managed owner;
+  `--apply` removes and syncs only the state file after all inactivity checks pass.
+  Static restore selects static mode before mutation and uses the same crash-safe full-profile
+  transaction whenever snapshot bytes differ, including equal-endpoint peer changes.
+- [x] **Verify GREEN.** Run both Bash suites and manually inspect JSON through `python3 -m
+  json.tool` in the test harness.
+- [x] **Commit.** `git commit -m "Add managed profile administration"`.
+
+## Task 9: Guided setup CLI and secret input boundary
+
+**Files:** create `bin/wg-healthcheck-setup`, `tests/test_setup.py`; modify
+`bin/wg-healthcheck`, `libexec/wg-healthcheck-managed`, `tests/test_wg_healthcheck.sh`,
+and `tests/test_wg_managed_profiles.sh`.
+
+**Why:** both modes need a two-command installation path that remains secure for humans
+and automation.
+
+**Impact/compatibility:** setup is optional; the installer stays non-interactive.
+
+**Verification:** `python3 -m unittest tests.test_setup.SetupCliTests -v`.
+
+- [x] **Write RED tests.** Cover exactly two interactive modes, explicit noninteractive
+  mode/safety/timer decisions, API requirements, rejection of secret argv/env values,
+  `RLIMIT_CORE=0` before secret read, absolute root-owned mode-0600 credential-file input,
+  hidden TTY input, fixed subprocess argv/no shell, and redacted dry-run output. Add
+  `test_country_menu_lists_only_public_healthy_choices`,
+  `test_country_menu_accepts_numbers_and_codes_preserving_order`,
+  `test_single_country_is_strict`,
+  `test_all_requires_explicit_selection`, and
+  `test_noninteractive_countries_requires_codes_or_all`. Cover reset-state requiring a
+  safety flag, rejecting timer enable, and allowing an explicit static combined
+  remove-credential/reset-state purge while preserving the pre-managed snapshot. Add a
+  strict dry-run-only `--settings-fd` matrix, canonical three-line settings-record tests,
+  distinct-number-and-inode and early-close/inheritance tests, proposed-settings selection,
+  complete prospective API-config validation on dry-run and apply, and
+  proof that invalid settings fail before state, lock, candidate, provider, or accounting
+  effects.
+- [x] **Verify RED.** Require failures because the setup executable is absent, not because
+  TTY doubles or ownership fixtures are invalid.
+- [x] **Implement minimal setup parser.** Use `argparse`, `getpass`, `resource.setrlimit`,
+  `os.open` with non-follow flags, `fstat`, inherited private FDs, and fixed-list
+  `subprocess.run(..., shell=False)`. Never accept `AIRVPN_API_KEY` or a secret option.
+  Before reading a secret, call credential-free `airvpn-api list-countries`, render a
+  numbered code/name/count menu, normalize one-or-many selections without duplicates, and
+  display that order is a soft preference inside a hard allowlist. Add the root-owned,
+  mode-0600, maximum-256-byte `version/device/countries` descriptor defined in the design;
+  runtime accepts it only for provision/adopt dry runs, captures and closes it before all
+  effects, overlays only the proposed device/country policy in memory, and treats its
+  country record as the explicit policy. Validate every prospective API-mode cross-field
+  rule after the overlay and repeat that side-effect-free validation from installed config
+  immediately before apply effects.
+- [x] **Verify GREEN.** Run focused/full setup tests, both focused Bash descriptor gates,
+  both complete Bash suites, and `python3 -m py_compile bin/wg-healthcheck-setup`.
+- [x] **Commit.** `git commit -m "Add guided dual-mode setup"`.
+
+## Task 10: Setup application and credential lifecycle
+
+**Files:** split and modify `bin/wg-healthcheck-setup`,
+`libexec/wg_healthcheck_setup/*`, `tests/test_setup.py`, and
+`tests/test_setup_apply.py`; modify `bin/wg-healthcheck`,
+`libexec/wg-healthcheck-managed`, `tests/test_wg_healthcheck.sh`, and
+`tests/test_wg_managed_profiles.sh` for the administrative lease and replacement-validation
+seam.
+
+**Why:** setup must validate before persistence and recover atomically from key/config/
+timer failures.
+
+**Impact/compatibility:** static mode never opens a stored key; key presence never enables
+API behavior.
+
+**Verification:** `python3 -m unittest tests.test_setup.SetupApplyTests -v`.
+
+- [x] **Write RED tests.** Cover identity mismatch preserving static state, key persisted
+  only after authenticated validation, failed adoption restoring the previous key,
+  replacement revalidation/rollback, explicit unlink+directory sync removal, preservation
+  of unrelated valid health keys, pre-managed static restoration, and timer enable only
+  after `healthy|recovered` status. Add `--reset-api-state` dry-run/apply orchestration,
+  refusal while timer/worker/locks/pending are active, and explicit combined credential/
+  state purge without touching the pre-managed recovery snapshot. Require every setup
+  apply that can change mode, device, countries, credential, or profile to stop the timer,
+  prove worker/interface/global locks and recovery artifacts inactive, remain quiesced
+  through rollback and verification, and re-enable only after fresh healthy/recovered
+  status. Cover the first-provision inert-static recovery profile and its adoption retry.
+  Require an exclusive setup lease held across the full transaction, shared acquisition by
+  ordinary runtime invocations, and validated lease reuse only by setup-owned runtime
+  children. Cover active-API replacement validation only when both credential and settings
+  overrides are present, with API-mode adopt apply still forbidden.
+- [x] **Verify RED.** Require state snapshots to show no mutation on each failed path
+  except the specified post-durable-install first-provision outcome. That outcome retains
+  only the exact root-0600 profile with static source, disabled timer, restored config and
+  credential, and no candidate, journal, or safety artifact. Runtime-owned authenticated
+  attempt/backoff accounting and the persistent timer stop are explicit allowed deltas.
+- [x] **Implement minimal application flow.** Validate the proposed credential and strict
+  device/country settings together through distinct private FDs. After success, atomically
+  persist device/countries while retaining `AIRVPN_PROFILE_SOURCE=static`, stage/sync/
+  rename the credential with one bounded previous copy, revalidate the installed key, and
+  call runtime apply without a settings override so its existing final source flip is the
+  activation point. Restore the exact previous config and credential on every failure;
+  when first provisioning already durably installed a profile, retain it as the specified
+  inert static recovery profile instead of deleting secret material. Before any apply
+  mutation, stop the timer and worker, acquire the fixed exclusive administrative lease,
+  prove interface/global locks and all recovery artifacts inactive, and keep the boundary
+  quiesced through rollback and verification. Ordinary runtime owns a shared lease; setup
+  children validate and reuse the inherited exclusive lease in guard-first lock order.
+  Invoke systemd enable only after reading a fresh successful private status file. Route
+  state reset to the runtime owner under the same boundary. Fresh health is the setup
+  commit point: a subsequent optional timer-enable failure leaves the verified API setup
+  committed but disables the timer and reports the incomplete enable action.
+- [x] **Verify GREEN.** Run focused/full setup tests and a staged temporary-directory
+  integration with fixed command doubles.
+- [x] **Commit.** `git commit -m "Make setup changes transactional"`.
+
+## Task 11: Installer and systemd upgrade safety
+
+**Files:** modify `install.sh`, `systemd/wg-healthcheck@.service`,
+`tests/test_install.sh`.
+
+**Why:** upgrades must not race an active worker, and new secret/state owners need correct
+filesystem and core-dump boundaries.
+
+**Impact/compatibility:** ordinary fresh install syntax remains; `--quiesce` is explicit and
+incompatible with `--enable`/`DESTDIR`.
+
+**Verification:** `bash tests/test_install.sh`.
+
+- [x] **Write RED tests.** Cover staged managed module/setup/state directory; artifact
+  order; preservation of key/pre-managed/state; refusal of active worker, held lock, or
+  pending journal or safety record; `--quiesce` stop/wait/leave-disabled behavior; invalid
+  flag combinations; root/modes; and `LimitCORE=0`.
+- [x] **Verify RED.** Require new install contracts to fail while every current preservation
+  and atomic-install test stays green.
+- [x] **Implement minimal installer changes.** Validate/install provider helper, managed
+  module 0644, main/setup 0755, units/template; create live/staged persistent directory
+  0700; implement checked quiesce; preserve operator files; add core limit to systemd.
+- [x] **Verify GREEN.** Run installer tests, Bash syntax, ShellCheck, and
+  `systemd-analyze verify` against staged installed executables.
+- [x] **Commit.** `git commit -m "Harden managed-profile installation"`.
+
+## Task 12: Public documentation, MIT license, and operator guide
+
+**Files:** create `LICENSE`, `docs/operations.md`, `tests/test_public_docs.py`;
+modify `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, `config/wg0.conf.example`.
+
+**Why:** users must understand the two choices and the expanded account/root trust boundary
+before enabling automation.
+
+**Impact/compatibility:** detailed procedures move out of the README, but existing anchors
+receive direct replacements or redirects where practical.
+
+**Verification:** `python3 -m unittest tests.test_public_docs -v` plus repository tests.
+
+- [x] **Write RED tests.** Require a first-100-line mode table; both exact two-command
+  paths; status/manual-run/timer decisions; operations links; credential location/
+  replacement/removal; kill-switch and fixed-device limits; MIT text/README declaration;
+  no private addresses/home paths/key-like values; static/API config examples; and clear
+  single-country, multi-country allowlist, soft-order preference, and explicit `ALL`
+  instructions.
+- [x] **Verify RED.** Require failures for absent license/operations/two-mode copy.
+- [x] **Implement documentation.** Add standard MIT text with
+  `Copyright (c) 2026 Herbertmt978`; rewrite README opening/quick starts; move long upgrade,
+  rollback, uninstall, state repair, and key replacement into `docs/operations.md`; update
+  security reporting and contribution secret rules; document exact config grammar.
+- [x] **Verify GREEN.** Run doc tests, installer repository-contract tests, link checks,
+  and `git diff --check`.
+- [x] **Commit.** `git commit -m "Document dual-mode installation"`.
+
+## Task 13: Version, changelog, release notes, packaging, and CI
+
+**Files:** create `docs/releases/v1.1.0.md`; modify `VERSION`, `bin/wg-healthcheck`,
+`CHANGELOG.md`, `scripts/package-release.sh`, `tests/test_release.sh`,
+`.github/workflows/ci.yml`, `.github/workflows/release.yml`.
+
+**Why:** the exact public artifact must contain all runtime owners and no secret/runtime
+material.
+
+**Impact/compatibility:** `v1.0.0` remains immutable; only `main` and the new annotated tag
+are pushed.
+
+**Verification:** release tests, reproducible double build, workflow lint, and secret scans.
+
+- [x] **Write RED tests.** Require synchronized `1.1.0`; release notes; MIT/setup/managed
+  module/operations in exact tar+ZIP contents and modes; absence of keys/profiles/candidates/
+  markers/state/host IDs; Ubuntu 22.04+24.04 deterministic CI matrix; branch concurrency;
+  credential-free smoke; and non-cancelling release concurrency.
+- [x] **Verify RED.** Run `bash tests/test_release.sh --ref HEAD` and public doc tests; require
+  precise failures for old version/missing artifacts.
+- [x] **Implement release surface.** Update version owners, changelog Added/Changed/Security
+  sections and non-ancestry v1.1 link, curated notes, archive allowlists, installer-from-
+  archive assertions, CI matrix/concurrency, syntax/ShellCheck lists, and setup/provider
+  installation in systemd verification.
+- [x] **Verify GREEN.** Run release tests twice into separate dirs and compare all three
+  assets, actionlint, full deterministic checks, and pinned redacted Gitleaks on history
+  plus extracted archives.
+- [x] **Commit.** `git commit -m "Prepare the 1.1.0 release"`.
+
+## Task 14: Full review, ADR, and release-candidate evidence
+
+**Files:** create `docs/aegis/adr/0001-dual-mode-profile-management.md`; update
+`docs/aegis/INDEX.md`; modify any files required by verified review findings.
+
+**Why:** durable ownership and actual verification must be recorded before a root/network
+release leaves the branch.
+
+**Impact/compatibility:** the ADR records proved architecture; it does not authorize new
+device lifecycle scope.
+
+**Verification:** complete command bundle and clean diff/status.
+
+- [x] **Write review assertions.** Check every approved spec heading against a task/commit;
+  scan for placeholders, stale no-credential/no-license claims, duplicate owners, files over
+  800 lines, blocks over roughly 80 lines, and unretired fallbacks. Record actionable gaps.
+- [x] **Verify the assertions fail or pass honestly.** Run the complete verification bundle;
+  any failure becomes a focused RED regression before correction.
+- [x] **Implement only verified corrections and ADR.** Record canonical provider/runtime/
+  setup owners, alternatives rejected, static compatibility, device-lifecycle exclusion,
+  and retirement trigger. Split code owners if complexity gates are crossed rather than
+  accepting an unjustified monolith.
+- [x] **Verify GREEN.** Rerun the full bundle, secret scans, archive extraction scans,
+  workspace/index checks, staged install, and independent code/security reviews.
+- [x] **Commit.** `git commit -m "Record managed-profile architecture"` (`a57b535`).
+
+## Task 15: Download VM authenticated acceptance and rollback drill
+
+**Files:** no repository secret files; remote root-only runtime/config/state paths only.
+
+**Why:** deterministic tests cannot prove the live AirVPN generator, tunnel, Docker, and
+policy-routing integration.
+
+**Impact/compatibility:** the timer stayed disabled throughout destructive acceptance and
+was enabled only after the user attested credential freshness, strict metadata/equality
+checks passed, and the live state was healthy; verified v1.0/static rollback remains
+available.
+
+**Verification:** redacted evidence from systemd, profile hashes/modes, AirVPN egress,
+qBittorrent ownership, and route probes.
+
+- [x] **Create the preflight evidence bundle.** Record version, enabled/running state,
+  owner/modes and SHA-256 hashes without contents, qB state, last status, and absence of a
+  pending marker and safety record. Preserve a root-only rollback bundle and verified v1.0
+  package. Stop and mask timer, stop worker, wait inactive, and acquire/check the interface
+  lock.
+- [x] **Run authenticated RED-safe dry run.** Transfer the supplied test key through a
+  non-echoing protected channel to a temporary root-only descriptor/file, run adoption dry
+  run, retain only local allowlisted diagnostics, prove active profile/tunnel hashes
+  unchanged, and stop if identity or managed allowlist does not match. Two
+  backoff-compliant attempts reached `phase=response`; neither generated a profile or
+  mutated the live configuration, and the test credential was removed.
+- [x] **Install/apply and drill rollback.** Install the branch with `--quiesce`; adopt with
+  timer disabled; force post-candidate speed verification to fail with a temporary
+  impossible threshold so the old profile is restored without making rollback speed a
+  postcondition. Verify exact old hash/mode, cleared or reconciled journal and safety
+  record, healthy tunnel, and restored qB binding.
+- [x] **Verify successful API operation.** Restore the health config exactly, run one
+  controlled managed rotation, verify interface identity, handshake, route/rule, AirVPN
+  egress, qB TCP/UDP ownership, and public-peer source routing or the documented substitute;
+  then observe five successful timer cycles. The controlled rotation and five exact
+  `healthy/all_checks_passed` cycles are accepted, with the timer remasked and reviewed
+  configuration restored. The production VM timer was subsequently enabled and its first
+  two distinct checks passed without a profile or provider-state write. Keep this item open
+  until one separate post-cycle public egress proof passes; the first proof failed redacted,
+  and a later proof was inconclusive because of an overly strict local acceptance wrapper.
+  On 2026-07-29 a new, separately reviewed credential-free proof passed through `wg0`, with
+  no authenticated request and guaranteed private-response cleanup. The live profile and
+  provider state had also advanced from the activation baseline while the seven-day service
+  history remained clean, consistent with successful unattended managed rotation.
+- [x] **Remove the test key and establish final mode.** The user attested that the source is
+  a new, never-shared production key; strict metadata checks and a silent equality check
+  proved the installed credential already matches it. API mode and the persistent VM timer
+  are active. No credential content or remote runtime material was committed.
+
+## Task 16: Merge, publish, and verify `v1.1.0`
+
+**Files:** Git refs and GitHub release state; no new source behavior.
+
+**Why:** publication must use the exact reviewed tree and verified assets.
+
+**Impact/compatibility:** never rewrite `v1.0.0`, force-push, or push private branches.
+
+**Verification:** exact commit IDs across local main, origin/main, tag, CI, release, and
+downloaded assets.
+
+- [x] **Pre-merge gate.** Require clean branch, reviewed staged/commit history, complete
+  local/package/secret/VM evidence, and no open GitHub secret-scanning alerts.
+- [ ] **Merge and verify main.** Merge `Herb/airvpn-api-profiles` locally into `main`, rerun
+  the release bundle on the merge commit, push only `main`, and require green CI on that
+  exact SHA.
+- [ ] **Tag and publish.** Create annotated `v1.1.0` on the green main SHA, push only that
+  tag, and let release CI build, verify, draft, and publish the release.
+- [ ] **Verify publication.** Require successful tag/release workflows, non-draft latest
+  release, exact three assets, matching notes, fresh-download checksum verification,
+  reproducible comparison, extracted secret scan, and staged install from the published
+  tar and ZIP.
+- [ ] **Final handoff.** Report outcome, evidence, production-key status, residual risk,
+  complexity delta, architecture alignment, ADR result, and the 24-hour redacted VM
+  follow-up boundary. Use `v1.1.1` for any post-publication correction; never move the tag.
+
+## Risks and rollback
+
+- A generator contract mismatch blocks API mode before mutation; static mode remains usable.
+- Unsupported hooks or changed identity block adoption and preserve the current profile;
+  only validated local `PostUp`/`PostDown` commands survive identity-pinned generation.
+- Digest/journal/safety mismatch leaves qBittorrent stopped and state intact for operator
+  repair.
+- Authentication/device failures back off persistently; they do not affect static health.
+- The release can publish without leaving the VM in API mode, but the user's VM-migration
+  goal is not complete until a fresh production key is installed.
+- Rollback ladder: restore the exact pre-managed/static profile first; reinstall verified
+  `v1.0.0` only when code rollback is required and no v2 marker or safety record remains.
+
+## Retirement
+
+- No public static behavior retires in `v1.1.0`.
+- The old “authenticated telemetry is fully retired” test wording retires and is replaced
+  by tests proving static credential isolation plus managed credential safety.
+- `rotate_airvpn` becomes a mode dispatcher; its current body remains the canonical static
+  endpoint path under `rotate_static_endpoint`.
+- The managed module is not a fallback. It is loaded only by explicit API mode/commands.
+- Automatic device/key/port lifecycle remains deferred; its trigger is a separately
+  approved blue/green design covering address and forwarding consumers.

@@ -12,6 +12,7 @@ RuntimeDirectory=wg-healthcheck
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 TimeoutStartSec=180s
+LimitCORE=0
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes

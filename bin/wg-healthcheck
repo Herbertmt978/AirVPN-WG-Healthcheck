@@ -1,6 +1,6 @@
 #!/bin/bash -p
 
-WG_HEALTHCHECK_VERSION='1.0.0'
+WG_HEALTHCHECK_VERSION='1.1.0'
 IFACE=''
 CFG=''
 WG_CONF=''
@@ -10,8 +10,34 @@ RESTART_STAMP=''
 ROTATE_STAMP=''
 SPEED_STAMP=''
 STATUS_FILE=''
+SETUP_GUARD=''
 ROTATION_PENDING=''
+MANAGED_SAFETY=''
 AIRVPN_API_HELPER=''
+MANAGED_MODULE=''
+AIRVPN_API_KEY_FILE=''
+AIRVPN_API_STATE_FILE=''
+AIRVPN_API_LOCK=''
+MANAGED_CANDIDATE=''
+PRE_MANAGED_CONF=''
+COMMAND=''
+ACTION_MODE=''
+STATUS_JSON=0
+CREDENTIAL_FD=''
+SETTINGS_FD=''
+SETUP_LEASE_FD=''
+SETUP_LEASE_ADOPTED=0
+PROPOSED_SETTINGS_READY=0
+PROPOSED_AIRVPN_DEVICE=''
+PROPOSED_AIRVPN_COUNTRIES=''
+CONTEXT_LOCKED=0
+LOCK_FD=''
+GUARD_LOCKED=0
+GUARD_FD=''
+LEGACY_INVOCATION=0
+PENDING_KIND=none
+MANAGED_MODULE_LOADED=0
+DISPATCH_READY=0
 
 reset_configurable_defaults() {
   MAX_AGE=180
@@ -31,7 +57,9 @@ reset_configurable_defaults() {
   SPEED_TIMEOUT=25
   SPEED_RETRY_DELAY=5
   AIRVPN_ROTATE_ENABLED=0
-  AIRVPN_COUNTRIES='GB NL BE DE FR IE'
+  AIRVPN_PROFILE_SOURCE=static
+  AIRVPN_DEVICE=''
+  AIRVPN_COUNTRIES='GB NL BE DE IE'
   AIRVPN_WG_PORT=1637
   AIRVPN_ROTATE_COOLDOWN=1800
   AIRVPN_STATUS_URL='https://airvpn.org/api/status/?format=json'
@@ -65,6 +93,353 @@ validate_bool() { case "${1:-}" in 0|1|true|TRUE|false|FALSE|yes|YES|no|NO|on|ON
 current_epoch() { date +%s; }
 validate_interface_name() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_=+.-]{0,14}$ ]]; }
 
+usage() {
+  printf '%s\n' \
+    'usage: wg-healthcheck <iface>' \
+    '       wg-healthcheck check <iface> [--setup-lease-fd N]' \
+    '       wg-healthcheck provision <iface> --dry-run [--credential-fd N] [--settings-fd N] [--setup-lease-fd N]' \
+    '       wg-healthcheck provision <iface> --apply [--credential-fd N] [--setup-lease-fd N]' \
+    '       wg-healthcheck adopt <iface> --dry-run [--credential-fd N] [--settings-fd N] [--setup-lease-fd N]' \
+    '       wg-healthcheck adopt <iface> --apply [--credential-fd N] [--setup-lease-fd N]' \
+    '       wg-healthcheck rotate <iface> --dry-run|--apply' \
+    '       wg-healthcheck restore-static|reset-api-state <iface> --dry-run|--apply [--setup-lease-fd N]' \
+    '       wg-healthcheck cleanup-candidate <iface> --apply --setup-lease-fd N' \
+    '       wg-healthcheck status <iface> [--json]' \
+    '       wg-healthcheck --version' >&2
+}
+
+validate_credential_fd_number() {
+  local value="${1:-}"
+  [[ "$value" =~ ^[1-9][0-9]*$ && ${#value} -le 4 ]] || return 1
+  (( 10#$value >= 3 && 10#$value <= 1023 ))
+}
+
+close_private_fd() {
+  local private_fd="${1:-}"
+  [[ -z "$private_fd" ]] && return 0
+  validate_credential_fd_number "$private_fd" || return 1
+  exec {private_fd}<&-
+}
+
+run_with_private_fd_closed() {
+  local private_fd="${1:-}" invocation
+  shift || return 1
+  validate_credential_fd_number "$private_fd" || return 1
+  (( $# > 0 )) && declare -F "$1" >/dev/null || return 1
+  printf -v invocation '%q ' "$@"
+  # The descriptor is validated numeric data; %q protects every function argument.
+  # shellcheck disable=SC2294
+  eval "$invocation ${private_fd}<&-"
+}
+
+run_with_two_private_fds_closed() {
+  local first_fd="${1:-}" second_fd="${2:-}" invocation
+  shift 2 || return 1
+  validate_credential_fd_number "$first_fd" || return 1
+  validate_credential_fd_number "$second_fd" || return 1
+  [[ "$first_fd" != "$second_fd" ]] || return 1
+  (( $# > 0 )) && declare -F "$1" >/dev/null || return 1
+  printf -v invocation '%q ' "$@"
+  # Both descriptors are validated numeric data; %q protects every function argument.
+  # shellcheck disable=SC2294
+  eval "$invocation ${first_fd}<&- ${second_fd}<&-"
+}
+
+run_with_three_private_fds_closed() {
+  local first_fd="${1:-}" second_fd="${2:-}" third_fd="${3:-}" invocation
+  shift 3 || return 1
+  validate_credential_fd_number "$first_fd" || return 1
+  validate_credential_fd_number "$second_fd" || return 1
+  validate_credential_fd_number "$third_fd" || return 1
+  [[ "$first_fd" != "$second_fd" && "$first_fd" != "$third_fd" &&
+     "$second_fd" != "$third_fd" ]] || return 1
+  (( $# > 0 )) && declare -F "$1" >/dev/null || return 1
+  printf -v invocation '%q ' "$@"
+  # Descriptor numbers are validated and every function argument is shell-quoted.
+  # shellcheck disable=SC2294
+  eval "$invocation ${first_fd}<&- ${second_fd}<&- ${third_fd}<&-"
+}
+
+settings_fd_metadata() {
+  local output_variable="${1:?}" private_fd="${2:?}" other_private_fd="${3-}"
+  local owner_pid captured
+  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  validate_credential_fd_number "$private_fd" || return 1
+  [[ -z "$other_private_fd" ]] || validate_credential_fd_number "$other_private_fd" || return 1
+  owner_pid=$BASHPID
+  if [[ -n "$other_private_fd" ]]; then
+    captured="$(LC_ALL=C /usr/bin/stat -Lc '%u|%a|%s|%d|%i|%y|%z|%F' -- \
+      "/proc/$owner_pid/fd/$private_fd" \
+      {private_fd}<&- {other_private_fd}<&- 2>/dev/null)" || return 1
+  else
+    captured="$(LC_ALL=C /usr/bin/stat -Lc '%u|%a|%s|%d|%i|%y|%z|%F' -- \
+      "/proc/$owner_pid/fd/$private_fd" {private_fd}<&- 2>/dev/null)" || return 1
+  fi
+  printf -v "$output_variable" '%s' "$captured"
+}
+
+settings_metadata_is_trusted() {
+  local metadata="${1-}" uid mode size device inode mtime ctime kind extra
+  IFS='|' read -r uid mode size device inode mtime ctime kind extra <<< "$metadata"
+  [[ -z "$extra" && "$uid" == 0 && "$mode" == 600 && "$kind" == 'regular file' ]] || return 1
+  [[ "$size" =~ ^(0|[1-9][0-9]{0,2})$ ]] || return 1
+  (( 10#$size > 0 && 10#$size <= 256 )) || return 1
+  [[ "$device" =~ ^(0|[1-9][0-9]*)$ && "$inode" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+  [[ -n "$mtime" && -n "$ctime" && "$mtime" != *'|'* && "$ctime" != *'|'* &&
+     "$mtime" != *[$'\r\n']* && "$ctime" != *[$'\r\n']* ]]
+}
+
+settings_metadata_identity() {
+  local output_variable="${1:?}" metadata="${2-}"
+  local uid mode size device inode rest
+  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  IFS='|' read -r uid mode size device inode rest <<< "$metadata"
+  [[ "$device" =~ ^(0|[1-9][0-9]*)$ && "$inode" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+  printf -v "$output_variable" '%s:%s' "$device" "$inode"
+}
+
+validate_proposed_settings_records() {
+  local version="${1-}" device_record="${2-}" countries_record="${3-}"
+  local device countries token device_pattern='^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$'
+  local LC_ALL=C
+  local -a tokens=()
+  local -A seen=()
+  [[ $# == 3 && "$version" == version=1 ]] || return 1
+  [[ "$device_record" == device=* ]] || return 1
+  device="${device_record#device=}"
+  [[ "$device" =~ $device_pattern ]] || return 1
+  [[ "$countries_record" == countries=* ]] || return 1
+  countries="${countries_record#countries=}"
+  if [[ "$countries" == ALL ]]; then
+    PROPOSED_AIRVPN_DEVICE="$device"
+    PROPOSED_AIRVPN_COUNTRIES=''
+    return 0
+  fi
+  [[ "$countries" =~ ^[A-Z]{2}(\ [A-Z]{2})*$ ]] || return 1
+  read -r -a tokens <<< "$countries"
+  (( ${#tokens[@]} > 0 && ${#tokens[@]} <= 32 )) || return 1
+  for token in "${tokens[@]}"; do
+    [[ -z "${seen[$token]+present}" ]] || return 1
+    seen["$token"]=1
+  done
+  PROPOSED_AIRVPN_DEVICE="$device"
+  PROPOSED_AIRVPN_COUNTRIES="$countries"
+}
+
+capture_cli_settings_fd() {
+  local settings_fd="${SETTINGS_FD:-}" credential_fd="${CREDENTIAL_FD:-}"
+  local before_metadata credential_metadata duplicate_metadata after_metadata
+  local settings_identity credential_identity capture_fd='' expected_size
+  local line='' read_rc observed_size=0 invalid=0
+  local LC_ALL=C
+  local -a records=()
+  [[ -n "$settings_fd" ]] || return 0
+  PROPOSED_SETTINGS_READY=0
+  PROPOSED_AIRVPN_DEVICE=''
+  PROPOSED_AIRVPN_COUNTRIES=''
+  if [[ ( "$COMMAND" != provision && "$COMMAND" != adopt ) ||
+        "$ACTION_MODE" != dry-run || -z "$credential_fd" ||
+        "$settings_fd" == "$credential_fd" ]] ||
+     ! validate_credential_fd_number "$settings_fd" ||
+     ! validate_credential_fd_number "$credential_fd" ||
+     ! settings_fd_metadata before_metadata "$settings_fd" "$credential_fd" ||
+     ! settings_metadata_is_trusted "$before_metadata" ||
+     ! settings_fd_metadata credential_metadata "$credential_fd" "$settings_fd" ||
+     ! settings_metadata_identity settings_identity "$before_metadata" ||
+     ! settings_metadata_identity credential_identity "$credential_metadata" ||
+     [[ "$settings_identity" == "$credential_identity" ]]; then
+    close_cli_private_fds
+    return 1
+  fi
+  expected_size="${before_metadata#*|*|}"
+  expected_size="${expected_size%%|*}"
+  if ! exec {capture_fd}<"/proc/$BASHPID/fd/$settings_fd"; then
+    close_cli_private_fds
+    return 1
+  fi
+  close_private_fd "$settings_fd" || {
+    close_private_fd "$capture_fd" || true
+    close_cli_private_fds
+    return 1
+  }
+  SETTINGS_FD=''
+  if ! settings_fd_metadata duplicate_metadata "$capture_fd" "$credential_fd" ||
+     [[ "$duplicate_metadata" != "$before_metadata" ]]; then
+    close_private_fd "$capture_fd" || true
+    close_cli_private_fds
+    return 1
+  fi
+
+  while :; do
+    line=''
+    if IFS= read -r -u "$capture_fd" line; then read_rc=0; else read_rc=$?; fi
+    if (( read_rc != 0 )); then
+      [[ -z "$line" ]] || invalid=1
+      break
+    fi
+    observed_size=$((observed_size + ${#line} + 1))
+    records+=("$line")
+    if (( ${#records[@]} > 3 || observed_size > 256 )); then
+      invalid=1
+      break
+    fi
+  done
+  if ! settings_fd_metadata after_metadata "$capture_fd" "$credential_fd" ||
+     [[ "$after_metadata" != "$before_metadata" ]]; then
+    invalid=1
+  fi
+  close_private_fd "$capture_fd" || invalid=1
+  if (( invalid )) || (( ${#records[@]} != 3 )) ||
+     (( observed_size != 10#$expected_size )) ||
+     ! validate_proposed_settings_records "${records[@]}"; then
+    close_cli_private_fds
+    PROPOSED_SETTINGS_READY=0
+    PROPOSED_AIRVPN_DEVICE=''
+    PROPOSED_AIRVPN_COUNTRIES=''
+    return 1
+  fi
+  PROPOSED_SETTINGS_READY=1
+}
+
+apply_proposed_settings_overlay() {
+  (( PROPOSED_SETTINGS_READY )) || return 0
+  [[ ( "$COMMAND" == provision || "$COMMAND" == adopt ) && "$ACTION_MODE" == dry-run ]] || return 1
+  AIRVPN_DEVICE="$PROPOSED_AIRVPN_DEVICE"
+  AIRVPN_COUNTRIES="$PROPOSED_AIRVPN_COUNTRIES"
+}
+
+parse_cli() {
+  local action_count=0 credential_seen=0 settings_seen=0 setup_lease_seen=0
+  COMMAND=
+  ACTION_MODE=
+  STATUS_JSON=0
+  CREDENTIAL_FD=
+  SETTINGS_FD=
+  SETUP_LEASE_FD=
+  SETUP_LEASE_ADOPTED=0
+  LEGACY_INVOCATION=0
+  PROPOSED_SETTINGS_READY=0
+  PROPOSED_AIRVPN_DEVICE=''
+  PROPOSED_AIRVPN_COUNTRIES=''
+  IFACE=
+
+  if (( $# == 1 )); then
+    if [[ "$1" == --version ]]; then
+      COMMAND=version
+      return 0
+    fi
+    if validate_interface_name "$1"; then
+      COMMAND=check
+      IFACE="$1"
+      LEGACY_INVOCATION=1
+      return 0
+    fi
+  fi
+  if [[ $# -lt 2 ]]; then
+    usage
+    return 64
+  fi
+
+  case "$1" in
+    check|provision|adopt|rotate|restore-static|reset-api-state|cleanup-candidate|status) COMMAND="$1" ;;
+    *) usage; return 64 ;;
+  esac
+  IFACE="$2"
+  validate_interface_name "$IFACE" || { usage; return 64; }
+  shift 2
+
+  if [[ "$COMMAND" == status ]]; then
+    if [[ $# -eq 0 ]]; then return 0; fi
+    if [[ $# -eq 1 && "$1" == --json ]]; then
+      STATUS_JSON=1
+      return 0
+    fi
+    usage
+    return 64
+  fi
+
+  if [[ "$COMMAND" == check ]]; then
+    if [[ $# -eq 0 ]]; then return 0; fi
+    if [[ $# -eq 2 && "$1" == --setup-lease-fd ]] &&
+       validate_credential_fd_number "$2"; then
+      SETUP_LEASE_FD="$2"
+      return 0
+    fi
+    usage
+    return 64
+  fi
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --dry-run|--apply)
+        action_count=$((action_count + 1))
+        ACTION_MODE="${1#--}"
+        shift
+        ;;
+      --credential-fd)
+        if [[ "$COMMAND" != provision && "$COMMAND" != adopt ]] ||
+           (( credential_seen )) || (( $# < 2 )) ||
+           ! validate_credential_fd_number "$2"; then
+          usage
+          return 64
+        fi
+        credential_seen=1
+        CREDENTIAL_FD="$2"
+        shift 2
+        ;;
+      --settings-fd)
+        if [[ "$COMMAND" != provision && "$COMMAND" != adopt ]] ||
+           (( settings_seen )) || (( $# < 2 )) ||
+           ! validate_credential_fd_number "$2"; then
+          usage
+          return 64
+        fi
+        settings_seen=1
+        SETTINGS_FD="$2"
+        shift 2
+        ;;
+      --setup-lease-fd)
+        if [[ ( "$COMMAND" != provision && "$COMMAND" != adopt &&
+                "$COMMAND" != restore-static && "$COMMAND" != reset-api-state &&
+                "$COMMAND" != cleanup-candidate ) ]] ||
+           (( setup_lease_seen )) || (( $# < 2 )) ||
+           ! validate_credential_fd_number "$2"; then
+          usage
+          return 64
+        fi
+        setup_lease_seen=1
+        SETUP_LEASE_FD="$2"
+        shift 2
+        ;;
+      *)
+        usage
+        return 64
+        ;;
+    esac
+  done
+  if (( action_count != 1 )); then
+    usage
+    return 64
+  fi
+  if [[ "$COMMAND" == cleanup-candidate ]] &&
+     { [[ "$ACTION_MODE" != apply ]] || (( ! setup_lease_seen )); }; then
+    usage
+    return 64
+  fi
+  if (( settings_seen )) &&
+     { [[ "$ACTION_MODE" != dry-run ]] || (( ! credential_seen )) ||
+       [[ "$SETTINGS_FD" == "$CREDENTIAL_FD" ]]; }; then
+    usage
+    return 64
+  fi
+  if (( setup_lease_seen )) &&
+     { [[ -n "$CREDENTIAL_FD" && "$SETUP_LEASE_FD" == "$CREDENTIAL_FD" ]] ||
+       [[ -n "$SETTINGS_FD" && "$SETUP_LEASE_FD" == "$SETTINGS_FD" ]]; }; then
+    usage
+    return 64
+  fi
+}
+
 validate_uint() {
   local name="${1:?}" value="${2-}" minimum="${3:?}" maximum="${4:?}" number
   if [[ ! "$value" =~ ^[0-9]+$ || ${#value} -gt 10 ]]; then
@@ -92,6 +467,9 @@ validate_single_line() {
   fi
 }
 validate_container_name() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; }
+validate_managed_container_name() {
+  validate_container_name "${1:-}" && [[ ! "${1:-}" =~ ^[0-9a-f]{64}$ ]]
+}
 validate_process_name() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}$ ]]; }
 
 validate_ip_address() {
@@ -172,7 +550,7 @@ parse_healthcheck_config() {
       MAX_AGE|PING_TARGET|PING_COUNT|PING_TIMEOUT|REQUIRED_ROUTE|REQUIRED_RULE|\
       COOLDOWN|RESTART_DELAY|WG_DOWN_TIMEOUT|WG_UP_TIMEOUT|\
       SPEED_CHECK_ENABLED|SPEED_CHECK_INTERVAL|SPEED_CHECK_URL|SPEED_MIN_BPS|SPEED_TIMEOUT|SPEED_RETRY_DELAY|\
-      AIRVPN_ROTATE_ENABLED|AIRVPN_COUNTRIES|AIRVPN_WG_PORT|AIRVPN_ROTATE_COOLDOWN|\
+      AIRVPN_ROTATE_ENABLED|AIRVPN_PROFILE_SOURCE|AIRVPN_DEVICE|AIRVPN_COUNTRIES|AIRVPN_WG_PORT|AIRVPN_ROTATE_COOLDOWN|\
       AIRVPN_STATUS_URL|AIRVPN_WHATISMYIP_URL|AIRVPN_API_TIMEOUT|\
       QBITTORRENT_CONTAINER|QBITTORRENT_LISTEN_IP|QBITTORRENT_LISTEN_PORT|\
       QBITTORRENT_PROCESS_NAME|QBITTORRENT_RESTART_DELAY|QBITTORRENT_RESTART_TIMEOUT) ;;
@@ -229,7 +607,58 @@ parse_healthcheck_config() {
   done
 }
 
+normalize_api_countries() {
+  local country normalized='' country_pattern='^[A-Za-z]{2}$'
+  local LC_ALL=C
+  local -a countries=()
+  local -A seen=()
+
+  [[ -z "$AIRVPN_COUNTRIES" ]] && return 0
+  read -r -a countries <<< "$AIRVPN_COUNTRIES"
+  (( ${#countries[@]} > 0 )) || return 1
+  for country in "${countries[@]}"; do
+    [[ "$country" =~ $country_pattern ]] || {
+      log "AIRVPN_COUNTRIES must contain only two-letter country codes"
+      return 1
+    }
+    country="${country^^}"
+    if [[ -z "${seen[$country]+present}" ]]; then
+      if (( ${#seen[@]} >= 32 )); then
+        log "AIRVPN_COUNTRIES must contain at most 32 unique country codes"
+        return 1
+      fi
+      seen["$country"]=1
+      normalized+="${normalized:+ }$country"
+    fi
+  done
+  AIRVPN_COUNTRIES="$normalized"
+}
+
+validate_prospective_api_settings() {
+  local device_pattern='^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$'
+  local LC_ALL=C
+  if ! validate_single_line AIRVPN_DEVICE "$AIRVPN_DEVICE" ||
+     [[ ! "$AIRVPN_DEVICE" =~ $device_pattern ]]; then
+    log "AIRVPN_DEVICE is invalid for API-managed mode"
+    return 1
+  fi
+  case "$AIRVPN_WG_PORT" in
+    1637|47107|51820) ;;
+    *)
+      log "AIRVPN_WG_PORT is not supported for API-managed mode"
+      return 1
+      ;;
+  esac
+  normalize_api_countries || return 1
+  if [[ -n "$QBITTORRENT_CONTAINER" ]] &&
+     ! validate_managed_container_name "$QBITTORRENT_CONTAINER"; then
+    log "QBITTORRENT_CONTAINER is ambiguous with an immutable Docker container ID"
+    return 1
+  fi
+}
+
 validate_settings() {
+  local LC_ALL=C
   if ! validate_bool "$SPEED_CHECK_ENABLED" || ! validate_bool "$AIRVPN_ROTATE_ENABLED"; then
     log "SPEED_CHECK_ENABLED and AIRVPN_ROTATE_ENABLED must be booleans"
     return 1
@@ -258,6 +687,15 @@ validate_settings() {
   validate_single_line REQUIRED_RULE "$REQUIRED_RULE" || return 1
   validate_single_line AIRVPN_COUNTRIES "$AIRVPN_COUNTRIES" || return 1
 
+  case "$AIRVPN_PROFILE_SOURCE" in
+    static) ;;
+    api) ;;
+    *)
+      log "AIRVPN_PROFILE_SOURCE must be static or api"
+      return 1
+      ;;
+  esac
+
   if [[ -n "$PING_TARGET" && ! "$PING_TARGET" =~ ^[A-Za-z0-9:.%_-]+$ ]]; then
     log "PING_TARGET contains unsupported characters"
     return 1
@@ -282,9 +720,8 @@ validate_settings() {
     log "QBITTORRENT_PROCESS_NAME is invalid"
     return 1
   fi
-  if ! validate_secure_executable "$AIRVPN_API_HELPER"; then
-    log "AirVPN helper is not executable"
-    return 1
+  if [[ "$AIRVPN_PROFILE_SOURCE" == api ]]; then
+    validate_prospective_api_settings || return 1
   fi
 }
 
@@ -292,17 +729,53 @@ path_is_symlink() { [[ -L "$1" ]]; }
 path_is_regular() { [[ -f "$1" ]]; }
 path_is_directory() { [[ -d "$1" ]]; }
 owner_mode() { stat -c '%u:%a' -- "$1" 2>/dev/null; }
-validate_secure_executable() {
-  local path="${1:?}" parent file_meta parent_meta parent_mode
-  parent="${path%/*}"; [[ "$parent" != "$path" ]] || parent=.
+validate_secure_parent_directory() {
+  local path="${1:?}" label="${2:?}" required_mode="${3:-700}"
+  local parent metadata
+  parent="${path%/*}"
+  [[ "$parent" != "$path" && "$required_mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  if [[ ! -d "$parent" || -L "$parent" ]]; then
+    log "$label must be a regular non-symlink directory"
+    return 1
+  fi
+  metadata="$(owner_mode "$parent")" || return 1
+  if [[ "$metadata" != "0:$required_mode" ]]; then
+    log "$label must be root-owned with mode $required_mode"
+    return 1
+  fi
+}
+validate_secure_code_path() {
+  local path="${1:?}" required_mode="${2:?}" ancestor metadata ancestor_mode
+  [[ "$path" == /* && "$path" != *//* && "$path" != */../* && "$path" != */./* ]] || return 1
+  ancestor="${path%/*}"; [[ -n "$ancestor" ]] || ancestor=/
+  while :; do
+    path_is_directory "$ancestor" && ! path_is_symlink "$ancestor" || return 1
+    metadata="$(owner_mode "$ancestor")" || return 1
+    [[ "$metadata" =~ ^0:([0-7]{3,4})$ ]] || return 1
+    ancestor_mode="${BASH_REMATCH[1]}"
+    if (( (8#$ancestor_mode & 8#022) != 0 && (8#$ancestor_mode & 8#1000) == 0 )); then
+      return 1
+    fi
+    [[ "$ancestor" == / ]] && break
+    ancestor="${ancestor%/*}"; [[ -n "$ancestor" ]] || ancestor=/
+  done
   path_is_regular "$path" && ! path_is_symlink "$path" || return 1
-  file_meta="$(owner_mode "$path")" || return 1
-  [[ "$file_meta" == 0:755 ]] || return 1
-  path_is_directory "$parent" && ! path_is_symlink "$parent" || return 1
-  parent_meta="$(owner_mode "$parent")" || return 1
-  [[ "$parent_meta" =~ ^0:([0-7]{3,4})$ ]] || return 1
-  parent_mode="${BASH_REMATCH[1]}"
-  (( (8#$parent_mode & 8#022) == 0 ))
+  [[ "$(owner_mode "$path")" == "0:$required_mode" ]]
+}
+validate_secure_executable() { validate_secure_code_path "${1:?}" 755; }
+validate_secure_module() { validate_secure_code_path "${1:?}" 644; }
+load_managed_module() {
+  if (( MANAGED_MODULE_LOADED )); then return 0; fi
+  if ! validate_secure_module "$MANAGED_MODULE"; then
+    log "Managed runtime module failed trust validation"
+    return 1
+  fi
+  # shellcheck disable=SC1090
+  if ! source "$MANAGED_MODULE"; then
+    log "Managed runtime module could not be loaded"
+    return 1
+  fi
+  MANAGED_MODULE_LOADED=1
 }
 validate_secure_file() {
   local path="${1:?}" label="${2:?}" mode uid actual_mode
@@ -323,12 +796,22 @@ derive_fixed_runtime_paths() {
   WG_CONF="/etc/wireguard/${IFACE}.conf"
   STATE_DIR=/run/wg-healthcheck
   LOCK="$STATE_DIR/${IFACE}.lock"
+  SETUP_GUARD="$STATE_DIR/${IFACE}.setup-guard"
   RESTART_STAMP="$STATE_DIR/${IFACE}.last_restart"
   ROTATE_STAMP="$STATE_DIR/${IFACE}.last_rotate"
   SPEED_STAMP="$STATE_DIR/${IFACE}.last_speedcheck"
   STATUS_FILE="$STATE_DIR/${IFACE}.status"
   ROTATION_PENDING="${WG_CONF}.pending-healthcheck"
+  MANAGED_SAFETY="${WG_CONF}.safety-healthcheck"
   AIRVPN_API_HELPER=/usr/local/libexec/wg-healthcheck/airvpn-api
+  MANAGED_MODULE=/usr/local/libexec/wg-healthcheck/wg-healthcheck-managed
+  # These fixed paths are consumed by the securely sourced managed module.
+  # shellcheck disable=SC2034
+  AIRVPN_API_KEY_FILE="/etc/wireguard/healthcheck.d/${IFACE}.api-key" \
+    AIRVPN_API_STATE_FILE="/var/lib/wg-healthcheck/${IFACE}.api-state" \
+    AIRVPN_API_LOCK="$STATE_DIR/airvpn-api.lock" \
+    MANAGED_CANDIDATE="/etc/wireguard/.${IFACE}.conf.managed-candidate" \
+    PRE_MANAGED_CONF="${WG_CONF}.pre-managed"
   PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 }
 
@@ -338,7 +821,12 @@ sanitize_process_environment() {
   export PATH LC_ALL
   unset BASH_ENV ENV CDPATH GLOBIGNORE IFS PS4 PROMPT_COMMAND
   unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHONPATH PYTHONHOME
+  unset AIRVPN_API_KEY
   export -n SHELLOPTS BASHOPTS 2>/dev/null || true
+}
+
+disable_core_dumps() {
+  ulimit -c 0
 }
 
 prepare_state_dir() {
@@ -353,6 +841,211 @@ prepare_state_dir() {
   uid="$(stat -c '%u' -- "$STATE_DIR" 2>/dev/null)" || return 1
   mode="$(stat -c '%a' -- "$STATE_DIR" 2>/dev/null)" || return 1
   [[ "$uid" == 0 && "$mode" == 700 ]]
+}
+
+run_with_up_to_three_private_fds_closed() {
+  local first_fd="${1-}" second_fd="${2-}" third_fd="${3-}"
+  shift 3 || return 1
+  (( $# > 0 )) && declare -F "$1" >/dev/null || return 1
+  if [[ -n "$first_fd" && -n "$second_fd" && -n "$third_fd" ]]; then
+    run_with_three_private_fds_closed "$first_fd" "$second_fd" "$third_fd" "$@"
+  elif [[ -n "$first_fd" && -n "$second_fd" ]]; then
+    run_with_two_private_fds_closed "$first_fd" "$second_fd" "$@"
+  elif [[ -n "$first_fd" && -n "$third_fd" ]]; then
+    run_with_two_private_fds_closed "$first_fd" "$third_fd" "$@"
+  elif [[ -n "$second_fd" && -n "$third_fd" ]]; then
+    run_with_two_private_fds_closed "$second_fd" "$third_fd" "$@"
+  elif [[ -n "$first_fd" ]]; then
+    run_with_private_fd_closed "$first_fd" "$@"
+  elif [[ -n "$second_fd" ]]; then
+    run_with_private_fd_closed "$second_fd" "$@"
+  elif [[ -n "$third_fd" ]]; then
+    run_with_private_fd_closed "$third_fd" "$@"
+  else
+    "$@"
+  fi
+}
+
+run_isolated_with_private_fds_closed() {
+  local candidate_fd close_one='' close_two='' close_three='' close_four=''
+  local -a private_fds=()
+  while (( $# > 0 )) && [[ "$1" != -- ]]; do
+    candidate_fd="$1"; shift
+    [[ -n "$candidate_fd" ]] || continue
+    validate_credential_fd_number "$candidate_fd" || return 1
+    if [[ " ${private_fds[*]-} " == *" $candidate_fd "* ]]; then return 1; fi
+    private_fds+=("$candidate_fd")
+  done
+  (( $# > 1 )) && [[ "$1" == -- ]] || return 1
+  shift
+  declare -F "$1" >/dev/null || return 1
+  case "${#private_fds[@]}" in
+    0) ( "$@" ) ;;
+    1)
+      close_one="${private_fds[0]}"
+      ( "$@" ) {close_one}<&-
+      ;;
+    2)
+      close_one="${private_fds[0]}"; close_two="${private_fds[1]}"
+      ( "$@" ) {close_one}<&- {close_two}<&-
+      ;;
+    3)
+      close_one="${private_fds[0]}"; close_two="${private_fds[1]}"; close_three="${private_fds[2]}"
+      ( "$@" ) {close_one}<&- {close_two}<&- {close_three}<&-
+      ;;
+    4)
+      close_one="${private_fds[0]}"; close_two="${private_fds[1]}"
+      close_three="${private_fds[2]}"; close_four="${private_fds[3]}"
+      ( "$@" ) {close_one}<&- {close_two}<&- {close_three}<&- {close_four}<&-
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+setup_guard_create_noclobber() {
+  ( set -o noclobber; umask 077; : > "$SETUP_GUARD" ) 2>/dev/null
+}
+
+setup_guard_chmod_private() {
+  chmod 600 -- "$SETUP_GUARD"
+}
+
+setup_guard_metadata_child() {
+  local fd_path="${1:?}" guard_path="${2:?}" fd_meta path_meta
+  local uid mode device inode kind extra
+  local LC_ALL=C
+  [[ -f "$guard_path" && ! -L "$guard_path" && "$fd_path" -ef "$guard_path" ]] || return 1
+  fd_meta="$(/usr/bin/stat -Lc '%u|%a|%d|%i|%F' -- "$fd_path")" || return 1
+  path_meta="$(/usr/bin/stat -Lc '%u|%a|%d|%i|%F' -- "$guard_path")" || return 1
+  [[ "$fd_meta" == "$path_meta" ]] || return 1
+  IFS='|' read -r uid mode device inode kind extra <<< "$path_meta"
+  [[ -z "${extra-}" && "$uid" == 0 && "$mode" == 600 &&
+     "$device" =~ ^(0|[1-9][0-9]*)$ && "$inode" =~ ^(0|[1-9][0-9]*)$ &&
+     ( "$kind" == 'regular file' || "$kind" == 'regular empty file' ) ]]
+}
+
+setup_guard_metadata_matches() {
+  local inspected_fd="${1:?}" first_private_fd="${2-}"
+  local second_private_fd="${3-}" third_private_fd="${4-}"
+  local owner_pid fd_path
+  validate_credential_fd_number "$inspected_fd" || return 1
+  owner_pid=$BASHPID
+  fd_path="/proc/$owner_pid/fd/$inspected_fd"
+  [[ -f "$SETUP_GUARD" && ! -L "$SETUP_GUARD" && -e "$fd_path" ]] || return 1
+  run_isolated_with_private_fds_closed "$inspected_fd" "$first_private_fd" \
+    "$second_private_fd" "$third_private_fd" -- setup_guard_metadata_child \
+    "$fd_path" "$SETUP_GUARD"
+}
+
+open_setup_guard() {
+  local output_variable="${1:?}" first_private_fd="${2-}" second_private_fd="${3-}"
+  local opened_guard_fd='' created=0
+  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  [[ -z "$first_private_fd" ]] || validate_credential_fd_number "$first_private_fd" || return 1
+  [[ -z "$second_private_fd" ]] || validate_credential_fd_number "$second_private_fd" || return 1
+  [[ -z "$first_private_fd" || -z "$second_private_fd" ||
+     "$first_private_fd" != "$second_private_fd" ]] || return 1
+  [[ "$SETUP_GUARD" == "$STATE_DIR/${IFACE}.setup-guard" ]] || return 1
+  [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || return 1
+  if [[ -e "$SETUP_GUARD" || -L "$SETUP_GUARD" ]]; then
+    [[ -f "$SETUP_GUARD" && ! -L "$SETUP_GUARD" ]] || return 1
+  else
+    if run_isolated_with_private_fds_closed "$first_private_fd" "$second_private_fd" -- \
+      setup_guard_create_noclobber; then
+      created=1
+    else
+      [[ -f "$SETUP_GUARD" && ! -L "$SETUP_GUARD" ]] || return 1
+    fi
+  fi
+  if (( created )); then
+    run_isolated_with_private_fds_closed "$first_private_fd" "$second_private_fd" -- \
+      setup_guard_chmod_private || return 1
+  fi
+  exec {opened_guard_fd}<>"$SETUP_GUARD" || return 1
+  if ! setup_guard_metadata_matches "$opened_guard_fd" "$first_private_fd" "$second_private_fd"; then
+    exec {opened_guard_fd}>&-
+    return 1
+  fi
+  printf -v "$output_variable" '%s' "$opened_guard_fd"
+}
+
+guard_flock_fd() {
+  local guard_fd="${1:?}" lock_mode="${2:?}"
+  validate_credential_fd_number "$guard_fd" || return 1
+  case "$lock_mode" in
+    shared) flock -n -s "$guard_fd" ;;
+    exclusive) flock -n -x "$guard_fd" ;;
+    *) return 1 ;;
+  esac
+}
+
+run_guard_flock() {
+  local guard_fd="${1:?}" lock_mode="${2:?}" first_private_fd="${3-}"
+  local second_private_fd="${4-}" third_private_fd="${5-}"
+  validate_credential_fd_number "$guard_fd" || return 1
+  [[ "$guard_fd" != "$first_private_fd" && "$guard_fd" != "$second_private_fd" &&
+     "$guard_fd" != "$third_private_fd" ]] || return 1
+  run_isolated_with_private_fds_closed "$first_private_fd" "$second_private_fd" \
+    "$third_private_fd" -- guard_flock_fd "$guard_fd" "$lock_mode"
+}
+
+validate_and_adopt_setup_lease() {
+  local lease_fd="${SETUP_LEASE_FD:-}" credential_fd="${CREDENTIAL_FD:-}"
+  local settings_fd="${SETTINGS_FD:-}" probe_fd=''
+  validate_credential_fd_number "$lease_fd" || return 1
+  [[ -z "$credential_fd" || "$credential_fd" != "$lease_fd" ]] || return 1
+  [[ -z "$settings_fd" || "$settings_fd" != "$lease_fd" ]] || return 1
+  setup_guard_metadata_matches "$lease_fd" "$credential_fd" "$settings_fd" || return 1
+  exec {probe_fd}<>"$SETUP_GUARD" || return 1
+  if ! setup_guard_metadata_matches "$probe_fd" "$lease_fd" "$credential_fd" "$settings_fd"; then
+    exec {probe_fd}>&-
+    return 1
+  fi
+  if run_guard_flock "$probe_fd" shared "$lease_fd" "$credential_fd" "$settings_fd"; then
+    exec {probe_fd}>&-
+    return 1
+  fi
+  if ! run_guard_flock "$lease_fd" exclusive "$probe_fd" "$credential_fd" "$settings_fd"; then
+    exec {probe_fd}>&-
+    return 1
+  fi
+  if ! setup_guard_metadata_matches "$lease_fd" "$probe_fd" "$credential_fd" "$settings_fd" ||
+     ! setup_guard_metadata_matches "$probe_fd" "$lease_fd" "$credential_fd" "$settings_fd"; then
+    exec {probe_fd}>&-
+    return 1
+  fi
+  exec {probe_fd}>&-
+  GUARD_FD="$lease_fd"
+  SETUP_LEASE_FD=
+  GUARD_LOCKED=1
+  SETUP_LEASE_ADOPTED=1
+}
+
+acquire_runtime_guard() {
+  GUARD_LOCKED=0
+  GUARD_FD=
+  SETUP_LEASE_ADOPTED=0
+  if [[ -n "$SETUP_LEASE_FD" ]]; then
+    validate_and_adopt_setup_lease
+    return
+  fi
+  if ! open_setup_guard GUARD_FD "$CREDENTIAL_FD" "$SETTINGS_FD"; then
+    return 1
+  fi
+  if ! run_guard_flock "$GUARD_FD" shared "$CREDENTIAL_FD" "$SETTINGS_FD"; then
+    exec {GUARD_FD}>&-
+    GUARD_FD=
+    return 0
+  fi
+  GUARD_LOCKED=1
+}
+
+validate_observational_state_dir() {
+  local metadata
+  if [[ ! -e "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then return 0; fi
+  [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || return 1
+  metadata="$(owner_mode "$STATE_DIR")" || return 1
+  [[ "$metadata" == 0:700 ]]
 }
 sanitize_status_value() {
   local value="${1-}"
@@ -588,6 +1281,10 @@ verify_airvpn_egress() (
   local directory tmp display server country extra
   directory="${STATE_DIR:?}"
   [[ -d "$directory" ]] || exit 1
+  if ! validate_secure_executable "$AIRVPN_API_HELPER"; then
+    log "AirVPN helper is not executable"
+    exit 1
+  fi
   tmp="$(mktemp "$directory/.egress.XXXXXX")" || exit 1
   trap 'rm -f -- "$tmp"' EXIT
   trap 'exit 143' HUP INT TERM
@@ -769,6 +1466,10 @@ restart_iface() {
 
 select_airvpn_candidate() {
   local current
+  if ! validate_secure_executable "$AIRVPN_API_HELPER"; then
+    log "AirVPN helper is not executable"
+    return 1
+  fi
   current="$(runtime_endpoint)" || current="$(configured_endpoint)" || return 1
   "$AIRVPN_API_HELPER" select \
     --url "$AIRVPN_STATUS_URL" \
@@ -856,9 +1557,10 @@ reconcile_pending_rotation() {
 
 record_rotation_interruption() {
   local signal="${1:?}"
-  if [[ -e "${ROTATION_PENDING:-}" || -L "${ROTATION_PENDING:-}" ]]; then
-    write_status failed "rotation_interrupted_${signal}" || true
-  fi
+  [[ "$signal" == HUP || "$signal" == INT || "$signal" == TERM ]] || return 1
+  # Signal handlers must remain child-free: managed provider frames can own additional
+  # credential/profile descriptors that are intentionally not exposed as globals.
+  cleanup_runtime_fds >/dev/null 2>&1 || true
 }
 
 install_signal_handlers() {
@@ -907,7 +1609,7 @@ protective_restart_degraded() {
   fi
 }
 
-rotate_airvpn() {
+rotate_static_endpoint() {
   local reason="${1:-health_check_failed}" require_speed="${2:-0}"
   local old_endpoint selection restart_rc cooldown_rc verify_speed=false
   [[ "$require_speed" == 0 || "$require_speed" == 1 ]] || return 1
@@ -996,6 +1698,20 @@ rotate_airvpn() {
   log "AirVPN rotation complete"
 }
 
+rotate_airvpn() {
+  local reason="${1:-health_check_failed}" require_speed="${2:-0}"
+  [[ "$require_speed" == 0 || "$require_speed" == 1 ]] || return 1
+  if [[ "$AIRVPN_PROFILE_SOURCE" == api ]] && truthy "$AIRVPN_ROTATE_ENABLED"; then
+    declare -F managed_rotate_profile >/dev/null || {
+      log "Managed rotation owner is unavailable"
+      return 69
+    }
+    managed_rotate_profile "$reason" "$require_speed"
+    return
+  fi
+  rotate_static_endpoint "$reason" "$require_speed"
+}
+
 SPEED_RECOVERY_PERFORMED=0
 
 speed_check() {
@@ -1032,37 +1748,178 @@ fast_tunnel_health() {
   fi
 }
 is_root() { (( EUID == 0 )); }
-main() {
-  local lock_fd recovery_rc speed_rc cooldown_rc
-  if [[ $# -eq 1 && "$1" == --version ]]; then
-    printf 'wg-healthcheck %s\n' "$WG_HEALTHCHECK_VERSION"
-    return 0
-  fi
-  if [[ $# -ne 1 ]] || ! validate_interface_name "$1"; then
-    printf 'usage: wg-healthcheck <iface>\n' >&2
-    return 64
-  fi
-  IFACE="$1"
+
+load_command_context() {
+  CONTEXT_LOCKED=0
   reset_configurable_defaults
   derive_fixed_runtime_paths
-  sanitize_process_environment
+  if [[ -n "$SETTINGS_FD" ]]; then
+    if ! run_with_two_private_fds_closed "$CREDENTIAL_FD" "$SETTINGS_FD" \
+      sanitize_process_environment; then
+      return 1
+    fi
+  elif [[ -n "$CREDENTIAL_FD" ]]; then
+    if ! run_with_private_fd_closed "$CREDENTIAL_FD" sanitize_process_environment; then
+      return 1
+    fi
+  else
+    sanitize_process_environment
+  fi
 
   if ! is_root; then
     log "wg-healthcheck must run as root"
     return 1
   fi
+  validate_secure_parent_directory "$CFG" "health-check configuration directory" 700 ||
+    return 1
   validate_secure_file "$CFG" "health-check configuration" 600 || return 1
-  validate_secure_file "$WG_CONF" "WireGuard configuration" 600 || return 1
+  if [[ ( "$COMMAND" == provision || "$COMMAND" == status ||
+          "$COMMAND" == reset-api-state || "$COMMAND" == cleanup-candidate ) &&
+        ! -e "$WG_CONF" && ! -L "$WG_CONF" ]]; then
+    :
+  else
+    validate_secure_file "$WG_CONF" "WireGuard configuration" 600 || return 1
+  fi
   parse_healthcheck_config "$CFG" || return 1
+  apply_proposed_settings_overlay || return 1
   validate_settings || return 1
-  prepare_state_dir || return 1
+  if [[ "$COMMAND" == provision || "$COMMAND" == adopt ]]; then
+    validate_prospective_api_settings || return 1
+  fi
+  if [[ "$COMMAND" != status && "$GUARD_LOCKED" == 0 ]]; then
+    prepare_state_dir || return 1
+  elif [[ "$COMMAND" == status ]]; then
+    validate_observational_state_dir || return 1
+  fi
+}
 
-  exec {lock_fd}>"$LOCK" || return 1
-  if ! flock -n "$lock_fd"; then
+run_interface_lock_helper() {
+  local private_fd="${1-}"
+  shift
+  if [[ -n "$private_fd" ]]; then
+    run_with_private_fd_closed "$private_fd" "$@"
+  else
+    "$@"
+  fi
+}
+
+interface_lock_create_noclobber() {
+  ( set -o noclobber; umask 077; : > "$LOCK" ) 2>/dev/null
+}
+
+interface_lock_chmod_private() {
+  chmod 600 -- "$LOCK"
+}
+
+interface_lock_path_identity() {
+  stat -Lc '%d:%i' -- "$LOCK" 2>/dev/null
+}
+
+open_interface_lock() {
+  local output_variable="${1:?}" private_fd="${2-}"
+  local opened_lock_fd lock_metadata fd_metadata path_metadata created=0
+  [[ "$output_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  [[ -z "$private_fd" ]] || validate_credential_fd_number "$private_fd" || return 1
+  [[ "$LOCK" == "$STATE_DIR/${IFACE}.lock" ]] || return 1
+  [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || return 1
+  if [[ -e "$LOCK" || -L "$LOCK" ]]; then
+    [[ -f "$LOCK" && ! -L "$LOCK" ]] || return 1
+  else
+    if run_interface_lock_helper "$private_fd" interface_lock_create_noclobber; then
+      created=1
+    else
+      [[ -f "$LOCK" && ! -L "$LOCK" ]] || return 1
+    fi
+  fi
+  if (( created )); then
+    run_interface_lock_helper "$private_fd" interface_lock_chmod_private || return 1
+  fi
+  lock_metadata="$(run_interface_lock_helper "$private_fd" owner_mode "$LOCK")" || return 1
+  [[ "$lock_metadata" == 0:600 ]] || return 1
+  exec {opened_lock_fd}<>"$LOCK" || return 1
+  if [[ -L "$LOCK" || ! -f "$LOCK" ]]; then
+    exec {opened_lock_fd}>&-
+    return 1
+  fi
+  fd_metadata="$(run_interface_lock_helper "$private_fd" \
+    interface_lock_fd_identity "$opened_lock_fd")" || {
+    exec {opened_lock_fd}>&-
+    return 1
+  }
+  path_metadata="$(run_interface_lock_helper "$private_fd" \
+    interface_lock_path_identity)" || {
+    exec {opened_lock_fd}>&-
+    return 1
+  }
+  if [[ "$fd_metadata" != "$path_metadata" ||
+        "$(run_interface_lock_helper "$private_fd" owner_mode "$LOCK")" != 0:600 ]]; then
+    exec {opened_lock_fd}>&-
+    return 1
+  fi
+  printf -v "$output_variable" '%s' "$opened_lock_fd"
+}
+
+interface_lock_fd_identity() {
+  stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/${1:?}" 2>/dev/null
+}
+
+acquire_command_lock() {
+  CONTEXT_LOCKED=0
+  if ! flock -n "$LOCK_FD"; then
     return 0
   fi
-  reconcile_pending_rotation || return 1
-  (( RECONCILED_PENDING )) && return 0
+  CONTEXT_LOCKED=1
+}
+
+classify_pending_marker() {
+  local marker size marker_fd
+  local LC_ALL=C
+  PENDING_KIND=none
+  if [[ -n "${MANAGED_SAFETY:-}" &&
+        ( -e "$MANAGED_SAFETY" || -L "$MANAGED_SAFETY" ) ]]; then
+    PENDING_KIND=v2
+    return 0
+  fi
+  if [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]]; then return 0; fi
+  if ! validate_secure_file "$ROTATION_PENDING" "pending rotation marker" 600; then
+    PENDING_KIND=v2
+    return 0
+  fi
+  size="$(stat -c '%s' -- "$ROTATION_PENDING" 2>/dev/null)" || {
+    PENDING_KIND=v2
+    return 0
+  }
+  if [[ ! "$size" =~ ^[0-9]+$ ]] || (( 10#$size < 2 || 10#$size > 4096 )); then
+    PENDING_KIND=v2
+    return 0
+  fi
+  exec {marker_fd}<"$ROTATION_PENDING" || {
+    PENDING_KIND=v2
+    return 0
+  }
+  marker=
+  IFS= read -r -u "$marker_fd" marker || {
+    exec {marker_fd}<&-
+    PENDING_KIND=v2
+    return 0
+  }
+  exec {marker_fd}<&-
+  if [[ "$marker" == version=2 ]]; then
+    PENDING_KIND=v2
+    return 0
+  fi
+  marker="$(<"$ROTATION_PENDING")"
+  if (( 10#$size != ${#marker} + 1 )) ||
+     [[ "$marker" == *$'\r'* || "$marker" == *$'\n'* ]] ||
+     [[ "$(canonicalize_endpoint "$marker" 2>/dev/null)" != "$marker" ]]; then
+    PENDING_KIND=v2
+    return 0
+  fi
+  PENDING_KIND=v1
+}
+
+run_healthcheck() {
+  local recovery_rc speed_rc cooldown_rc
   configured_endpoint >/dev/null || {
     log "WireGuard configuration must contain exactly one numeric endpoint"
     return 1
@@ -1100,6 +1957,254 @@ main() {
     fi
   fi
   write_status healthy all_checks_passed
+}
+
+prepare_command_dispatch() {
+  DISPATCH_READY=0
+  if [[ "$COMMAND" == cleanup-candidate && "$SETUP_LEASE_ADOPTED" != 1 ]]; then
+    log "Candidate cleanup requires the adopted exclusive setup lease"
+    return 1
+  fi
+  classify_pending_marker || return 1
+  if [[ "$COMMAND" == status ]]; then
+    load_managed_module || return 1
+    declare -F managed_dispatch_command >/dev/null || return 1
+    DISPATCH_READY=1
+    return 0
+  fi
+  if [[ "$COMMAND" != check && "$PENDING_KIND" != none ]]; then
+    log "Administrative command refused while recovery state is unresolved"
+    return 75
+  fi
+  case "$PENDING_KIND" in
+    v1)
+      reconcile_pending_rotation || return 1
+      (( RECONCILED_PENDING )) || return 1
+      if [[ "$COMMAND" == check && "$AIRVPN_PROFILE_SOURCE" == static ]]; then
+        return 0
+      fi
+      PENDING_KIND=none
+      ;;
+    v2)
+      load_managed_module || return 1
+      declare -F managed_reconcile_pending >/dev/null || {
+        log "Managed runtime module lacks its reconciliation owner"
+        return 1
+      }
+      managed_reconcile_pending
+      return $?
+      ;;
+    none) ;;
+    *) return 1 ;;
+  esac
+
+  if [[ "$COMMAND" == check && "$AIRVPN_PROFILE_SOURCE" == static ]]; then
+    run_healthcheck
+    return $?
+  fi
+  load_managed_module || return 1
+  declare -F managed_dispatch_command >/dev/null || {
+    log "Managed runtime module lacks its command dispatcher"
+    return 1
+  }
+  DISPATCH_READY=1
+}
+
+dispatch_command() {
+  local dispatch_rc
+  if [[ -n "$CREDENTIAL_FD" ]]; then
+    if run_with_private_fd_closed "$CREDENTIAL_FD" prepare_command_dispatch; then
+      dispatch_rc=0
+    else
+      dispatch_rc=$?
+    fi
+  elif prepare_command_dispatch; then
+    dispatch_rc=0
+  else
+    dispatch_rc=$?
+  fi
+  (( dispatch_rc == 0 )) || return "$dispatch_rc"
+  (( DISPATCH_READY )) || return 0
+  managed_dispatch_command "$COMMAND" "$ACTION_MODE" "$STATUS_JSON" "$CREDENTIAL_FD"
+}
+
+close_cli_private_fds() {
+  local credential_fd="${CREDENTIAL_FD:-}" settings_fd="${SETTINGS_FD:-}"
+  local setup_lease_fd="${SETUP_LEASE_FD:-}" rc=0
+  if [[ -n "$setup_lease_fd" && "$setup_lease_fd" != "$credential_fd" &&
+        "$setup_lease_fd" != "$settings_fd" ]]; then
+    close_private_fd "$setup_lease_fd" || rc=1
+  fi
+  SETUP_LEASE_FD=
+  if [[ -n "$settings_fd" && "$settings_fd" != "$credential_fd" ]]; then
+    close_private_fd "$settings_fd" || rc=1
+  fi
+  SETTINGS_FD=
+  if [[ -n "$credential_fd" ]]; then
+    close_private_fd "$credential_fd" || rc=1
+  fi
+  CREDENTIAL_FD=
+  return "$rc"
+}
+
+cleanup_runtime_fds() {
+  local interface_fd="${LOCK_FD:-}" guard_fd="${GUARD_FD:-}" rc=0
+  if [[ -n "$interface_fd" ]]; then
+    close_private_fd "$interface_fd" || rc=1
+  fi
+  LOCK_FD=
+  CONTEXT_LOCKED=0
+  close_cli_private_fds || rc=1
+  if [[ -n "$guard_fd" ]]; then
+    close_private_fd "$guard_fd" || rc=1
+  fi
+  GUARD_FD=
+  GUARD_LOCKED=0
+  SETUP_LEASE_ADOPTED=0
+  return "$rc"
+}
+
+finish_main() {
+  local requested_rc="${1:?}"
+  cleanup_runtime_fds || return 1
+  return "$requested_rc"
+}
+
+main() {
+  local main_rc
+  if parse_cli "$@"; then
+    main_rc=0
+  else
+    main_rc=$?
+    finish_main "$main_rc"
+    return
+  fi
+  if [[ "$COMMAND" == version ]]; then
+    printf 'wg-healthcheck %s\n' "$WG_HEALTHCHECK_VERSION"
+    finish_main 0
+    return
+  fi
+  if ! disable_core_dumps; then
+    finish_main 1
+    return
+  fi
+  if ! run_with_up_to_three_private_fds_closed "$CREDENTIAL_FD" "$SETTINGS_FD" \
+    "$SETUP_LEASE_FD" sanitize_process_environment; then
+    finish_main 1
+    return
+  fi
+
+  if [[ "$COMMAND" != status ]]; then
+    if ! run_with_up_to_three_private_fds_closed "$CREDENTIAL_FD" "$SETTINGS_FD" \
+         "$SETUP_LEASE_FD" derive_fixed_runtime_paths; then
+      finish_main 1
+      return
+    fi
+    SETUP_GUARD="$STATE_DIR/${IFACE}.setup-guard"
+    if ! run_with_up_to_three_private_fds_closed "$CREDENTIAL_FD" "$SETTINGS_FD" \
+         "$SETUP_LEASE_FD" is_root ||
+       ! run_isolated_with_private_fds_closed "$CREDENTIAL_FD" "$SETTINGS_FD" \
+         "$SETUP_LEASE_FD" -- prepare_state_dir; then
+      finish_main 1
+      return
+    fi
+    if acquire_runtime_guard; then
+      main_rc=0
+    else
+      main_rc=$?
+    fi
+    if (( main_rc != 0 )); then
+      finish_main "$main_rc"
+      return
+    fi
+    if (( ! GUARD_LOCKED )); then
+      if (( LEGACY_INVOCATION )); then main_rc=0; else main_rc=75; fi
+      finish_main "$main_rc"
+      return
+    fi
+  fi
+
+  if [[ -n "$GUARD_FD" ]]; then
+    if run_with_private_fd_closed "$GUARD_FD" capture_cli_settings_fd; then
+      main_rc=0
+    else
+      main_rc=$?
+    fi
+  elif capture_cli_settings_fd; then
+    main_rc=0
+  else
+    main_rc=$?
+  fi
+  if (( main_rc != 0 )); then
+    finish_main "$main_rc"
+    return
+  fi
+
+  if [[ -n "$CREDENTIAL_FD" ]]; then
+    if run_with_private_fd_closed "$CREDENTIAL_FD" load_command_context; then
+      main_rc=0
+    else
+      main_rc=$?
+    fi
+  elif load_command_context; then
+    main_rc=0
+  else
+    main_rc=$?
+  fi
+  if (( main_rc != 0 )); then
+    finish_main "$main_rc"
+    return
+  fi
+
+  if [[ "$COMMAND" == status ]]; then
+    if dispatch_command; then main_rc=0; else main_rc=$?; fi
+    finish_main "$main_rc"
+    return
+  fi
+
+  LOCK_FD=
+  if [[ -n "$CREDENTIAL_FD" ]]; then
+    if open_interface_lock LOCK_FD "$CREDENTIAL_FD"; then
+      main_rc=0
+    else
+      main_rc=$?
+    fi
+  elif open_interface_lock LOCK_FD; then
+      main_rc=0
+  else
+    main_rc=$?
+  fi
+  if (( main_rc != 0 )); then
+    finish_main "$main_rc"
+    return
+  fi
+  if [[ -n "$CREDENTIAL_FD" ]]; then
+    if run_with_private_fd_closed "$CREDENTIAL_FD" acquire_command_lock; then
+      main_rc=0
+    else
+      main_rc=$?
+    fi
+  elif acquire_command_lock; then
+      main_rc=0
+  else
+    main_rc=$?
+  fi
+  if (( main_rc != 0 )); then
+    finish_main "$main_rc"
+    return
+  fi
+  if (( ! CONTEXT_LOCKED )); then
+    if (( LEGACY_INVOCATION )); then main_rc=0; else main_rc=75; fi
+    finish_main "$main_rc"
+    return
+  fi
+
+  if dispatch_command; then
+    main_rc=0
+  else
+    main_rc=$?
+  fi
+  finish_main "$main_rc"
 }
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   umask 077

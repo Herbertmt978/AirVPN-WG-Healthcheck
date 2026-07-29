@@ -1,0 +1,3938 @@
+#!/bin/bash
+
+# Securely sourced by bin/wg-healthcheck after fixed-path ownership and mode checks.
+# Managed API state, journal, and full-profile transaction owners live here. Public
+# lifecycle command wiring lands in its later approved slice.
+
+managed_file_size() {
+  stat -c '%s' -- "$1" 2>/dev/null
+}
+
+managed_credential_record_valid() {
+  local path="${1:?}"
+  LC_ALL=C command grep -aEq '^[0-9a-f]{64}$' -- "$path" 2>/dev/null
+}
+
+managed_output_variable_is_valid() {
+  local wgmanaged_name="${1-}"
+  [[ "$wgmanaged_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] &&
+    [[ "$wgmanaged_name" != wgmanaged_* ]]
+}
+
+open_installed_api_key() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_parent wgmanaged_file_meta
+  local wgmanaged_parent_meta wgmanaged_size wgmanaged_opened_fd
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  wgmanaged_parent="${AIRVPN_API_KEY_FILE%/*}"
+  [[ "$wgmanaged_parent" != "$AIRVPN_API_KEY_FILE" ]] || return 1
+
+  if ! path_is_directory "$wgmanaged_parent" || path_is_symlink "$wgmanaged_parent"; then
+    log "API credential directory failed trust validation"
+    return 1
+  fi
+  wgmanaged_parent_meta="$(owner_mode "$wgmanaged_parent")" || return 1
+  if [[ "$wgmanaged_parent_meta" != 0:700 ]]; then
+    log "API credential directory failed trust validation"
+    return 1
+  fi
+  if ! path_is_regular "$AIRVPN_API_KEY_FILE" || path_is_symlink "$AIRVPN_API_KEY_FILE"; then
+    log "Installed API credential failed trust validation"
+    return 1
+  fi
+  wgmanaged_file_meta="$(owner_mode "$AIRVPN_API_KEY_FILE")" || return 1
+  if [[ "$wgmanaged_file_meta" != 0:600 ]]; then
+    log "Installed API credential failed trust validation"
+    return 1
+  fi
+  wgmanaged_size="$(managed_file_size "$AIRVPN_API_KEY_FILE")" || return 1
+  if [[ "$wgmanaged_size" != 65 ]] || ! managed_credential_record_valid "$AIRVPN_API_KEY_FILE"; then
+    log "Installed API credential has an invalid record shape"
+    return 1
+  fi
+
+  exec {wgmanaged_opened_fd}<"$AIRVPN_API_KEY_FILE" || return 1
+  if ! printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_opened_fd"; then
+    exec {wgmanaged_opened_fd}<&-
+    return 1
+  fi
+}
+
+managed_uint_is_canonical() {
+  local value="${1-}" maximum="${2:?}" value_length maximum_length
+  [[ "$value" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+  value_length=${#value}
+  maximum_length=${#maximum}
+  (( value_length < maximum_length )) && return 0
+  (( value_length > maximum_length )) && return 1
+  [[ "$value" == "$maximum" || "$value" < "$maximum" ]]
+}
+
+managed_epoch_is_valid() {
+  managed_uint_is_canonical "${1-}" 4294967295
+}
+
+managed_server_name_is_valid() {
+  [[ "${1-}" =~ ^[A-Za-z0-9-]{1,64}$ ]]
+}
+
+managed_device_name_is_valid() {
+  [[ "${1-}" =~ ^[A-Za-z0-9][A-Za-z0-9\ ._-]{0,63}$ ]]
+}
+
+managed_sync_file() {
+  python3 -c 'import os,sys
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+fd = os.open(sys.argv[1], flags)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)' "$1"
+}
+
+managed_sync_directory() {
+  python3 -c 'import os,sys
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+fd = os.open(sys.argv[1], flags)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)' "$1"
+}
+
+managed_sync_artifact_parent() {
+  managed_sync_directory "${1:?}"
+}
+
+managed_sync_journal_parent() {
+  managed_sync_directory "${1:?}"
+}
+
+managed_api_state_defaults() {
+  local now="${1:?}"
+  managed_epoch_is_valid "$now" || return 1
+  MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_OBSERVED_AT="$now"
+  MANAGED_API_WINDOW_START="$now"
+  MANAGED_API_ATTEMPT_COUNT=0
+  MANAGED_API_ATTEMPT_EPOCHS=()
+  MANAGED_API_BACKOFF_UNTIL=0
+  MANAGED_API_FAILURE_CLASS=none
+  MANAGED_API_CREDENTIAL_DEVICE=0
+  MANAGED_API_CREDENTIAL_INODE=0
+  MANAGED_API_CREDENTIAL_MTIME=0
+  MANAGED_API_CREDENTIAL_SIZE=0
+  MANAGED_API_CONFIGURED_DEVICE=''
+  MANAGED_API_EXCLUDE_NAMES=()
+  MANAGED_API_EXCLUDE_EXPIRIES=()
+}
+
+managed_api_state_parent_is_secure() {
+  local parent="${AIRVPN_API_STATE_FILE%/*}" metadata
+  [[ -n "${AIRVPN_API_STATE_FILE:-}" && "$parent" != "$AIRVPN_API_STATE_FILE" ]] || return 1
+  [[ -d "$parent" && ! -L "$parent" ]] || return 1
+  metadata="$(owner_mode "$parent")" || return 1
+  [[ "$metadata" == 0:700 ]]
+}
+
+managed_api_state_file_is_secure() {
+  local metadata
+  [[ -f "$AIRVPN_API_STATE_FILE" && ! -L "$AIRVPN_API_STATE_FILE" ]] || return 1
+  metadata="$(owner_mode "$AIRVPN_API_STATE_FILE")" || return 1
+  [[ "$metadata" == 0:600 ]]
+}
+
+managed_api_state_bytes_are_strict() {
+  local path="${1:?}" bytes byte last='' count=0
+  bytes="$(od -An -v -t u1 -- "$path" 2>/dev/null)" || return 1
+  for byte in $bytes; do
+    managed_uint_is_canonical "$byte" 255 || return 1
+    if (( 10#$byte != 10 && (10#$byte < 32 || 10#$byte > 126) )); then
+      return 1
+    fi
+    last="$byte"
+    count=$((count + 1))
+  done
+  (( count > 0 )) && [[ "$last" == 10 ]]
+}
+
+managed_sha256_is_valid() {
+  [[ "${1-}" =~ ^[0-9a-f]{64}$ ]]
+}
+
+managed_journal_clear() {
+  MANAGED_JOURNAL_PHASE=''
+  MANAGED_JOURNAL_BACKUP_SHA256=''
+  MANAGED_JOURNAL_CANDIDATE_SHA256=''
+  MANAGED_JOURNAL_OLD_ENDPOINT=''
+  MANAGED_JOURNAL_CANDIDATE_ENDPOINT=''
+  MANAGED_JOURNAL_QB_WAS_RUNNING=''
+  MANAGED_JOURNAL_ACTIVE_CLASS=''
+  MANAGED_JOURNAL_CANDIDATE_CLASS=''
+}
+
+managed_journal_paths_are_fixed() {
+  local wgmanaged_parent wgmanaged_expected_candidate
+  [[ -n "${WG_CONF:-}" && "$WG_CONF" == /* ]] || return 1
+  wgmanaged_parent="${WG_CONF%/*}"
+  [[ "$wgmanaged_parent" != "$WG_CONF" ]] || return 1
+  wgmanaged_expected_candidate="$wgmanaged_parent/.${WG_CONF##*/}.managed-candidate"
+  [[ -n "${ROTATION_PENDING:-}" &&
+     "$ROTATION_PENDING" == "${WG_CONF}.pending-healthcheck" ]] || return 1
+  [[ -n "${MANAGED_SAFETY:-}" &&
+     "$MANAGED_SAFETY" == "${WG_CONF}.safety-healthcheck" ]] || return 1
+  [[ -n "${MANAGED_CANDIDATE:-}" &&
+     "$MANAGED_CANDIDATE" == "$wgmanaged_expected_candidate" ]] || return 1
+}
+
+managed_journal_parent_is_secure() {
+  local wgmanaged_parent wgmanaged_metadata
+  managed_journal_paths_are_fixed || return 1
+  wgmanaged_parent="${ROTATION_PENDING%/*}"
+  [[ -d "$wgmanaged_parent" && ! -L "$wgmanaged_parent" ]] || return 1
+  wgmanaged_metadata="$(owner_mode "$wgmanaged_parent")" || return 1
+  [[ "$wgmanaged_metadata" == 0:700 ]]
+}
+
+managed_journal_file_is_secure() {
+  local wgmanaged_metadata
+  [[ -f "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]] || return 1
+  wgmanaged_metadata="$(owner_mode "$ROTATION_PENDING")" || return 1
+  [[ "$wgmanaged_metadata" == 0:600 ]]
+}
+
+managed_profile_file_is_secure() {
+  local wgmanaged_path="${1:?}" wgmanaged_metadata wgmanaged_size
+  validate_secure_parent_directory "$wgmanaged_path" "WireGuard profile directory" 700 ||
+    return 1
+  [[ -f "$wgmanaged_path" && ! -L "$wgmanaged_path" ]] || return 1
+  wgmanaged_metadata="$(owner_mode "$wgmanaged_path")" || return 1
+  [[ "$wgmanaged_metadata" == 0:600 ]] || return 1
+  wgmanaged_size="$(managed_file_size "$wgmanaged_path")" || return 1
+  managed_uint_is_canonical "$wgmanaged_size" 65536 || return 1
+  (( 10#$wgmanaged_size > 0 ))
+}
+
+# Compare only the private interface identity and return status. Private-key bytes remain
+# inside this single awk process and are never emitted or passed as arguments.
+managed_profiles_have_same_private_identity() {
+  local wgmanaged_reference="${1-}"
+  [[ $# == 1 ]] || return 1
+  [[ "$wgmanaged_reference" == "$WG_CONF" ||
+     "$wgmanaged_reference" == "${WG_CONF}.bak-healthcheck" ]] || return 1
+  managed_journal_paths_are_fixed || return 1
+  _managed_profiles_have_same_private_identity_pair "$wgmanaged_reference" "$MANAGED_CANDIDATE"
+}
+
+_managed_profiles_have_same_private_identity_pair() {
+  local wgmanaged_reference="${1-}" wgmanaged_comparison="${2-}"
+  [[ $# == 2 ]] || return 1
+  managed_profile_file_is_secure "$wgmanaged_reference" || return 1
+  managed_profile_file_is_secure "$wgmanaged_comparison" || return 1
+  command awk '
+    function reset_file() {
+      interface_sections=0; in_interface=0; private_count=0; address_count=0
+      table_count=0; private_value=""; address_value=""; table_value="-"
+    }
+    function valid_key(value, body, tail) {
+      if (length(value) != 44 || substr(value, 44, 1) != "=") return 0
+      body=substr(value, 1, 42); tail=substr(value, 43, 1)
+      if (body !~ /^[A-Za-z0-9+\057]+$/ || tail !~ /^[AEIMQUYcgkosw048]$/) return 0
+      return value != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    }
+    function valid_ipv4_32(value, parts, octets, count, i, octet) {
+      count=split(value, parts, "/")
+      if (count != 2 || parts[2] != "32") return 0
+      count=split(parts[1], octets, ".")
+      if (count != 4) return 0
+      for (i=1; i<=4; i++) {
+        octet=octets[i]
+        if (octet !~ /^[0-9]+$/ || length(octet) > 3) return 0
+        if (length(octet) > 1 && substr(octet, 1, 1) == "0") return 0
+        if ((octet + 0) > 255) return 0
+      }
+      return 1
+    }
+    function valid_table(value) {
+      if (value == "auto" || value == "off") return 1
+      if (value !~ /^[0-9]+$/ || value == "0" || length(value) > 10) return 0
+      if (length(value) > 1 && substr(value, 1, 1) == "0") return 0
+      return (value + 0) <= 4294967295
+    }
+    function finish_file() {
+      if (interface_sections != 1 || private_count != 1 || address_count != 1 ||
+          table_count > 1 || !valid_key(private_value) ||
+          !valid_ipv4_32(address_value) ||
+          (table_count == 1 && !valid_table(table_value))) {
+        invalid=1
+      }
+      if (file_number == 1) {
+        reference_private=private_value; reference_address=address_value
+        reference_table_count=table_count; reference_table=table_value
+      } else if (private_value != reference_private || address_value != reference_address ||
+                 table_count != reference_table_count || table_value != reference_table) {
+        invalid=1
+      }
+    }
+    FNR == 1 {
+      if (file_number > 0) finish_file()
+      file_number++; reset_file()
+    }
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      if ($0 ~ /^[[:space:]]*\[Interface\][[:space:]]*$/) {
+        interface_sections++; in_interface=1
+      } else {
+        in_interface=0
+      }
+      next
+    }
+    /^[[:space:]]*(PrivateKey|Address|Table)[[:space:]]*=/ {
+      line=$0; name=line; sub(/[[:space:]]*=.*/, "", name)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      value=line; sub(/^[^=]*=/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      if (!in_interface) { invalid=1; next }
+      if (name == "PrivateKey") { private_count++; private_value=value }
+      else if (name == "Address") { address_count++; address_value=value }
+      else { table_count++; table_value=value }
+      next
+    }
+    END {
+      if (file_number > 0) finish_file()
+      if (file_number != 2 || invalid) exit 1
+    }
+  ' "$wgmanaged_reference" "$wgmanaged_comparison" >/dev/null 2>&1
+}
+
+managed_profile_interface_ipv4() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_path="${2:?}"
+  local wgmanaged_value
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  [[ "$wgmanaged_path" == "$WG_CONF" ||
+     "$wgmanaged_path" == "${WG_CONF}.bak-healthcheck" ||
+     "$wgmanaged_path" == "$MANAGED_CANDIDATE" ]] || return 1
+  managed_profile_file_is_secure "$wgmanaged_path" || return 1
+  wgmanaged_value="$(command awk '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      in_interface=($0 ~ /^[[:space:]]*\[Interface\][[:space:]]*$/); next
+    }
+    in_interface && /^[[:space:]]*Address[[:space:]]*=/ {
+      value=$0; sub(/^[^=]*=/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); count++
+    }
+    END { if (count != 1) exit 1; print value }
+  ' "$wgmanaged_path")" || return 1
+  [[ "$wgmanaged_value" == */32 ]] || return 1
+  wgmanaged_value="${wgmanaged_value%/32}"
+  validate_ip_address "$wgmanaged_value" || return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_value"
+}
+
+managed_sha256_file_core() {
+  local wgmanaged_path="${1:?}"
+  local wgmanaged_result wgmanaged_digest
+  [[ -v wgmanaged_sha256_carrier ]] || return 1
+  [[ "$wgmanaged_path" != *$'\r'* && "$wgmanaged_path" != *$'\n'* ]] || return 1
+  managed_profile_file_is_secure "$wgmanaged_path" || return 1
+  wgmanaged_result="$(command sha256sum -- "$wgmanaged_path" 2>/dev/null)" || return 1
+  (( ${#wgmanaged_result} >= 67 )) || return 1
+  wgmanaged_digest="${wgmanaged_result:0:64}"
+  managed_sha256_is_valid "$wgmanaged_digest" || return 1
+  [[ "${wgmanaged_result:64:2}" == '  ' &&
+     "${wgmanaged_result:66}" == "$wgmanaged_path" ]] || return 1
+  wgmanaged_sha256_carrier="$wgmanaged_digest"
+}
+
+managed_sha256_file() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_path="${2:?}"
+  local wgmanaged_sha256_carrier=''
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  managed_sha256_file_core "$wgmanaged_path" || return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_sha256_carrier"
+}
+
+managed_journal_memory_is_valid() {
+  local wgmanaged_old wgmanaged_candidate
+  case "${MANAGED_JOURNAL_PHASE-}" in
+    prepared|client-stopped|tunnel-down|candidate-installed|candidate-up|verified) ;;
+    *) return 1 ;;
+  esac
+  managed_sha256_is_valid "${MANAGED_JOURNAL_BACKUP_SHA256-}" || return 1
+  managed_sha256_is_valid "${MANAGED_JOURNAL_CANDIDATE_SHA256-}" || return 1
+  [[ "$MANAGED_JOURNAL_BACKUP_SHA256" != "$MANAGED_JOURNAL_CANDIDATE_SHA256" ]] ||
+    return 1
+  wgmanaged_old="$(canonicalize_endpoint "${MANAGED_JOURNAL_OLD_ENDPOINT-}")" || return 1
+  wgmanaged_candidate="$(canonicalize_endpoint "${MANAGED_JOURNAL_CANDIDATE_ENDPOINT-}")" ||
+    return 1
+  [[ "$wgmanaged_old" == "$MANAGED_JOURNAL_OLD_ENDPOINT" &&
+     "$wgmanaged_candidate" == "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" ]] || return 1
+  [[ "${MANAGED_JOURNAL_QB_WAS_RUNNING-}" == 0 ||
+     "${MANAGED_JOURNAL_QB_WAS_RUNNING-}" == 1 ]]
+}
+
+managed_journal_load() {
+  local wgmanaged_size wgmanaged_phase wgmanaged_backup wgmanaged_candidate
+  local wgmanaged_old wgmanaged_new wgmanaged_qb wgmanaged_canonical
+  local -a wgmanaged_lines=()
+  managed_journal_clear
+  (( ${CONTEXT_LOCKED:-0} == 1 )) || return 1
+  managed_journal_parent_is_secure || return 1
+  managed_journal_file_is_secure || return 1
+  wgmanaged_size="$(managed_file_size "$ROTATION_PENDING")" || return 1
+  managed_uint_is_canonical "$wgmanaged_size" 4096 || return 1
+  (( 10#$wgmanaged_size > 0 )) || return 1
+  managed_api_state_bytes_are_strict "$ROTATION_PENDING" || return 1
+  mapfile -t wgmanaged_lines < "$ROTATION_PENDING" || return 1
+  (( ${#wgmanaged_lines[@]} == 8 )) || return 1
+  [[ "${wgmanaged_lines[0]}" == version=2 ]] || return 1
+  [[ "${wgmanaged_lines[1]}" == transaction=managed-profile ]] || return 1
+  [[ "${wgmanaged_lines[2]}" =~ ^phase=(prepared|client-stopped|tunnel-down|candidate-installed|candidate-up|verified)$ ]] ||
+    return 1
+  wgmanaged_phase="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[3]}" =~ ^backup_sha256=([0-9a-f]{64})$ ]] || return 1
+  wgmanaged_backup="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[4]}" =~ ^candidate_sha256=([0-9a-f]{64})$ ]] || return 1
+  wgmanaged_candidate="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[5]}" =~ ^old_endpoint=(.+)$ ]] || return 1
+  wgmanaged_old="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[6]}" =~ ^candidate_endpoint=(.+)$ ]] || return 1
+  wgmanaged_new="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[7]}" =~ ^qb_was_running=([01])$ ]] || return 1
+  wgmanaged_qb="${BASH_REMATCH[1]}"
+  wgmanaged_canonical="$(canonicalize_endpoint "$wgmanaged_old")" || return 1
+  [[ "$wgmanaged_canonical" == "$wgmanaged_old" ]] || return 1
+  wgmanaged_canonical="$(canonicalize_endpoint "$wgmanaged_new")" || return 1
+  [[ "$wgmanaged_canonical" == "$wgmanaged_new" ]] || return 1
+
+  MANAGED_JOURNAL_PHASE="$wgmanaged_phase"
+  MANAGED_JOURNAL_BACKUP_SHA256="$wgmanaged_backup"
+  MANAGED_JOURNAL_CANDIDATE_SHA256="$wgmanaged_candidate"
+  MANAGED_JOURNAL_OLD_ENDPOINT="$wgmanaged_old"
+  MANAGED_JOURNAL_CANDIDATE_ENDPOINT="$wgmanaged_new"
+  MANAGED_JOURNAL_QB_WAS_RUNNING="$wgmanaged_qb"
+  if ! managed_journal_memory_is_valid; then
+    managed_journal_clear
+    return 1
+  fi
+}
+
+managed_journal_move() {
+  command mv -fT -- "${1:?}" "${2:?}"
+}
+
+_managed_journal_commit() {
+  local wgmanaged_parent wgmanaged_base wgmanaged_temporary wgmanaged_metadata
+  managed_journal_memory_is_valid || return 1
+  (( ${CONTEXT_LOCKED:-0} == 1 )) || return 1
+  managed_journal_parent_is_secure || return 1
+  if [[ -e "$ROTATION_PENDING" || -L "$ROTATION_PENDING" ]]; then
+    managed_journal_file_is_secure || return 1
+  fi
+  wgmanaged_parent="${ROTATION_PENDING%/*}"
+  wgmanaged_base="${ROTATION_PENDING##*/}"
+  wgmanaged_temporary="$(mktemp "$wgmanaged_parent/.${wgmanaged_base}.tmp.XXXXXX")" ||
+    return 1
+  if ! chmod 600 -- "$wgmanaged_temporary"; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  wgmanaged_metadata="$(owner_mode "$wgmanaged_temporary")" || {
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  }
+  if [[ "$wgmanaged_metadata" != 0:600 ]]; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  if ! {
+    printf '%s\n' \
+      'version=2' \
+      'transaction=managed-profile' \
+      "phase=$MANAGED_JOURNAL_PHASE" \
+      "backup_sha256=$MANAGED_JOURNAL_BACKUP_SHA256" \
+      "candidate_sha256=$MANAGED_JOURNAL_CANDIDATE_SHA256" \
+      "old_endpoint=$MANAGED_JOURNAL_OLD_ENDPOINT" \
+      "candidate_endpoint=$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" \
+      "qb_was_running=$MANAGED_JOURNAL_QB_WAS_RUNNING"
+  } > "$wgmanaged_temporary"; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  if ! managed_sync_file "$wgmanaged_temporary"; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  if ! managed_journal_move "$wgmanaged_temporary" "$ROTATION_PENDING"; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  managed_journal_file_is_secure || return 1
+  managed_sync_file "$ROTATION_PENDING" || return 1
+  managed_sync_journal_parent "$wgmanaged_parent"
+}
+
+managed_classify_active_profile() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_backup="${2:?}"
+  local wgmanaged_candidate="${3:?}" wgmanaged_class wgmanaged_sha256_carrier=''
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  managed_sha256_is_valid "$wgmanaged_backup" || return 1
+  managed_sha256_is_valid "$wgmanaged_candidate" || return 1
+  if [[ "$wgmanaged_backup" == "$wgmanaged_candidate" ]]; then
+    wgmanaged_class=ambiguous
+  elif ! managed_sha256_file_core "$WG_CONF"; then
+    wgmanaged_class=unknown
+  elif [[ "$wgmanaged_sha256_carrier" == "$wgmanaged_backup" ]]; then
+    wgmanaged_class=backup
+  elif [[ "$wgmanaged_sha256_carrier" == "$wgmanaged_candidate" ]]; then
+    wgmanaged_class=candidate
+  else
+    wgmanaged_class=unknown
+  fi
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_class"
+}
+
+managed_classify_candidate_profile() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_expected="${2:?}"
+  local wgmanaged_class wgmanaged_sha256_carrier=''
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  managed_sha256_is_valid "$wgmanaged_expected" || return 1
+  if [[ ! -e "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]]; then
+    wgmanaged_class=missing
+  elif ! managed_sha256_file_core "$MANAGED_CANDIDATE"; then
+    wgmanaged_class=mismatch
+  elif [[ "$wgmanaged_sha256_carrier" == "$wgmanaged_expected" ]]; then
+    wgmanaged_class=present
+  else
+    wgmanaged_class=mismatch
+  fi
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_class"
+}
+
+managed_verify_profile_binding() {
+  local wgmanaged_path="${1:?}" wgmanaged_expected_digest="${2:?}"
+  local wgmanaged_expected_endpoint="${3:?}" wgmanaged_actual_endpoint
+  local wgmanaged_canonical_endpoint
+  local journal_first_digest journal_second_digest
+  managed_sha256_is_valid "$wgmanaged_expected_digest" || return 1
+  wgmanaged_canonical_endpoint="$(canonicalize_endpoint "$wgmanaged_expected_endpoint")" ||
+    return 1
+  [[ "$wgmanaged_canonical_endpoint" == "$wgmanaged_expected_endpoint" ]] || return 1
+  managed_sha256_file journal_first_digest "$wgmanaged_path" || return 1
+  [[ "$journal_first_digest" == "$wgmanaged_expected_digest" ]] || return 1
+  wgmanaged_actual_endpoint="$(configured_endpoint "$wgmanaged_path")" || return 1
+  managed_sha256_file journal_second_digest "$wgmanaged_path" || return 1
+  [[ "$journal_first_digest" == "$journal_second_digest" &&
+     "$wgmanaged_actual_endpoint" == "$wgmanaged_expected_endpoint" ]]
+}
+
+managed_safety_clear() {
+  MANAGED_SAFETY_STATE=''
+  MANAGED_SAFETY_BACKUP_SHA256=''
+  MANAGED_SAFETY_CANDIDATE_SHA256=''
+  MANAGED_SAFETY_OLD_ENDPOINT=''
+  MANAGED_SAFETY_CANDIDATE_ENDPOINT=''
+  MANAGED_SAFETY_QB_INTENT=''
+  MANAGED_SAFETY_QB_CONTAINER=''
+  MANAGED_SAFETY_QB_CONTAINER_ID=''
+  MANAGED_SAFETY_QB_PROCESS=''
+  MANAGED_SAFETY_QB_LISTEN_IPV4=''
+  MANAGED_SAFETY_QB_LISTEN_PORT=''
+}
+
+managed_safety_path_is_fixed() {
+  managed_journal_paths_are_fixed &&
+    [[ "$MANAGED_SAFETY" == "${WG_CONF}.safety-healthcheck" ]]
+}
+
+managed_safety_parent_is_secure() {
+  local wgmanaged_parent wgmanaged_metadata
+  managed_safety_path_is_fixed || return 1
+  wgmanaged_parent="${MANAGED_SAFETY%/*}"
+  [[ -d "$wgmanaged_parent" && ! -L "$wgmanaged_parent" ]] || return 1
+  wgmanaged_metadata="$(owner_mode "$wgmanaged_parent")" || return 1
+  [[ "$wgmanaged_metadata" == 0:700 ]]
+}
+
+managed_safety_file_is_secure() {
+  local wgmanaged_metadata
+  [[ -f "$MANAGED_SAFETY" && ! -L "$MANAGED_SAFETY" ]] || return 1
+  wgmanaged_metadata="$(owner_mode "$MANAGED_SAFETY")" || return 1
+  [[ "$wgmanaged_metadata" == 0:600 ]]
+}
+
+managed_ipv4_endpoint_is_canonical() {
+  local wgmanaged_endpoint="${1-}" wgmanaged_host wgmanaged_canonical
+  [[ "$wgmanaged_endpoint" =~ ^([0-9.]+):([0-9]+)$ ]] || return 1
+  wgmanaged_host="${BASH_REMATCH[1]}"
+  validate_ip_address "$wgmanaged_host" || return 1
+  wgmanaged_canonical="$(canonicalize_endpoint "$wgmanaged_endpoint")" || return 1
+  [[ "$wgmanaged_canonical" == "$wgmanaged_endpoint" ]]
+}
+
+managed_safety_memory_is_valid() {
+  case "${MANAGED_SAFETY_STATE-}" in pending|committed|finalizing) ;; *) return 1 ;; esac
+  managed_sha256_is_valid "${MANAGED_SAFETY_BACKUP_SHA256-}" || return 1
+  managed_sha256_is_valid "${MANAGED_SAFETY_CANDIDATE_SHA256-}" || return 1
+  [[ "$MANAGED_SAFETY_BACKUP_SHA256" != "$MANAGED_SAFETY_CANDIDATE_SHA256" ]] ||
+    return 1
+  managed_ipv4_endpoint_is_canonical "${MANAGED_SAFETY_OLD_ENDPOINT-}" || return 1
+  managed_ipv4_endpoint_is_canonical "${MANAGED_SAFETY_CANDIDATE_ENDPOINT-}" || return 1
+  case "${MANAGED_SAFETY_QB_INTENT-}" in
+    unmanaged)
+      [[ "${MANAGED_SAFETY_QB_CONTAINER-}" == - &&
+         "${MANAGED_SAFETY_QB_CONTAINER_ID-}" == - &&
+         "${MANAGED_SAFETY_QB_PROCESS-}" == - &&
+         "${MANAGED_SAFETY_QB_LISTEN_IPV4-}" == - &&
+         "${MANAGED_SAFETY_QB_LISTEN_PORT-}" == 0 ]] || return 1
+      ;;
+    running|stopped)
+      validate_managed_container_name "${MANAGED_SAFETY_QB_CONTAINER-}" || return 1
+      [[ "${MANAGED_SAFETY_QB_CONTAINER_ID-}" =~ ^[0-9a-f]{64}$ ]] || return 1
+      validate_process_name "${MANAGED_SAFETY_QB_PROCESS-}" || return 1
+      validate_ip_address "${MANAGED_SAFETY_QB_LISTEN_IPV4-}" || return 1
+      [[ "${MANAGED_SAFETY_QB_LISTEN_IPV4-}" != *:* ]] || return 1
+      managed_uint_is_canonical "${MANAGED_SAFETY_QB_LISTEN_PORT-}" 65535 || return 1
+      (( 10#$MANAGED_SAFETY_QB_LISTEN_PORT >= 1 )) || return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_safety_artifacts_are_valid() {
+  local safety_backup_ipv4 safety_candidate_ipv4 safety_active_class safety_candidate_class
+  managed_verify_profile_binding "${WG_CONF}.bak-healthcheck" \
+    "$MANAGED_SAFETY_BACKUP_SHA256" "$MANAGED_SAFETY_OLD_ENDPOINT" || return 1
+  managed_profile_interface_ipv4 safety_backup_ipv4 "${WG_CONF}.bak-healthcheck" || return 1
+  if [[ "$MANAGED_SAFETY_QB_INTENT" != unmanaged &&
+        "$safety_backup_ipv4" != "$MANAGED_SAFETY_QB_LISTEN_IPV4" ]]; then
+    return 1
+  fi
+  managed_classify_active_profile safety_active_class "$MANAGED_SAFETY_BACKUP_SHA256" \
+    "$MANAGED_SAFETY_CANDIDATE_SHA256" || return 1
+  case "$MANAGED_SAFETY_STATE" in
+    pending)
+      case "$safety_active_class" in backup|candidate) ;; *) return 1 ;; esac
+      managed_classify_candidate_profile safety_candidate_class \
+        "$MANAGED_SAFETY_CANDIDATE_SHA256" || return 1
+      case "$safety_candidate_class" in
+        present)
+          managed_verify_profile_binding "$MANAGED_CANDIDATE" \
+            "$MANAGED_SAFETY_CANDIDATE_SHA256" "$MANAGED_SAFETY_CANDIDATE_ENDPOINT" ||
+            return 1
+          managed_profile_interface_ipv4 safety_candidate_ipv4 "$MANAGED_CANDIDATE" ||
+            return 1
+          ;;
+        missing)
+          if [[ "$safety_active_class" == candidate ]]; then
+            managed_profile_interface_ipv4 safety_candidate_ipv4 "$WG_CONF" || return 1
+          else
+            safety_candidate_ipv4="$safety_backup_ipv4"
+          fi
+          ;;
+        *) return 1 ;;
+      esac
+      ;;
+    committed|finalizing)
+      [[ "$safety_active_class" == candidate ]] || return 1
+      managed_classify_candidate_profile safety_candidate_class \
+        "$MANAGED_SAFETY_CANDIDATE_SHA256" || return 1
+      [[ "$safety_candidate_class" == missing ]] || return 1
+      managed_verify_profile_binding "$WG_CONF" "$MANAGED_SAFETY_CANDIDATE_SHA256" \
+        "$MANAGED_SAFETY_CANDIDATE_ENDPOINT" || return 1
+      managed_profile_interface_ipv4 safety_candidate_ipv4 "$WG_CONF" || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  if [[ "$MANAGED_SAFETY_QB_INTENT" != unmanaged &&
+        "$safety_candidate_ipv4" != "$MANAGED_SAFETY_QB_LISTEN_IPV4" ]]; then
+    return 1
+  fi
+}
+
+managed_safety_load_record() {
+  local wgmanaged_size
+  local -a wgmanaged_lines=()
+  managed_safety_clear
+  (( ${CONTEXT_LOCKED:-0} == 1 )) || return 1
+  managed_safety_parent_is_secure || return 1
+  managed_safety_file_is_secure || return 1
+  wgmanaged_size="$(managed_file_size "$MANAGED_SAFETY")" || return 1
+  managed_uint_is_canonical "$wgmanaged_size" 4096 || return 1
+  (( 10#$wgmanaged_size > 0 )) || return 1
+  managed_api_state_bytes_are_strict "$MANAGED_SAFETY" || return 1
+  mapfile -t wgmanaged_lines < "$MANAGED_SAFETY" || return 1
+  (( ${#wgmanaged_lines[@]} == 13 )) || return 1
+  [[ "${wgmanaged_lines[0]}" == version=1 ]] || return 1
+  [[ "${wgmanaged_lines[1]}" == record=managed-profile-safety ]] || return 1
+  [[ "${wgmanaged_lines[2]}" =~ ^state=(pending|committed|finalizing)$ ]] || return 1
+  MANAGED_SAFETY_STATE="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[3]}" =~ ^backup_sha256=([0-9a-f]{64})$ ]] || return 1
+  MANAGED_SAFETY_BACKUP_SHA256="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[4]}" =~ ^candidate_sha256=([0-9a-f]{64})$ ]] || return 1
+  MANAGED_SAFETY_CANDIDATE_SHA256="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[5]}" =~ ^old_endpoint=(.+)$ ]] || return 1
+  MANAGED_SAFETY_OLD_ENDPOINT="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[6]}" =~ ^candidate_endpoint=(.+)$ ]] || return 1
+  MANAGED_SAFETY_CANDIDATE_ENDPOINT="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[7]}" =~ ^qb_intent=(unmanaged|running|stopped)$ ]] || return 1
+  MANAGED_SAFETY_QB_INTENT="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[8]}" =~ ^qb_container=(.+)$ ]] || return 1
+  MANAGED_SAFETY_QB_CONTAINER="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[9]}" =~ ^qb_container_id=(.+)$ ]] || return 1
+  MANAGED_SAFETY_QB_CONTAINER_ID="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[10]}" =~ ^qb_process=(.+)$ ]] || return 1
+  MANAGED_SAFETY_QB_PROCESS="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[11]}" =~ ^qb_listen_ipv4=(.+)$ ]] || return 1
+  MANAGED_SAFETY_QB_LISTEN_IPV4="${BASH_REMATCH[1]}"
+  [[ "${wgmanaged_lines[12]}" =~ ^qb_listen_port=(.+)$ ]] || return 1
+  MANAGED_SAFETY_QB_LISTEN_PORT="${BASH_REMATCH[1]}"
+  if ! managed_safety_memory_is_valid; then
+    managed_safety_clear
+    return 1
+  fi
+}
+
+managed_safety_load() {
+  managed_safety_load_record || return 1
+  if ! managed_safety_artifacts_are_valid; then
+    managed_safety_clear
+    return 1
+  fi
+}
+
+managed_safety_rebarrier_pending() {
+  local wgmanaged_parent
+  [[ "${MANAGED_SAFETY_STATE-}" == pending ]] || return 1
+  managed_safety_memory_is_valid || return 1
+  managed_safety_parent_is_secure || return 1
+  managed_safety_file_is_secure || return 1
+  wgmanaged_parent="${MANAGED_SAFETY%/*}"
+  managed_sync_file "$MANAGED_SAFETY" || return 1
+  managed_sync_safety_parent "$wgmanaged_parent" || return 1
+  managed_safety_load_record || return 1
+  [[ "$MANAGED_SAFETY_STATE" == pending ]]
+}
+
+managed_safety_move() {
+  command mv -fT -- "${1:?}" "${2:?}"
+}
+
+managed_sync_safety_parent() {
+  managed_sync_directory "${1:?}"
+}
+
+_managed_safety_commit() {
+  local wgmanaged_parent wgmanaged_base wgmanaged_temporary wgmanaged_metadata
+  managed_safety_memory_is_valid || return 1
+  managed_safety_artifacts_are_valid || return 1
+  (( ${CONTEXT_LOCKED:-0} == 1 )) || return 1
+  managed_safety_parent_is_secure || return 1
+  if [[ -e "$MANAGED_SAFETY" || -L "$MANAGED_SAFETY" ]]; then
+    managed_safety_file_is_secure || return 1
+  fi
+  wgmanaged_parent="${MANAGED_SAFETY%/*}"
+  wgmanaged_base="${MANAGED_SAFETY##*/}"
+  wgmanaged_temporary="$(mktemp "$wgmanaged_parent/.${wgmanaged_base}.tmp.XXXXXX")" ||
+    return 1
+  if ! chmod 600 -- "$wgmanaged_temporary"; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  wgmanaged_metadata="$(owner_mode "$wgmanaged_temporary")" || {
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  }
+  if [[ "$wgmanaged_metadata" != 0:600 ]] || ! {
+    printf '%s\n' \
+      'version=1' \
+      'record=managed-profile-safety' \
+      "state=$MANAGED_SAFETY_STATE" \
+      "backup_sha256=$MANAGED_SAFETY_BACKUP_SHA256" \
+      "candidate_sha256=$MANAGED_SAFETY_CANDIDATE_SHA256" \
+      "old_endpoint=$MANAGED_SAFETY_OLD_ENDPOINT" \
+      "candidate_endpoint=$MANAGED_SAFETY_CANDIDATE_ENDPOINT" \
+      "qb_intent=$MANAGED_SAFETY_QB_INTENT" \
+      "qb_container=$MANAGED_SAFETY_QB_CONTAINER" \
+      "qb_container_id=$MANAGED_SAFETY_QB_CONTAINER_ID" \
+      "qb_process=$MANAGED_SAFETY_QB_PROCESS" \
+      "qb_listen_ipv4=$MANAGED_SAFETY_QB_LISTEN_IPV4" \
+      "qb_listen_port=$MANAGED_SAFETY_QB_LISTEN_PORT"
+  } > "$wgmanaged_temporary"; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  if ! managed_sync_file "$wgmanaged_temporary" ||
+      ! managed_safety_move "$wgmanaged_temporary" "$MANAGED_SAFETY"; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  managed_safety_file_is_secure || return 1
+  managed_sync_file "$MANAGED_SAFETY" || return 1
+  managed_sync_safety_parent "$wgmanaged_parent"
+}
+
+managed_safety_prepare() {
+  local safety_backup_digest safety_candidate_digest safety_old_endpoint safety_new_endpoint
+  [[ ! -e "$MANAGED_SAFETY" && ! -L "$MANAGED_SAFETY" ]] || return 1
+  managed_safety_clear
+  managed_sha256_file safety_backup_digest "${WG_CONF}.bak-healthcheck" || return 1
+  managed_sha256_file safety_candidate_digest "$MANAGED_CANDIDATE" || return 1
+  safety_old_endpoint="$(configured_endpoint "${WG_CONF}.bak-healthcheck")" || return 1
+  safety_new_endpoint="$(configured_endpoint "$MANAGED_CANDIDATE")" || return 1
+  managed_verify_profile_binding "${WG_CONF}.bak-healthcheck" "$safety_backup_digest" \
+    "$safety_old_endpoint" || return 1
+  managed_verify_profile_binding "$MANAGED_CANDIDATE" "$safety_candidate_digest" \
+    "$safety_new_endpoint" || return 1
+  MANAGED_SAFETY_STATE=pending
+  MANAGED_SAFETY_BACKUP_SHA256="$safety_backup_digest"
+  MANAGED_SAFETY_CANDIDATE_SHA256="$safety_candidate_digest"
+  MANAGED_SAFETY_OLD_ENDPOINT="$safety_old_endpoint"
+  MANAGED_SAFETY_CANDIDATE_ENDPOINT="$safety_new_endpoint"
+  MANAGED_SAFETY_QB_INTENT="${MANAGED_QB_INTENT-}"
+  MANAGED_SAFETY_QB_CONTAINER="${MANAGED_QB_CONTAINER-}"
+  MANAGED_SAFETY_QB_CONTAINER_ID="${MANAGED_QB_CONTAINER_ID-}"
+  MANAGED_SAFETY_QB_PROCESS="${MANAGED_QB_PROCESS-}"
+  MANAGED_SAFETY_QB_LISTEN_IPV4="${MANAGED_QB_LISTEN_IPV4-}"
+  MANAGED_SAFETY_QB_LISTEN_PORT="${MANAGED_QB_LISTEN_PORT-}"
+  _managed_safety_commit
+}
+
+managed_safety_transition() {
+  local wgmanaged_next="${1-}" wgmanaged_current wgmanaged_rc
+  [[ $# == 1 ]] || return 1
+  managed_safety_load || return 1
+  wgmanaged_current="$MANAGED_SAFETY_STATE"
+  case "$wgmanaged_current:$wgmanaged_next" in
+    pending:committed|committed:finalizing) ;;
+    *) return 1 ;;
+  esac
+  MANAGED_SAFETY_STATE="$wgmanaged_next"
+  if _managed_safety_commit; then
+    return 0
+  else
+    wgmanaged_rc=$?
+  fi
+  managed_safety_load >/dev/null 2>&1 || managed_safety_clear
+  return "$wgmanaged_rc"
+}
+
+managed_verify_journal_phase() {
+  local wgmanaged_phase="${1:-${MANAGED_JOURNAL_PHASE-}}"
+  local wgmanaged_expected_active journal_active_class journal_candidate_class
+  managed_journal_memory_is_valid || return 1
+  case "$wgmanaged_phase" in
+    prepared|client-stopped|tunnel-down) wgmanaged_expected_active=backup ;;
+    candidate-installed|candidate-up|verified) wgmanaged_expected_active=candidate ;;
+    *) return 1 ;;
+  esac
+  managed_verify_profile_binding "${WG_CONF}.bak-healthcheck" \
+    "$MANAGED_JOURNAL_BACKUP_SHA256" "$MANAGED_JOURNAL_OLD_ENDPOINT" || return 1
+  managed_classify_candidate_profile journal_candidate_class \
+    "$MANAGED_JOURNAL_CANDIDATE_SHA256" || return 1
+  [[ "$journal_candidate_class" == present ]] || return 1
+  managed_verify_profile_binding "$MANAGED_CANDIDATE" \
+    "$MANAGED_JOURNAL_CANDIDATE_SHA256" "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" ||
+    return 1
+  managed_classify_active_profile journal_active_class \
+    "$MANAGED_JOURNAL_BACKUP_SHA256" "$MANAGED_JOURNAL_CANDIDATE_SHA256" || return 1
+  [[ "$journal_active_class" == "$wgmanaged_expected_active" ]]
+}
+
+managed_journal_prepare() {
+  local wgmanaged_qb="${1-}" journal_backup_first journal_candidate_first
+  local journal_backup_second journal_candidate_second wgmanaged_old wgmanaged_new
+  local wgmanaged_parent wgmanaged_backup_path
+  [[ $# == 1 && ( "$wgmanaged_qb" == 0 || "$wgmanaged_qb" == 1 ) ]] || return 1
+  managed_journal_clear
+  (( ${CONTEXT_LOCKED:-0} == 1 )) || return 1
+  managed_journal_parent_is_secure || return 1
+  [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]] || return 1
+  wgmanaged_parent="${WG_CONF%/*}"
+  wgmanaged_backup_path="${WG_CONF}.bak-healthcheck"
+  [[ "${wgmanaged_backup_path%/*}" == "$wgmanaged_parent" &&
+     "${MANAGED_CANDIDATE%/*}" == "$wgmanaged_parent" ]] || return 1
+  managed_profile_file_is_secure "$wgmanaged_backup_path" || return 1
+  managed_sync_file "$wgmanaged_backup_path" || return 1
+  managed_profile_file_is_secure "$MANAGED_CANDIDATE" || return 1
+  managed_sync_file "$MANAGED_CANDIDATE" || return 1
+  managed_sync_artifact_parent "$wgmanaged_parent" || return 1
+  managed_sha256_file journal_backup_first "$wgmanaged_backup_path" || return 1
+  managed_sha256_file journal_candidate_first "$MANAGED_CANDIDATE" || return 1
+  wgmanaged_old="$(configured_endpoint "$wgmanaged_backup_path")" || return 1
+  wgmanaged_new="$(configured_endpoint "$MANAGED_CANDIDATE")" || return 1
+  managed_sha256_file journal_backup_second "$wgmanaged_backup_path" || return 1
+  managed_sha256_file journal_candidate_second "$MANAGED_CANDIDATE" || return 1
+  [[ "$journal_backup_first" == "$journal_backup_second" &&
+     "$journal_candidate_first" == "$journal_candidate_second" ]] || return 1
+
+  MANAGED_JOURNAL_PHASE=prepared
+  MANAGED_JOURNAL_BACKUP_SHA256="$journal_backup_first"
+  MANAGED_JOURNAL_CANDIDATE_SHA256="$journal_candidate_first"
+  MANAGED_JOURNAL_OLD_ENDPOINT="$wgmanaged_old"
+  MANAGED_JOURNAL_CANDIDATE_ENDPOINT="$wgmanaged_new"
+  MANAGED_JOURNAL_QB_WAS_RUNNING="$wgmanaged_qb"
+  if ! managed_journal_memory_is_valid || ! managed_verify_journal_phase prepared; then
+    managed_journal_clear
+    return 1
+  fi
+  _managed_journal_commit
+}
+
+managed_journal_transition() {
+  local wgmanaged_next="${1-}" wgmanaged_current wgmanaged_rc
+  [[ $# == 1 ]] || return 1
+  managed_journal_load || return 1
+  wgmanaged_current="$MANAGED_JOURNAL_PHASE"
+  case "$wgmanaged_current:$wgmanaged_next" in
+    prepared:client-stopped|client-stopped:tunnel-down|\
+    tunnel-down:candidate-installed|candidate-installed:candidate-up|candidate-up:verified) ;;
+    *) return 1 ;;
+  esac
+  managed_verify_journal_phase "$wgmanaged_next" || return 1
+  MANAGED_JOURNAL_PHASE="$wgmanaged_next"
+  if _managed_journal_commit; then
+    return 0
+  else
+    wgmanaged_rc=$?
+  fi
+  managed_journal_load >/dev/null 2>&1 || managed_journal_clear
+  return "$wgmanaged_rc"
+}
+
+_managed_journal_recovery_state_is_consistent() {
+  local journal_active_class journal_candidate_class
+  managed_journal_memory_is_valid || return 1
+  managed_verify_profile_binding "${WG_CONF}.bak-healthcheck" \
+    "$MANAGED_JOURNAL_BACKUP_SHA256" "$MANAGED_JOURNAL_OLD_ENDPOINT" || return 1
+  managed_classify_active_profile journal_active_class \
+    "$MANAGED_JOURNAL_BACKUP_SHA256" "$MANAGED_JOURNAL_CANDIDATE_SHA256" || return 1
+  managed_classify_candidate_profile journal_candidate_class \
+    "$MANAGED_JOURNAL_CANDIDATE_SHA256" || return 1
+  # Published for Task 7's idempotent recovery owner after factual classification.
+  # shellcheck disable=SC2034
+  MANAGED_JOURNAL_ACTIVE_CLASS="$journal_active_class"
+  # shellcheck disable=SC2034
+  MANAGED_JOURNAL_CANDIDATE_CLASS="$journal_candidate_class"
+  case "$journal_active_class" in backup|candidate) ;; *) return 1 ;; esac
+  case "$journal_candidate_class" in
+    present)
+      managed_verify_profile_binding "$MANAGED_CANDIDATE" \
+        "$MANAGED_JOURNAL_CANDIDATE_SHA256" "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT"
+      ;;
+    missing)
+      if [[ "$journal_active_class" == backup ]]; then
+        managed_verify_profile_binding "$WG_CONF" \
+          "$MANAGED_JOURNAL_BACKUP_SHA256" "$MANAGED_JOURNAL_OLD_ENDPOINT"
+      else
+        [[ "$MANAGED_JOURNAL_PHASE" == verified ]] || return 1
+        managed_verify_profile_binding "$WG_CONF" \
+          "$MANAGED_JOURNAL_CANDIDATE_SHA256" "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT"
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_api_metadata_is_valid() {
+  local device="${1-}" inode="${2-}" mtime="${3-}" size="${4-}"
+  managed_uint_is_canonical "$device" 18446744073709551615 || return 1
+  managed_uint_is_canonical "$inode" 18446744073709551615 || return 1
+  managed_uint_is_canonical "$mtime" 9223372036854775807 || return 1
+  case "$size" in
+    0) [[ "$device" == 0 && "$inode" == 0 && "$mtime" == 0 ]] ;;
+    65) [[ "$inode" != 0 ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# Defaults exist only in memory. Passing 1 requires the complete identity that every
+# durable v1 record must carry.
+managed_api_state_memory_is_valid() {
+  local persistent="${1:-0}" now="${MANAGED_API_STATE_NOW-}"
+  local observed="${MANAGED_API_OBSERVED_AT-}" maximum_backoff maximum_exclusion
+  local index name expiry previous_epoch=''
+  local -A seen=()
+  [[ "$persistent" == 0 || "$persistent" == 1 ]] || return 1
+  managed_epoch_is_valid "$now" || return 1
+  managed_epoch_is_valid "$observed" || return 1
+  [[ "$now" == "$observed" ]] || return 1
+  managed_epoch_is_valid "${MANAGED_API_WINDOW_START-}" || return 1
+  managed_epoch_is_valid "${MANAGED_API_BACKOFF_UNTIL-}" || return 1
+  (( 10#$MANAGED_API_WINDOW_START <= 10#$observed )) || return 1
+  maximum_backoff=$((10#$observed + 86400))
+  (( maximum_backoff <= 4294967295 )) || return 1
+  (( 10#$MANAGED_API_BACKOFF_UNTIL <= maximum_backoff )) || return 1
+  managed_uint_is_canonical "${MANAGED_API_ATTEMPT_COUNT-}" 6 || return 1
+  (( 10#$MANAGED_API_ATTEMPT_COUNT == ${#MANAGED_API_ATTEMPT_EPOCHS[@]} )) || return 1
+  if (( 10#$MANAGED_API_ATTEMPT_COUNT == 0 )); then
+    [[ "$MANAGED_API_WINDOW_START" == "$observed" ]] || return 1
+  else
+    [[ "$MANAGED_API_WINDOW_START" == "${MANAGED_API_ATTEMPT_EPOCHS[0]}" ]] || return 1
+  fi
+  for ((index = 0; index < ${#MANAGED_API_ATTEMPT_EPOCHS[@]}; index++)); do
+    managed_epoch_is_valid "${MANAGED_API_ATTEMPT_EPOCHS[$index]}" || return 1
+    (( 10#${MANAGED_API_ATTEMPT_EPOCHS[$index]} <= 10#$observed )) || return 1
+    (( 10#$observed - 10#${MANAGED_API_ATTEMPT_EPOCHS[$index]} < 86400 )) || return 1
+    if [[ -n "$previous_epoch" ]]; then
+      (( 10#${MANAGED_API_ATTEMPT_EPOCHS[$index]} >= 10#$previous_epoch )) || return 1
+    fi
+    previous_epoch="${MANAGED_API_ATTEMPT_EPOCHS[$index]}"
+  done
+  case "${MANAGED_API_FAILURE_CLASS-}" in
+    none|auth|device|rate|transient) ;;
+    *) return 1 ;;
+  esac
+  case "$MANAGED_API_FAILURE_CLASS" in
+    none) [[ "$MANAGED_API_BACKOFF_UNTIL" == 0 ]] || return 1 ;;
+    *) (( 10#$MANAGED_API_BACKOFF_UNTIL > 0 )) || return 1 ;;
+  esac
+  managed_api_metadata_is_valid \
+    "${MANAGED_API_CREDENTIAL_DEVICE-}" \
+    "${MANAGED_API_CREDENTIAL_INODE-}" \
+    "${MANAGED_API_CREDENTIAL_MTIME-}" \
+    "${MANAGED_API_CREDENTIAL_SIZE-}" || return 1
+  if [[ "${MANAGED_API_CREDENTIAL_SIZE-}" == 65 ]]; then
+    (( 10#$MANAGED_API_CREDENTIAL_MTIME <= 10#$observed + 300 )) || return 1
+  fi
+  if [[ -n "${MANAGED_API_CONFIGURED_DEVICE-}" ]]; then
+    managed_device_name_is_valid "$MANAGED_API_CONFIGURED_DEVICE" || return 1
+  fi
+  if (( persistent )) && {
+       [[ "$MANAGED_API_CREDENTIAL_SIZE" != 65 ]] ||
+       [[ -z "$MANAGED_API_CONFIGURED_DEVICE" ]];
+     }; then
+    return 1
+  fi
+  (( ${#MANAGED_API_EXCLUDE_NAMES[@]} == ${#MANAGED_API_EXCLUDE_EXPIRIES[@]} )) || return 1
+  (( ${#MANAGED_API_EXCLUDE_NAMES[@]} <= 16 )) || return 1
+  maximum_exclusion=$((10#$observed + 21600))
+  for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+    name="${MANAGED_API_EXCLUDE_NAMES[$index]}"
+    expiry="${MANAGED_API_EXCLUDE_EXPIRIES[$index]}"
+    managed_server_name_is_valid "$name" || return 1
+    [[ -z "${seen[$name]+present}" ]] || return 1
+    seen["$name"]=1
+    managed_epoch_is_valid "$expiry" || return 1
+    (( 10#$expiry <= maximum_exclusion )) || return 1
+  done
+}
+
+managed_api_state_load() {
+  local now="${1:?}" size exclude_count attempt_count index expected_index offset
+  local observed window backoff failure
+  local credential_device credential_inode credential_mtime credential_size configured_device
+  local line name expiry
+  local -a lines=() attempt_epochs=() names=() expiries=()
+  local -A seen=()
+  managed_epoch_is_valid "$now" || return 1
+  managed_api_state_parent_is_secure || return 1
+  if [[ ! -e "$AIRVPN_API_STATE_FILE" && ! -L "$AIRVPN_API_STATE_FILE" ]]; then
+    managed_api_state_defaults "$now"
+    return $?
+  fi
+  managed_api_state_file_is_secure || return 1
+  size="$(managed_file_size "$AIRVPN_API_STATE_FILE")" || return 1
+  managed_uint_is_canonical "$size" 4096 || return 1
+  (( 10#$size > 0 )) || return 1
+  managed_api_state_bytes_are_strict "$AIRVPN_API_STATE_FILE" || return 1
+  mapfile -t lines < "$AIRVPN_API_STATE_FILE" || return 1
+  (( ${#lines[@]} >= 12 && ${#lines[@]} <= 34 )) || return 1
+  for line in "${lines[@]}"; do (( ${#line} <= 256 )) || return 1; done
+
+  [[ "${lines[0]}" == version=1 ]] || return 1
+  [[ "${lines[1]}" =~ ^observed_at=(0|[1-9][0-9]*)$ ]] || return 1
+  observed="${BASH_REMATCH[1]}"
+  [[ "${lines[2]}" =~ ^window_start=(0|[1-9][0-9]*)$ ]] || return 1
+  window="${BASH_REMATCH[1]}"
+  [[ "${lines[3]}" =~ ^attempt_count=(0|[1-9][0-9]*)$ ]] || return 1
+  attempt_count="${BASH_REMATCH[1]}"
+  managed_uint_is_canonical "$attempt_count" 6 || return 1
+  (( ${#lines[@]} >= 12 + 10#$attempt_count )) || return 1
+  for ((index = 1; index <= 10#$attempt_count; index++)); do
+    line="${lines[$((3 + index))]}"
+    [[ "$line" =~ ^attempt_([0-9]{2})=(0|[1-9][0-9]*)$ ]] || return 1
+    printf -v expected_index '%02d' "$index"
+    [[ "${BASH_REMATCH[1]}" == "$expected_index" ]] || return 1
+    attempt_epochs+=("${BASH_REMATCH[2]}")
+  done
+  offset=$((4 + 10#$attempt_count))
+  [[ "${lines[$offset]}" =~ ^backoff_until=(0|[1-9][0-9]*)$ ]] || return 1
+  backoff="${BASH_REMATCH[1]}"
+  [[ "${lines[$((offset + 1))]}" =~ ^failure_class=(none|auth|device|rate|transient)$ ]] || return 1
+  failure="${BASH_REMATCH[1]}"
+  [[ "${lines[$((offset + 2))]}" =~ ^credential_device=(0|[1-9][0-9]*)$ ]] || return 1
+  credential_device="${BASH_REMATCH[1]}"
+  [[ "${lines[$((offset + 3))]}" =~ ^credential_inode=(0|[1-9][0-9]*)$ ]] || return 1
+  credential_inode="${BASH_REMATCH[1]}"
+  [[ "${lines[$((offset + 4))]}" =~ ^credential_mtime=(0|[1-9][0-9]*)$ ]] || return 1
+  credential_mtime="${BASH_REMATCH[1]}"
+  [[ "${lines[$((offset + 5))]}" =~ ^credential_size=(0|[1-9][0-9]*)$ ]] || return 1
+  credential_size="${BASH_REMATCH[1]}"
+  [[ "${lines[$((offset + 6))]}" =~ ^configured_device=(.*)$ ]] || return 1
+  configured_device="${BASH_REMATCH[1]}"
+  [[ "${lines[$((offset + 7))]}" =~ ^exclude_count=(0|[1-9][0-9]*)$ ]] || return 1
+  exclude_count="${BASH_REMATCH[1]}"
+  managed_uint_is_canonical "$exclude_count" 16 || return 1
+  (( ${#lines[@]} == offset + 8 + 10#$exclude_count )) || return 1
+
+  for ((index = 1; index <= 10#$exclude_count; index++)); do
+    line="${lines[$((offset + 7 + index))]}"
+    [[ "$line" =~ ^exclude_([0-9]{2})=([A-Za-z0-9-]{1,64}),(0|[1-9][0-9]*)$ ]] || return 1
+    printf -v expected_index '%02d' "$index"
+    [[ "${BASH_REMATCH[1]}" == "$expected_index" ]] || return 1
+    name="${BASH_REMATCH[2]}"
+    expiry="${BASH_REMATCH[3]}"
+    [[ -z "${seen[$name]+present}" ]] || return 1
+    seen["$name"]=1
+    names+=("$name")
+    expiries+=("$expiry")
+  done
+
+  MANAGED_API_STATE_NOW="$observed"
+  MANAGED_API_OBSERVED_AT="$observed"
+  MANAGED_API_WINDOW_START="$window"
+  MANAGED_API_ATTEMPT_COUNT="$attempt_count"
+  MANAGED_API_ATTEMPT_EPOCHS=("${attempt_epochs[@]}")
+  MANAGED_API_BACKOFF_UNTIL="$backoff"
+  MANAGED_API_FAILURE_CLASS="$failure"
+  MANAGED_API_CREDENTIAL_DEVICE="$credential_device"
+  MANAGED_API_CREDENTIAL_INODE="$credential_inode"
+  MANAGED_API_CREDENTIAL_MTIME="$credential_mtime"
+  MANAGED_API_CREDENTIAL_SIZE="$credential_size"
+  MANAGED_API_CONFIGURED_DEVICE="$configured_device"
+  MANAGED_API_EXCLUDE_NAMES=("${names[@]}")
+  MANAGED_API_EXCLUDE_EXPIRIES=("${expiries[@]}")
+  managed_api_state_memory_is_valid 1 || return 1
+  (( 10#$now >= 10#$observed )) || return 1
+  managed_api_state_prune "$now"
+}
+
+managed_api_state_write() {
+  local parent base temporary index move_rc=0
+  managed_api_state_memory_is_valid 1 || return 1
+  (( ${CONTEXT_LOCKED:-0} == 1 )) || return 1
+  managed_api_state_parent_is_secure || return 1
+  if [[ -e "$AIRVPN_API_STATE_FILE" || -L "$AIRVPN_API_STATE_FILE" ]]; then
+    managed_api_state_file_is_secure || return 1
+  fi
+  parent="${AIRVPN_API_STATE_FILE%/*}"
+  base="${AIRVPN_API_STATE_FILE##*/}"
+  temporary="$(mktemp "$parent/.${base}.tmp.XXXXXX")" || return 1
+  chmod 600 -- "$temporary" || { rm -f -- "$temporary"; return 1; }
+  {
+    printf '%s\n' \
+      'version=1' \
+      "observed_at=$MANAGED_API_OBSERVED_AT" \
+      "window_start=$MANAGED_API_WINDOW_START" \
+      "attempt_count=$MANAGED_API_ATTEMPT_COUNT"
+    for ((index = 0; index < ${#MANAGED_API_ATTEMPT_EPOCHS[@]}; index++)); do
+      printf 'attempt_%02d=%s\n' "$((index + 1))" "${MANAGED_API_ATTEMPT_EPOCHS[$index]}"
+    done
+    printf '%s\n' \
+      "backoff_until=$MANAGED_API_BACKOFF_UNTIL" \
+      "failure_class=$MANAGED_API_FAILURE_CLASS" \
+      "credential_device=$MANAGED_API_CREDENTIAL_DEVICE" \
+      "credential_inode=$MANAGED_API_CREDENTIAL_INODE" \
+      "credential_mtime=$MANAGED_API_CREDENTIAL_MTIME" \
+      "credential_size=$MANAGED_API_CREDENTIAL_SIZE" \
+      "configured_device=$MANAGED_API_CONFIGURED_DEVICE" \
+      "exclude_count=${#MANAGED_API_EXCLUDE_NAMES[@]}"
+    for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+      printf 'exclude_%02d=%s,%s\n' "$((index + 1))" \
+        "${MANAGED_API_EXCLUDE_NAMES[$index]}" \
+        "${MANAGED_API_EXCLUDE_EXPIRIES[$index]}"
+    done
+  } > "$temporary" || move_rc=1
+  if (( move_rc == 0 )); then managed_sync_file "$temporary" || move_rc=1; fi
+  if (( move_rc == 0 )); then mv -fT -- "$temporary" "$AIRVPN_API_STATE_FILE" || move_rc=1; fi
+  if (( move_rc == 0 )); then managed_sync_file "$AIRVPN_API_STATE_FILE" || move_rc=1; fi
+  if (( move_rc == 0 )); then managed_sync_directory "$parent" || move_rc=1; fi
+  if (( move_rc != 0 )); then
+    rm -f -- "$temporary"
+    return 1
+  fi
+}
+
+managed_api_state_prune() {
+  local now="${1:?}" index
+  local -a attempt_epochs=() names=() expiries=()
+  managed_epoch_is_valid "$now" || return 1
+  managed_epoch_is_valid "${MANAGED_API_OBSERVED_AT-}" || return 1
+  (( 10#$now >= 10#$MANAGED_API_OBSERVED_AT )) || return 1
+  for ((index = 0; index < ${#MANAGED_API_ATTEMPT_EPOCHS[@]}; index++)); do
+    if (( 10#$now - 10#${MANAGED_API_ATTEMPT_EPOCHS[$index]} < 86400 )); then
+      attempt_epochs+=("${MANAGED_API_ATTEMPT_EPOCHS[$index]}")
+    fi
+  done
+  MANAGED_API_ATTEMPT_EPOCHS=("${attempt_epochs[@]}")
+  MANAGED_API_ATTEMPT_COUNT="${#MANAGED_API_ATTEMPT_EPOCHS[@]}"
+  if (( MANAGED_API_ATTEMPT_COUNT == 0 )); then
+    MANAGED_API_WINDOW_START="$now"
+  else
+    MANAGED_API_WINDOW_START="${MANAGED_API_ATTEMPT_EPOCHS[0]}"
+  fi
+  for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+    if (( 10#${MANAGED_API_EXCLUDE_EXPIRIES[$index]} > 10#$now )); then
+      names+=("${MANAGED_API_EXCLUDE_NAMES[$index]}")
+      expiries+=("${MANAGED_API_EXCLUDE_EXPIRIES[$index]}")
+    fi
+  done
+  MANAGED_API_EXCLUDE_NAMES=("${names[@]}")
+  MANAGED_API_EXCLUDE_EXPIRIES=("${expiries[@]}")
+  MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_OBSERVED_AT="$now"
+  managed_api_state_memory_is_valid
+}
+
+managed_api_state_add_exclusion() {
+  local name="${1-}" now="${2-}" expiry index oldest_index=0 oldest_expiry
+  managed_server_name_is_valid "$name" || return 1
+  managed_epoch_is_valid "$now" || return 1
+  managed_api_state_prune "$now" || return 1
+  expiry=$((10#$now + 21600))
+  (( expiry <= 4294967295 )) || return 1
+  for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+    if [[ "${MANAGED_API_EXCLUDE_NAMES[$index]}" == "$name" ]]; then
+      MANAGED_API_EXCLUDE_EXPIRIES[index]="$expiry"
+      return 0
+    fi
+  done
+  if (( ${#MANAGED_API_EXCLUDE_NAMES[@]} >= 16 )); then
+    oldest_expiry="${MANAGED_API_EXCLUDE_EXPIRIES[0]}"
+    for ((index = 1; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+      if (( 10#${MANAGED_API_EXCLUDE_EXPIRIES[$index]} < 10#$oldest_expiry )); then
+        oldest_index=$index
+        oldest_expiry="${MANAGED_API_EXCLUDE_EXPIRIES[$index]}"
+      fi
+    done
+    unset "MANAGED_API_EXCLUDE_NAMES[$oldest_index]"
+    unset "MANAGED_API_EXCLUDE_EXPIRIES[$oldest_index]"
+    MANAGED_API_EXCLUDE_NAMES=("${MANAGED_API_EXCLUDE_NAMES[@]}")
+    MANAGED_API_EXCLUDE_EXPIRIES=("${MANAGED_API_EXCLUDE_EXPIRIES[@]}")
+  fi
+  MANAGED_API_EXCLUDE_NAMES+=("$name")
+  MANAGED_API_EXCLUDE_EXPIRIES+=("$expiry")
+}
+
+managed_api_state_remove_exclusion_core() {
+  local name="${1-}" now="${2-}" index found=-1
+  managed_server_name_is_valid "$name" || return 1
+  managed_epoch_is_valid "$now" || return 1
+  managed_api_state_prune "$now" || return 1
+  for ((index = 0; index < ${#MANAGED_API_EXCLUDE_NAMES[@]}; index++)); do
+    if [[ "${MANAGED_API_EXCLUDE_NAMES[$index]}" == "$name" ]]; then
+      found=$index
+      break
+    fi
+  done
+  (( found >= 0 )) || return 1
+  unset "MANAGED_API_EXCLUDE_NAMES[$found]"
+  unset "MANAGED_API_EXCLUDE_EXPIRIES[$found]"
+  MANAGED_API_EXCLUDE_NAMES=("${MANAGED_API_EXCLUDE_NAMES[@]}")
+  MANAGED_API_EXCLUDE_EXPIRIES=("${MANAGED_API_EXCLUDE_EXPIRIES[@]}")
+  MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_OBSERVED_AT="$now"
+  managed_api_state_write
+}
+
+managed_api_state_remove_exclusion() {
+  [[ $# == 2 ]] || return 1
+  managed_api_state_remove_exclusion_core "$1" "$2"
+}
+
+managed_api_exclusion_args_core() {
+  local wgmanaged_now="${1:?}" wgmanaged_index
+  managed_api_state_prune "$wgmanaged_now" || return 1
+  wgmanaged_exclusion_args_carrier=()
+  for ((wgmanaged_index = 0;
+        wgmanaged_index < ${#MANAGED_API_EXCLUDE_NAMES[@]};
+        wgmanaged_index++)); do
+    wgmanaged_exclusion_args_carrier+=(
+      --exclude-server "${MANAGED_API_EXCLUDE_NAMES[$wgmanaged_index]}"
+    )
+  done
+}
+
+managed_api_exclusion_args() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_now="${2:?}"
+  local -a wgmanaged_exclusion_args_carrier=()
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  # Assignment through this validated caller-selected nameref is the public API.
+  # shellcheck disable=SC2034
+  local -n wgmanaged_output_reference="$wgmanaged_output_variable"
+  managed_api_exclusion_args_core "$wgmanaged_now" || return 1
+  # shellcheck disable=SC2034
+  wgmanaged_output_reference=("${wgmanaged_exclusion_args_carrier[@]}")
+}
+
+managed_api_attempt_allowed() {
+  local now="${1:?}" administrative_bypass="${2:-0}"
+  [[ "$administrative_bypass" == 0 || "$administrative_bypass" == 1 ]] || return 1
+  managed_api_state_prune "$now" || return 1
+  (( 10#$MANAGED_API_ATTEMPT_COUNT < 6 )) || return 75
+  if (( 10#$MANAGED_API_BACKOFF_UNTIL > 10#$now )); then
+    case "$MANAGED_API_FAILURE_CLASS" in
+      auth|device) (( administrative_bypass == 1 )) || return 75 ;;
+      rate|transient) return 75 ;;
+      none) return 1 ;;
+      *) return 1 ;;
+    esac
+  fi
+}
+
+managed_api_record_attempt() {
+  local now="${1:?}" administrative_bypass="${2:-0}" allowed_rc
+  if managed_api_attempt_allowed "$now" "$administrative_bypass"; then
+    allowed_rc=0
+  else
+    allowed_rc=$?
+  fi
+  if (( allowed_rc == 75 )); then
+    managed_api_state_write || return 1
+    return 75
+  fi
+  (( allowed_rc == 0 )) || return "$allowed_rc"
+  MANAGED_API_ATTEMPT_EPOCHS+=("$now")
+  MANAGED_API_ATTEMPT_COUNT="${#MANAGED_API_ATTEMPT_EPOCHS[@]}"
+  MANAGED_API_WINDOW_START="${MANAGED_API_ATTEMPT_EPOCHS[0]}"
+  MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_OBSERVED_AT="$now"
+  managed_api_state_write
+}
+
+managed_api_gate_before_preflight() {
+  local now="${1:?}" administrative_bypass="${2:-0}" rc
+  if managed_api_attempt_allowed "$now" "$administrative_bypass"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  (( rc != 0 )) || return 0
+  if (( rc == 75 )); then
+    managed_api_state_write || return 1
+  fi
+  return "$rc"
+}
+
+managed_compute_backoff() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_attempt="${2:?}"
+  local wgmanaged_jitter="${3-}" wgmanaged_retry_after="${4-}"
+  local wgmanaged_base=300 wgmanaged_maximum_jitter wgmanaged_index wgmanaged_computed
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  managed_uint_is_canonical "$wgmanaged_attempt" 100 || return 1
+  (( 10#$wgmanaged_attempt >= 1 )) || return 1
+  for ((wgmanaged_index = 1;
+        wgmanaged_index < 10#$wgmanaged_attempt && wgmanaged_base < 21600;
+        wgmanaged_index++)); do
+    wgmanaged_base=$((wgmanaged_base * 2))
+    (( wgmanaged_base <= 21600 )) || wgmanaged_base=21600
+  done
+  wgmanaged_maximum_jitter=$((wgmanaged_base / 10))
+  if [[ -z "$wgmanaged_jitter" ]]; then
+    wgmanaged_jitter=$((RANDOM % (wgmanaged_maximum_jitter + 1)))
+  fi
+  managed_uint_is_canonical "$wgmanaged_jitter" "$wgmanaged_maximum_jitter" || return 1
+  wgmanaged_computed=$((wgmanaged_base + 10#$wgmanaged_jitter))
+  (( wgmanaged_computed <= 21600 )) || wgmanaged_computed=21600
+  if [[ -n "$wgmanaged_retry_after" ]]; then
+    managed_uint_is_canonical "$wgmanaged_retry_after" 86400 || return 1
+    if (( 10#$wgmanaged_retry_after > wgmanaged_computed )); then
+      wgmanaged_computed=$((10#$wgmanaged_retry_after))
+    fi
+  fi
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_computed"
+}
+
+managed_api_record_outcome() {
+  local now="${1:?}" outcome="${2:?}" retry_after="${3-}" failed_server="${4-}" jitter="${5-}"
+  local backoff
+  managed_epoch_is_valid "$now" || return 1
+  managed_api_state_prune "$now" || return 1
+  case "$outcome" in
+    none)
+      [[ -z "$retry_after" && -z "$failed_server" ]] || return 1
+      MANAGED_API_FAILURE_CLASS=none
+      MANAGED_API_BACKOFF_UNTIL=0
+      ;;
+    auth|device)
+      [[ -z "$retry_after" ]] || return 1
+      MANAGED_API_FAILURE_CLASS="$outcome"
+      MANAGED_API_BACKOFF_UNTIL=$((10#$now + 86400))
+      ;;
+    rate|transient)
+      (( 10#$MANAGED_API_ATTEMPT_COUNT >= 1 )) || return 1
+      managed_compute_backoff backoff "$MANAGED_API_ATTEMPT_COUNT" "$jitter" "$retry_after" || return 1
+      MANAGED_API_FAILURE_CLASS="$outcome"
+      MANAGED_API_BACKOFF_UNTIL=$((10#$now + 10#$backoff))
+      ;;
+    *) return 1 ;;
+  esac
+  if [[ -n "$failed_server" ]]; then
+    managed_api_state_add_exclusion "$failed_server" "$now" || return 1
+  fi
+  managed_api_state_write
+}
+
+managed_api_credential_fd_metadata() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_credential_fd="${2:?}"
+  local wgmanaged_owner_pid wgmanaged_captured_metadata
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  validate_credential_fd_number "$wgmanaged_credential_fd" || return 1
+  wgmanaged_owner_pid=$BASHPID
+  [[ -f "/proc/$wgmanaged_owner_pid/fd/$wgmanaged_credential_fd" ]] || return 1
+  wgmanaged_captured_metadata="$(
+    stat -Lc '%d %i %Y %s %u %a' -- "/proc/$wgmanaged_owner_pid/fd/$wgmanaged_credential_fd" \
+      {wgmanaged_credential_fd}<&- 2>/dev/null
+  )" || return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_captured_metadata"
+}
+
+managed_api_state_refresh_identity() {
+  local now="${1:?}" credential_fd="${2-}" locally_opened_fd='' close_after=0
+  local metadata device inode mtime size uid mode changed=0
+  managed_epoch_is_valid "$now" || return 1
+  managed_device_name_is_valid "${AIRVPN_DEVICE-}" || return 1
+  managed_api_state_prune "$now" || return 1
+  if [[ -z "$credential_fd" ]]; then
+    open_installed_api_key locally_opened_fd || return 1
+    credential_fd="$locally_opened_fd"
+    close_after=1
+  else
+    validate_credential_fd_number "$credential_fd" || return 1
+  fi
+  if ! managed_api_credential_fd_metadata metadata "$credential_fd"; then
+    (( close_after == 0 )) || exec {locally_opened_fd}<&-
+    return 1
+  fi
+  read -r device inode mtime size uid mode <<< "$metadata"
+  if [[ "$metadata" != "$device $inode $mtime $size $uid $mode" ||
+        "$uid" != 0 || "$mode" != 600 ]]; then
+    (( close_after == 0 )) || exec {locally_opened_fd}<&-
+    return 1
+  fi
+  if ! managed_api_metadata_is_valid "$device" "$inode" "$mtime" "$size"; then
+    (( close_after == 0 )) || exec {locally_opened_fd}<&-
+    return 1
+  fi
+  if [[ "$size" != 65 ]]; then
+    (( close_after == 0 )) || exec {locally_opened_fd}<&-
+    return 1
+  fi
+  (( close_after == 0 )) || exec {locally_opened_fd}<&-
+  if [[ "$device" != "${MANAGED_API_CREDENTIAL_DEVICE-}" ||
+        "$inode" != "${MANAGED_API_CREDENTIAL_INODE-}" ||
+        "$mtime" != "${MANAGED_API_CREDENTIAL_MTIME-}" ||
+        "$size" != "${MANAGED_API_CREDENTIAL_SIZE-}" ||
+        "$AIRVPN_DEVICE" != "${MANAGED_API_CONFIGURED_DEVICE-}" ]]; then
+    changed=1
+  fi
+  MANAGED_API_CREDENTIAL_DEVICE="$device"
+  MANAGED_API_CREDENTIAL_INODE="$inode"
+  MANAGED_API_CREDENTIAL_MTIME="$mtime"
+  MANAGED_API_CREDENTIAL_SIZE="$size"
+  MANAGED_API_CONFIGURED_DEVICE="$AIRVPN_DEVICE"
+  if (( changed )) && [[ "$MANAGED_API_FAILURE_CLASS" == auth || "$MANAGED_API_FAILURE_CLASS" == device ]]; then
+    MANAGED_API_FAILURE_CLASS=none
+    MANAGED_API_BACKOFF_UNTIL=0
+  fi
+  managed_api_state_memory_is_valid
+}
+
+managed_admin_dry_run_bypass() {
+  local command="${1-}" action_mode="${2-}"
+  [[ "$action_mode" == dry-run ]] || return 1
+  case "$command" in provision|adopt|rotate) return 0 ;; *) return 1 ;; esac
+}
+
+managed_capture_owner_mode() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_path="${2:?}"
+  local wgmanaged_captured_metadata
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  wgmanaged_captured_metadata="$(owner_mode "$wgmanaged_path")" || return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_captured_metadata"
+}
+
+managed_chmod_api_lock() { chmod 600 -- "$1"; }
+managed_flock_api_lock() { flock -x "$1"; }
+
+managed_global_api_lock_acquire() {
+  local credential_fd="${1-}" parent metadata
+  if [[ -n "$credential_fd" ]]; then validate_credential_fd_number "$credential_fd" || return 1; fi
+  (( ${CONTEXT_LOCKED:-0} == 1 )) || return 1
+  [[ "${LOCK_FD-}" =~ ^[0-9]+$ ]] || return 1
+  [[ -z "${MANAGED_API_LOCK_FD-}" ]] || return 1
+  [[ -n "${AIRVPN_API_LOCK:-}" && "$AIRVPN_API_LOCK" == "${STATE_DIR%/}/airvpn-api.lock" ]] || return 1
+  parent="${AIRVPN_API_LOCK%/*}"
+  [[ -d "$parent" && ! -L "$parent" ]] || return 1
+  managed_call_without_private_fd "$credential_fd" managed_capture_owner_mode metadata "$parent" || return 1
+  [[ "$metadata" == 0:700 ]] || return 1
+  if [[ -e "$AIRVPN_API_LOCK" || -L "$AIRVPN_API_LOCK" ]]; then
+    [[ -f "$AIRVPN_API_LOCK" && ! -L "$AIRVPN_API_LOCK" ]] || return 1
+  fi
+  MANAGED_API_LOCK_FD=''
+  exec {MANAGED_API_LOCK_FD}>"$AIRVPN_API_LOCK" || return 1
+  if ! managed_call_without_private_fd "$credential_fd" managed_chmod_api_lock "$AIRVPN_API_LOCK"; then
+    exec {MANAGED_API_LOCK_FD}>&-
+    MANAGED_API_LOCK_FD=''
+    return 1
+  fi
+  managed_call_without_private_fd "$credential_fd" managed_capture_owner_mode metadata "$AIRVPN_API_LOCK" || {
+    exec {MANAGED_API_LOCK_FD}>&-
+    MANAGED_API_LOCK_FD=''
+    return 1
+  }
+  [[ "$metadata" == 0:600 ]] || {
+    exec {MANAGED_API_LOCK_FD}>&-
+    MANAGED_API_LOCK_FD=''
+    return 1
+  }
+  managed_call_without_private_fd "$credential_fd" managed_flock_api_lock "$MANAGED_API_LOCK_FD" || {
+    exec {MANAGED_API_LOCK_FD}>&-
+    MANAGED_API_LOCK_FD=''
+    return 1
+  }
+}
+
+managed_global_api_lock_release() {
+  local lock_fd="${MANAGED_API_LOCK_FD-}" rc=0
+  [[ "$lock_fd" =~ ^[0-9]+$ ]] || return 1
+  flock -u "$lock_fd" || rc=1
+  exec {lock_fd}>&- || rc=1
+  MANAGED_API_LOCK_FD=''
+  return "$rc"
+}
+
+managed_call_without_private_fd() {
+  local private_fd="${1-}"
+  shift || return 1
+  if [[ -z "$private_fd" ]]; then
+    "$@"
+  else
+    run_with_private_fd_closed "$private_fd" "$@"
+  fi
+}
+
+managed_wall_clock_epoch() {
+  local wgmanaged_phase="${1-}"
+  [[ $# == 1 && ( "$wgmanaged_phase" == attempt || "$wgmanaged_phase" == outcome ) ]] ||
+    return 1
+  current_epoch
+}
+
+managed_capture_wall_clock_epoch_closed() {
+  local wgmanaged_phase="${1:?}" wgmanaged_epoch
+  [[ -v wgmanaged_clock_epoch_carrier ]] || return 1
+  wgmanaged_epoch="$(managed_wall_clock_epoch "$wgmanaged_phase")" || return 1
+  managed_epoch_is_valid "$wgmanaged_epoch" || return 1
+  wgmanaged_clock_epoch_carrier="$wgmanaged_epoch"
+}
+
+managed_select_airvpn_candidate_closed() {
+  local wgmanaged_now="${1:?}" wgmanaged_current_endpoint="${2-}"
+  local wgmanaged_candidate_output
+  local -a wgmanaged_exclusion_args_carrier=()
+  [[ -v wgmanaged_selection_result_carrier ]] || return 1
+  managed_api_exclusion_args_core "$wgmanaged_now" || return 1
+  validate_secure_executable "$AIRVPN_API_HELPER" || return 1
+  wgmanaged_candidate_output="$(
+    "$AIRVPN_API_HELPER" select \
+      --url "$AIRVPN_STATUS_URL" \
+      --countries "$AIRVPN_COUNTRIES" \
+      --port "$AIRVPN_WG_PORT" \
+      --current-endpoint "$wgmanaged_current_endpoint" \
+      --timeout "$AIRVPN_API_TIMEOUT" \
+      "${wgmanaged_exclusion_args_carrier[@]}"
+  )" || return 1
+  [[ -n "$wgmanaged_candidate_output" &&
+     "$wgmanaged_candidate_output" != *$'\r'* &&
+     "$wgmanaged_candidate_output" != *$'\n'* ]] || return 1
+  wgmanaged_selection_result_carrier="$wgmanaged_candidate_output"
+}
+
+managed_select_airvpn_candidate() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_now="${2:?}"
+  local wgmanaged_credential_fd="${3-}" wgmanaged_current_endpoint="${4-}"
+  local wgmanaged_selection_result_carrier=''
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  if [[ -n "$wgmanaged_credential_fd" ]]; then
+    validate_credential_fd_number "$wgmanaged_credential_fd" || return 1
+  fi
+  managed_call_without_private_fd "$wgmanaged_credential_fd" \
+    managed_select_airvpn_candidate_closed "$wgmanaged_now" "$wgmanaged_current_endpoint" ||
+    return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_selection_result_carrier"
+}
+
+managed_fail_candidate_before_rollback() {
+  local now="${1:?}" server="${2:?}" rollback_callback="${3:?}"
+  local persistence_rc=0 rollback_rc=0
+  shift 3 || return 1
+  [[ "$rollback_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  declare -F "$rollback_callback" >/dev/null || return 1
+  if managed_api_state_add_exclusion "$server" "$now"; then
+    managed_api_state_write || persistence_rc=1
+  else
+    persistence_rc=1
+  fi
+  "$rollback_callback" "$@" || rollback_rc=1
+  (( persistence_rc == 0 && rollback_rc == 0 ))
+}
+
+managed_finish_authenticated_provider_result() {
+  local provider_rc="${1:?}" outcome="${2:?}" phase="${3-}" reason="${4-}"
+  (( provider_rc != 0 )) || return 0
+  if [[ "$outcome" == transient ]]; then
+    case "$phase" in
+      response)
+        case "$reason" in
+          status|encoding|media_missing|media_multiple|media_invalid|media_type|\
+          media_parameter|read|size|json|protocol)
+            printf 'failure\ttransient\tphase=response\treason=%s\n' "$reason"
+            ;;
+          '') printf 'failure\ttransient\tphase=response\n' ;;
+        esac
+        ;;
+      transport|profile|internal)
+        [[ -z "$reason" ]] || return "$provider_rc"
+        printf 'failure\ttransient\tphase=%s\n' "$phase"
+        ;;
+    esac
+  fi
+  return "$provider_rc"
+}
+
+# Provider callbacks receive only the private credential descriptor number and may set
+# the bounded MANAGED_API_PROVIDER_* result fields. Downstream is invoked only after the
+# authenticated outcome is durable and this process has released the global API lock.
+managed_run_authenticated_attempt() {
+  local wgmanaged_administrative_bypass="${1:-0}" wgmanaged_credential_fd="${2-}"
+  local wgmanaged_provider_callback="${3:?}" wgmanaged_downstream_callback="${4:?}"
+  local wgmanaged_preflight_callback="${5-}" wgmanaged_preflight_cleanup="${6-}"
+  local active_credential_fd="$wgmanaged_credential_fd"
+  local wgmanaged_attempt_now wgmanaged_outcome_now wgmanaged_provider_rc wgmanaged_outcome
+  local wgmanaged_outcome_rc wgmanaged_release_rc wgmanaged_clock_epoch_carrier=''
+  local wgmanaged_preflight_started=0
+  [[ $# == 4 || $# == 6 ]] || return 1
+  [[ "$wgmanaged_provider_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$wgmanaged_downstream_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  declare -F "$wgmanaged_provider_callback" >/dev/null && declare -F "$wgmanaged_downstream_callback" >/dev/null || return 1
+  if [[ -n "$wgmanaged_preflight_callback" ]]; then
+    [[ "$wgmanaged_preflight_callback" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$wgmanaged_preflight_cleanup" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+    declare -F "$wgmanaged_preflight_callback" >/dev/null && declare -F "$wgmanaged_preflight_cleanup" >/dev/null || return 1
+  fi
+  if [[ -n "$wgmanaged_credential_fd" ]]; then
+    validate_credential_fd_number "$wgmanaged_credential_fd" || return 1
+  fi
+  if ! managed_global_api_lock_acquire "$wgmanaged_credential_fd"; then
+    [[ -z "$wgmanaged_credential_fd" ]] || close_private_fd "$wgmanaged_credential_fd" ||
+      return 1
+    return 1
+  fi
+  managed_call_without_private_fd "$wgmanaged_credential_fd" \
+    managed_capture_wall_clock_epoch_closed attempt
+  wgmanaged_outcome_rc=$?
+  if (( wgmanaged_outcome_rc == 0 )); then
+    wgmanaged_attempt_now="$wgmanaged_clock_epoch_carrier"
+    managed_call_without_private_fd "$wgmanaged_credential_fd" \
+      managed_api_state_load "$wgmanaged_attempt_now"
+    wgmanaged_outcome_rc=$?
+  fi
+  if (( wgmanaged_outcome_rc == 0 )); then
+    if [[ -z "$active_credential_fd" ]]; then
+      open_installed_api_key active_credential_fd
+      wgmanaged_outcome_rc=$?
+    fi
+  fi
+  if (( wgmanaged_outcome_rc == 0 )); then
+    managed_api_state_refresh_identity \
+      "$wgmanaged_attempt_now" "$active_credential_fd"
+    wgmanaged_outcome_rc=$?
+  fi
+  if (( wgmanaged_outcome_rc == 0 )); then
+    managed_call_without_private_fd "$active_credential_fd" \
+      managed_api_gate_before_preflight "$wgmanaged_attempt_now" "$wgmanaged_administrative_bypass"
+    wgmanaged_outcome_rc=$?
+  fi
+  if (( wgmanaged_outcome_rc == 0 )); then
+    if [[ -n "$wgmanaged_preflight_callback" ]]; then
+      wgmanaged_preflight_started=1
+      managed_call_without_private_fd "$active_credential_fd" "$wgmanaged_preflight_callback" \
+        "$wgmanaged_attempt_now"
+      wgmanaged_outcome_rc=$?
+    fi
+  fi
+  if (( wgmanaged_outcome_rc == 0 )); then
+    managed_call_without_private_fd "$active_credential_fd" \
+      managed_api_record_attempt "$wgmanaged_attempt_now" "$wgmanaged_administrative_bypass"
+    wgmanaged_outcome_rc=$?
+  fi
+  if (( wgmanaged_outcome_rc != 0 )); then
+    if (( wgmanaged_preflight_started )) && [[ -n "$wgmanaged_preflight_cleanup" ]]; then
+      managed_call_without_private_fd "$active_credential_fd" \
+        "$wgmanaged_preflight_cleanup" >/dev/null 2>&1 || true
+    fi
+    managed_call_without_private_fd "$active_credential_fd" \
+      managed_global_api_lock_release || wgmanaged_outcome_rc=1
+    [[ -z "$active_credential_fd" ]] ||
+      close_private_fd "$active_credential_fd" || wgmanaged_outcome_rc=1
+    return "$wgmanaged_outcome_rc"
+  fi
+  MANAGED_API_PROVIDER_FAILURE_CLASS=''
+  MANAGED_API_PROVIDER_RETRY_AFTER=''
+  MANAGED_API_PROVIDER_FAILED_SERVER=''
+  MANAGED_API_PROVIDER_JITTER=''
+  MANAGED_API_PROVIDER_FAILURE_PHASE=''
+  MANAGED_API_PROVIDER_FAILURE_REASON=''
+  if "$wgmanaged_provider_callback" "$active_credential_fd"; then
+    wgmanaged_provider_rc=0
+  else
+    wgmanaged_provider_rc=$?
+  fi
+  [[ -z "$active_credential_fd" ]] || close_private_fd "$active_credential_fd" ||
+    {
+      wgmanaged_provider_rc=1
+      MANAGED_API_PROVIDER_FAILURE_PHASE=''
+      MANAGED_API_PROVIDER_FAILURE_REASON=''
+    }
+  wgmanaged_clock_epoch_carrier=''
+  if managed_call_without_private_fd "$active_credential_fd" \
+      managed_capture_wall_clock_epoch_closed outcome; then
+    wgmanaged_outcome_now="$wgmanaged_clock_epoch_carrier"
+    wgmanaged_outcome_rc=0
+  else
+    wgmanaged_outcome_rc=1
+  fi
+
+  case "$wgmanaged_provider_rc" in
+    0) wgmanaged_outcome=none ;;
+    4)
+      case "$MANAGED_API_PROVIDER_FAILURE_CLASS" in
+        ''|auth) wgmanaged_outcome=auth ;;
+        device) wgmanaged_outcome=device ;;
+        *) wgmanaged_outcome=transient ;;
+      esac
+      ;;
+    5) wgmanaged_outcome=rate ;;
+    7) wgmanaged_outcome=device ;;
+    *) wgmanaged_outcome=transient ;;
+  esac
+  if (( wgmanaged_outcome_rc == 0 )); then
+    if [[ "$wgmanaged_outcome" == none ]]; then
+      managed_api_record_outcome "$wgmanaged_outcome_now" none '' '' 0
+    else
+      managed_api_record_outcome "$wgmanaged_outcome_now" "$wgmanaged_outcome" \
+        "$MANAGED_API_PROVIDER_RETRY_AFTER" "$MANAGED_API_PROVIDER_FAILED_SERVER" \
+        "$MANAGED_API_PROVIDER_JITTER"
+    fi
+    wgmanaged_outcome_rc=$?
+  fi
+  if managed_global_api_lock_release; then
+    wgmanaged_release_rc=0
+  else
+    wgmanaged_release_rc=$?
+  fi
+  (( wgmanaged_outcome_rc == 0 && wgmanaged_release_rc == 0 )) || return 1
+  managed_finish_authenticated_provider_result "$wgmanaged_provider_rc" \
+    "$wgmanaged_outcome" "$MANAGED_API_PROVIDER_FAILURE_PHASE" \
+    "$MANAGED_API_PROVIDER_FAILURE_REASON" || return $?
+  "$wgmanaged_downstream_callback"
+}
+
+managed_transaction_context_is_safe() {
+  (( ${CONTEXT_LOCKED:-0} == 1 )) && [[ -z "${MANAGED_API_LOCK_FD-}" ]]
+}
+
+managed_docker_available() {
+  command -v docker >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1
+}
+
+managed_docker_command() {
+  local wgmanaged_action="${1-}"
+  [[ $# == 1 ]] || return 1
+  validate_managed_container_name "${QBITTORRENT_CONTAINER-}" || return 1
+  managed_uint_is_canonical "${QBITTORRENT_RESTART_TIMEOUT-}" 300 || return 1
+  (( 10#$QBITTORRENT_RESTART_TIMEOUT >= 1 )) || return 1
+  managed_docker_available || return 1
+  case "$wgmanaged_action" in
+    inspect)
+      timeout "$QBITTORRENT_RESTART_TIMEOUT" docker container inspect \
+        --format '{{.State.Running}}' "$QBITTORRENT_CONTAINER" 2>/dev/null
+      ;;
+    stop)
+      timeout "$QBITTORRENT_RESTART_TIMEOUT" docker container stop \
+        "$QBITTORRENT_CONTAINER" >/dev/null 2>&1
+      ;;
+    start)
+      timeout "$QBITTORRENT_RESTART_TIMEOUT" docker container start \
+        "$QBITTORRENT_CONTAINER" >/dev/null 2>&1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_docker_target_is_valid() {
+  [[ "${1-}" =~ ^[0-9a-f]{64}$ ]] || validate_managed_container_name "${1-}"
+}
+
+managed_docker_container_id_is_valid() {
+  [[ "${1-}" =~ ^[0-9a-f]{64}$ ]]
+}
+
+managed_docker_inspect_identity() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_target="${2:?}"
+  local wgmanaged_result
+  [[ $# == 2 ]] || return 1
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  managed_docker_target_is_valid "$wgmanaged_target" || return 1
+  managed_docker_available || return 1
+  wgmanaged_result="$(timeout "$QBITTORRENT_RESTART_TIMEOUT" docker container inspect \
+    --format '{{.Id}}|{{.State.Running}}' "$wgmanaged_target" 2>/dev/null)" || return 1
+  [[ -n "$wgmanaged_result" && "$wgmanaged_result" != *$'\r'* &&
+     "$wgmanaged_result" != *$'\n'* ]] || return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_result"
+}
+
+managed_docker_stop_target() {
+  local wgmanaged_target="${1:?}"
+  managed_docker_target_is_valid "$wgmanaged_target" || return 1
+  managed_docker_available || return 1
+  timeout "$QBITTORRENT_RESTART_TIMEOUT" docker container stop "$wgmanaged_target" \
+    >/dev/null 2>&1
+}
+
+managed_docker_start_target() {
+  local wgmanaged_target="${1:?}"
+  managed_docker_target_is_valid "$wgmanaged_target" || return 1
+  managed_docker_available || return 1
+  timeout "$QBITTORRENT_RESTART_TIMEOUT" docker container start "$wgmanaged_target" \
+    >/dev/null 2>&1
+}
+
+managed_docker_inspect_name() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_name="${2:?}"
+  validate_managed_container_name "$wgmanaged_name" || return 1
+  managed_docker_inspect_identity "$wgmanaged_output_variable" "$wgmanaged_name"
+}
+
+managed_docker_inspect_id() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_id="${2:?}"
+  managed_docker_container_id_is_valid "$wgmanaged_id" || return 1
+  managed_docker_inspect_identity "$wgmanaged_output_variable" "$wgmanaged_id"
+}
+
+managed_docker_stop_name() {
+  local wgmanaged_name="${1:?}"
+  validate_managed_container_name "$wgmanaged_name" || return 1
+  managed_docker_stop_target "$wgmanaged_name"
+}
+
+managed_docker_stop_id() {
+  local wgmanaged_id="${1:?}"
+  managed_docker_container_id_is_valid "$wgmanaged_id" || return 1
+  managed_docker_stop_target "$wgmanaged_id"
+}
+
+managed_docker_start_id() {
+  local wgmanaged_id="${1:?}"
+  managed_docker_container_id_is_valid "$wgmanaged_id" || return 1
+  managed_docker_start_target "$wgmanaged_id"
+}
+
+managed_qb_parse_inspection() {
+  local wgmanaged_output_id="${1:?}" wgmanaged_output_state="${2:?}"
+  local wgmanaged_inspection="${3-}" wgmanaged_id wgmanaged_state
+  local LC_ALL=C
+  managed_output_variable_is_valid "$wgmanaged_output_id" || return 1
+  managed_output_variable_is_valid "$wgmanaged_output_state" || return 1
+  [[ "$wgmanaged_output_id" != "$wgmanaged_output_state" ]] || return 1
+  [[ "$wgmanaged_inspection" =~ ^([0-9a-f]{64})[|](true|false)$ ]] || return 1
+  wgmanaged_id="${BASH_REMATCH[1]}"
+  wgmanaged_state="${BASH_REMATCH[2]}"
+  case "$wgmanaged_state" in
+    true) wgmanaged_state=running ;;
+    false) wgmanaged_state=stopped ;;
+    *) return 1 ;;
+  esac
+  printf -v "$wgmanaged_output_id" '%s' "$wgmanaged_id"
+  printf -v "$wgmanaged_output_state" '%s' "$wgmanaged_state"
+}
+
+managed_qb_snapshot() {
+  local qb_inspection qb_observed_id qb_observed_state qb_profile_ipv4
+  if [[ -z "${QBITTORRENT_CONTAINER-}" ]]; then
+    MANAGED_QB_INTENT=unmanaged
+    MANAGED_QB_CONTAINER=-
+    MANAGED_QB_CONTAINER_ID=-
+    MANAGED_QB_PROCESS=-
+    MANAGED_QB_LISTEN_IPV4=-
+    MANAGED_QB_LISTEN_PORT=0
+  else
+    validate_managed_container_name "$QBITTORRENT_CONTAINER" || return 1
+    validate_process_name "${QBITTORRENT_PROCESS_NAME-}" || return 1
+    validate_ip_address "${QBITTORRENT_LISTEN_IP-}" || return 1
+    managed_uint_is_canonical "${QBITTORRENT_LISTEN_PORT-}" 65535 || return 1
+    (( 10#$QBITTORRENT_LISTEN_PORT >= 1 )) || return 1
+    managed_profile_interface_ipv4 qb_profile_ipv4 "$WG_CONF" || return 1
+    [[ "$qb_profile_ipv4" == "$QBITTORRENT_LISTEN_IP" ]] || return 1
+    managed_docker_inspect_name qb_inspection "$QBITTORRENT_CONTAINER" || return 1
+    managed_qb_parse_inspection qb_observed_id qb_observed_state "$qb_inspection" || return 1
+    MANAGED_QB_INTENT="$qb_observed_state"
+    MANAGED_QB_CONTAINER="$QBITTORRENT_CONTAINER"
+    MANAGED_QB_CONTAINER_ID="$qb_observed_id"
+    MANAGED_QB_PROCESS="$QBITTORRENT_PROCESS_NAME"
+    MANAGED_QB_LISTEN_IPV4="$QBITTORRENT_LISTEN_IP"
+    MANAGED_QB_LISTEN_PORT="$QBITTORRENT_LISTEN_PORT"
+  fi
+  # The pending safety writer consumes this snapshot; publishing the same values here also
+  # makes the strict checkpoint owner usable before the first on-disk re-read.
+  MANAGED_SAFETY_QB_INTENT="$MANAGED_QB_INTENT"
+  MANAGED_SAFETY_QB_CONTAINER="$MANAGED_QB_CONTAINER"
+  MANAGED_SAFETY_QB_CONTAINER_ID="$MANAGED_QB_CONTAINER_ID"
+  MANAGED_SAFETY_QB_PROCESS="$MANAGED_QB_PROCESS"
+  MANAGED_SAFETY_QB_LISTEN_IPV4="$MANAGED_QB_LISTEN_IPV4"
+  MANAGED_SAFETY_QB_LISTEN_PORT="$MANAGED_QB_LISTEN_PORT"
+}
+
+managed_qb_current_tuple_matches_record() {
+  case "${MANAGED_SAFETY_QB_INTENT-}" in
+    unmanaged) [[ -z "${QBITTORRENT_CONTAINER-}" ]] ;;
+    running|stopped)
+      [[ "${QBITTORRENT_CONTAINER-}" == "$MANAGED_SAFETY_QB_CONTAINER" &&
+         "${QBITTORRENT_PROCESS_NAME-}" == "$MANAGED_SAFETY_QB_PROCESS" &&
+         "${QBITTORRENT_LISTEN_IP-}" == "$MANAGED_SAFETY_QB_LISTEN_IPV4" &&
+         "${QBITTORRENT_LISTEN_PORT-}" == "$MANAGED_SAFETY_QB_LISTEN_PORT" ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_qb_inspect_name_matches() {
+  local wgmanaged_target="${1:?}" wgmanaged_expected_id="${2:?}"
+  local wgmanaged_expected_state="${3:?}" qb_inspection qb_observed_id qb_observed_state
+  managed_docker_inspect_name qb_inspection "$wgmanaged_target" || return 1
+  managed_qb_parse_inspection qb_observed_id qb_observed_state "$qb_inspection" || return 1
+  [[ "$qb_observed_id" == "$wgmanaged_expected_id" &&
+     "$qb_observed_state" == "$wgmanaged_expected_state" ]]
+}
+
+managed_qb_inspect_id_matches() {
+  local wgmanaged_expected_id="${1:?}" wgmanaged_expected_state="${2:?}"
+  local qb_inspection qb_observed_id qb_observed_state
+  managed_docker_inspect_id qb_inspection "$wgmanaged_expected_id" || return 1
+  managed_qb_parse_inspection qb_observed_id qb_observed_state "$qb_inspection" || return 1
+  [[ "$qb_observed_id" == "$wgmanaged_expected_id" &&
+     "$qb_observed_state" == "$wgmanaged_expected_state" ]]
+}
+
+managed_qb_contain_recorded_and_current() {
+  local wgmanaged_rc=0 wgmanaged_current="${QBITTORRENT_CONTAINER-}"
+  local wgmanaged_recorded="${MANAGED_SAFETY_QB_CONTAINER_ID-}"
+  if managed_docker_container_id_is_valid "$wgmanaged_recorded"; then
+    managed_docker_stop_id "$wgmanaged_recorded" || wgmanaged_rc=1
+  fi
+  if [[ -n "$wgmanaged_current" ]]; then
+    if validate_managed_container_name "$wgmanaged_current"; then
+      managed_docker_stop_name "$wgmanaged_current" || wgmanaged_rc=1
+    else
+      wgmanaged_rc=1
+    fi
+  fi
+  if managed_docker_container_id_is_valid "$wgmanaged_recorded"; then
+    managed_qb_inspect_id_matches "$wgmanaged_recorded" stopped ||
+      wgmanaged_rc=1
+  fi
+  if [[ -n "$wgmanaged_current" ]] &&
+      validate_managed_container_name "$wgmanaged_current"; then
+    local qb_inspection qb_current_id qb_current_state
+    if managed_docker_inspect_name qb_inspection "$wgmanaged_current" &&
+        managed_qb_parse_inspection qb_current_id qb_current_state "$qb_inspection" &&
+        [[ -n "$qb_current_id" && "$qb_current_state" == stopped ]]; then
+      :
+    else
+      wgmanaged_rc=1
+    fi
+  fi
+  return "$wgmanaged_rc"
+}
+
+managed_qb_rollback_containment_checkpoint() {
+  local wgmanaged_current="${QBITTORRENT_CONTAINER-}" wgmanaged_rc=0
+  case "${MANAGED_SAFETY_QB_INTENT-}" in
+    unmanaged) ;;
+    running|stopped)
+      managed_qb_inspect_id_matches "${MANAGED_SAFETY_QB_CONTAINER_ID-}" stopped ||
+        wgmanaged_rc=1
+      ;;
+    *) wgmanaged_rc=1 ;;
+  esac
+  if [[ -n "$wgmanaged_current" ]]; then
+    if validate_managed_container_name "$wgmanaged_current"; then
+      local qb_inspection qb_current_id qb_current_state
+      if ! managed_docker_inspect_name qb_inspection "$wgmanaged_current" ||
+          ! managed_qb_parse_inspection qb_current_id qb_current_state "$qb_inspection" ||
+          [[ -z "$qb_current_id" || "$qb_current_state" != stopped ]]; then
+        wgmanaged_rc=1
+      fi
+    else
+      wgmanaged_rc=1
+    fi
+  fi
+  if (( wgmanaged_rc != 0 )); then
+    managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+    return 1
+  fi
+}
+
+managed_qb_containment_checkpoint() {
+  local wgmanaged_checkpoint="${1-}"
+  [[ $# == 1 && "$wgmanaged_checkpoint" =~ ^[a-z0-9-]{1,40}$ ]] || return 1
+  MANAGED_QB_CHECKPOINT="$wgmanaged_checkpoint"
+  if [[ "$wgmanaged_checkpoint" == rollback-* ]]; then
+    managed_qb_rollback_containment_checkpoint
+    return
+  fi
+  if [[ "${MANAGED_SAFETY_QB_INTENT-}" == unmanaged ]]; then
+    if managed_qb_current_tuple_matches_record; then
+      return 0
+    fi
+    managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+    return 1
+  fi
+  if ! managed_qb_current_tuple_matches_record ||
+      ! managed_qb_inspect_name_matches "$MANAGED_SAFETY_QB_CONTAINER" \
+        "$MANAGED_SAFETY_QB_CONTAINER_ID" stopped; then
+    managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+    return 1
+  fi
+}
+
+managed_qb_restore_recorded_intent() {
+  MANAGED_QB_CHECKPOINT=restore
+  case "${MANAGED_SAFETY_QB_INTENT-}" in
+    unmanaged)
+      if managed_qb_current_tuple_matches_record; then return 0; fi
+      managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+      return 1
+      ;;
+    stopped)
+      managed_qb_containment_checkpoint restore-stopped
+      return
+      ;;
+    running) ;;
+    *) return 1 ;;
+  esac
+  MANAGED_QB_CHECKPOINT=restore
+  if ! managed_qb_current_tuple_matches_record ||
+      ! managed_qb_inspect_name_matches "$MANAGED_SAFETY_QB_CONTAINER" \
+        "$MANAGED_SAFETY_QB_CONTAINER_ID" stopped; then
+    managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+    return 1
+  fi
+  if ! managed_docker_start_id "$MANAGED_SAFETY_QB_CONTAINER_ID" ||
+      ! managed_qb_inspect_name_matches "$MANAGED_SAFETY_QB_CONTAINER" \
+        "$MANAGED_SAFETY_QB_CONTAINER_ID" running ||
+      ! managed_wait_for_qbittorrent ||
+      ! qbittorrent_binding_present ||
+      ! managed_qb_inspect_name_matches "$MANAGED_SAFETY_QB_CONTAINER" \
+        "$MANAGED_SAFETY_QB_CONTAINER_ID" running; then
+    managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+    return 1
+  fi
+}
+
+managed_qb_verify_recorded_intent() {
+  MANAGED_QB_CHECKPOINT="${1:-final-proof}"
+  case "${MANAGED_SAFETY_QB_INTENT-}" in
+    unmanaged) managed_qb_current_tuple_matches_record ;;
+    stopped)
+      managed_qb_current_tuple_matches_record &&
+        managed_qb_inspect_name_matches "$MANAGED_SAFETY_QB_CONTAINER" \
+          "$MANAGED_SAFETY_QB_CONTAINER_ID" stopped
+      ;;
+    running)
+      managed_qb_current_tuple_matches_record &&
+        managed_qb_inspect_name_matches "$MANAGED_SAFETY_QB_CONTAINER" \
+          "$MANAGED_SAFETY_QB_CONTAINER_ID" running &&
+        qbittorrent_binding_present &&
+        managed_qb_inspect_name_matches "$MANAGED_SAFETY_QB_CONTAINER" \
+          "$MANAGED_SAFETY_QB_CONTAINER_ID" running
+      ;;
+    *) return 1 ;;
+  esac || {
+    managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+    return 1
+  }
+}
+
+managed_qbittorrent_state_core() {
+  local wgmanaged_inspected
+  [[ -v wgmanaged_qb_state_carrier ]] || return 1
+  if [[ -z "${QBITTORRENT_CONTAINER-}" ]]; then
+    wgmanaged_qb_state_carrier=unconfigured
+    return 0
+  fi
+  validate_managed_container_name "$QBITTORRENT_CONTAINER" || return 1
+  wgmanaged_inspected="$(managed_docker_command inspect)" || return 1
+  [[ -n "$wgmanaged_inspected" &&
+     "$wgmanaged_inspected" != *$'\r'* &&
+     "$wgmanaged_inspected" != *$'\n'* ]] || return 1
+  case "$wgmanaged_inspected" in
+    true) wgmanaged_qb_state_carrier=running ;;
+    false) wgmanaged_qb_state_carrier=stopped ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_qbittorrent_state() {
+  local wgmanaged_output_variable="${1:?}" wgmanaged_qb_state_carrier=''
+  [[ $# == 1 ]] || return 1
+  managed_output_variable_is_valid "$wgmanaged_output_variable" || return 1
+  managed_qbittorrent_state_core || return 1
+  printf -v "$wgmanaged_output_variable" '%s' "$wgmanaged_qb_state_carrier"
+}
+
+managed_qbittorrent_ensure_stopped() {
+  local transaction_qb_state=''
+  if ! managed_qbittorrent_state transaction_qb_state; then
+    if [[ -n "${QBITTORRENT_CONTAINER-}" ]] &&
+        validate_managed_container_name "$QBITTORRENT_CONTAINER"; then
+      managed_docker_command stop >/dev/null 2>&1 || return 1
+      managed_qbittorrent_state transaction_qb_state || return 1
+      [[ "$transaction_qb_state" == stopped ]]
+      return
+    fi
+    return 1
+  fi
+  case "$transaction_qb_state" in
+    unconfigured|stopped) return 0 ;;
+    running)
+      managed_docker_command stop || return 1
+      managed_qbittorrent_state transaction_qb_state || return 1
+      [[ "$transaction_qb_state" == stopped ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_wait_for_qbittorrent() {
+  managed_uint_is_canonical "${QBITTORRENT_RESTART_DELAY-}" 300 || return 1
+  sleep "$QBITTORRENT_RESTART_DELAY"
+}
+
+managed_qbittorrent_restore_state() {
+  local wgmanaged_was_running="${1-}" transaction_qb_state=''
+  [[ $# == 1 && ( "$wgmanaged_was_running" == 0 || "$wgmanaged_was_running" == 1 ) ]] ||
+    return 1
+  if [[ "$wgmanaged_was_running" == 0 ]]; then
+    managed_qbittorrent_ensure_stopped
+    return
+  fi
+  if ! managed_qbittorrent_state transaction_qb_state; then
+    managed_qbittorrent_ensure_stopped >/dev/null 2>&1 || true
+    return 1
+  fi
+  case "$transaction_qb_state" in
+    stopped)
+      if ! managed_docker_command start; then
+        managed_qbittorrent_ensure_stopped >/dev/null 2>&1 || true
+        return 1
+      fi
+      ;;
+    running) ;;
+    *)
+      managed_qbittorrent_ensure_stopped >/dev/null 2>&1 || true
+      return 1
+      ;;
+  esac
+  if ! managed_qbittorrent_state transaction_qb_state ||
+      [[ "$transaction_qb_state" != running ]] ||
+      ! managed_wait_for_qbittorrent ||
+      ! qbittorrent_binding_present; then
+    managed_qbittorrent_ensure_stopped >/dev/null 2>&1 || true
+    return 1
+  fi
+}
+
+managed_live_interface_address() {
+  local wgmanaged_raw wgmanaged_addresses
+  wgmanaged_raw="$(ip -o -4 address show dev "$IFACE" scope global 2>/dev/null)" || return 1
+  wgmanaged_addresses="$(awk '$3 == "inet" {print $4}' <<< "$wgmanaged_raw")" || return 1
+  [[ -n "$wgmanaged_addresses" &&
+     "$wgmanaged_addresses" != *$'\r'* &&
+     "$wgmanaged_addresses" != *$'\n'* ]] || return 1
+  printf '%s\n' "$wgmanaged_addresses"
+}
+
+managed_live_peer_public_key() {
+  local wgmanaged_peer
+  wgmanaged_peer="$(wg show "$IFACE" peers 2>/dev/null)" || return 1
+  [[ "$wgmanaged_peer" =~ ^[A-Za-z0-9+/]{43}=$ ]] || return 1
+  printf '%s\n' "$wgmanaged_peer"
+}
+
+managed_verify_live_profile_identity() {
+  local wgmanaged_path="${1:?}" wgmanaged_expected wgmanaged_address
+  local wgmanaged_peer wgmanaged_live_address wgmanaged_live_peer
+  [[ $# == 1 ]] || return 1
+  managed_profile_file_is_secure "$wgmanaged_path" || return 1
+  wgmanaged_expected="$(awk '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      interface_section=($0 ~ /^[[:space:]]*\[Interface\][[:space:]]*$/)
+      peer_section=($0 ~ /^[[:space:]]*\[Peer\][[:space:]]*$/)
+      next
+    }
+    interface_section && /^[[:space:]]*Address[[:space:]]*=/ {
+      address=$0; sub(/^[^=]*=/, "", address)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", address); address_count++
+    }
+    peer_section && /^[[:space:]]*PublicKey[[:space:]]*=/ {
+      peer=$0; sub(/^[^=]*=/, "", peer)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", peer); peer_count++
+    }
+    END {
+      if (address_count != 1 || peer_count != 1) exit 1
+      printf "%s\t%s\n", address, peer
+    }
+  ' "$wgmanaged_path")" || return 1
+  [[ -n "$wgmanaged_expected" &&
+     "$wgmanaged_expected" != *$'\r'* &&
+     "$wgmanaged_expected" != *$'\n'* ]] || return 1
+  IFS=$'\t' read -r wgmanaged_address wgmanaged_peer <<< "$wgmanaged_expected" || return 1
+  [[ "$wgmanaged_address" == */32 &&
+     "$wgmanaged_peer" =~ ^[A-Za-z0-9+/]{43}=$ ]] || return 1
+  validate_ip_address "${wgmanaged_address%/32}" || return 1
+  wgmanaged_live_address="$(managed_live_interface_address)" || return 1
+  wgmanaged_live_peer="$(managed_live_peer_public_key)" || return 1
+  [[ "$wgmanaged_live_address" == "$wgmanaged_address" &&
+     "$wgmanaged_live_peer" == "$wgmanaged_peer" ]]
+}
+
+managed_profile_move() {
+  command mv -fT -- "${1:?}" "${2:?}"
+}
+
+managed_profile_move_noclobber() {
+  command mv -nT -- "${1:?}" "${2:?}"
+}
+
+managed_copy_profile_bytes() {
+  command cp -- "${1:?}" "${2:?}"
+}
+
+managed_profile_copy_paths_are_fixed() {
+  local wgmanaged_source="${1:?}" wgmanaged_destination="${2:?}"
+  local wgmanaged_backup="${WG_CONF}.bak-healthcheck"
+  if [[ "$wgmanaged_source" == "$WG_CONF" &&
+        "$wgmanaged_destination" == "$wgmanaged_backup" ]]; then
+    return 0
+  fi
+  if [[ "$wgmanaged_source" == "$wgmanaged_backup" &&
+        "$wgmanaged_destination" == "$WG_CONF" ]]; then
+    return 0
+  fi
+  [[ "$wgmanaged_source" == "$MANAGED_CANDIDATE" &&
+     "$wgmanaged_destination" == "$WG_CONF" ]]
+}
+
+managed_install_profile_atomically() {
+  local wgmanaged_source="${1:?}" wgmanaged_destination="${2:?}"
+  local wgmanaged_expected_digest="${3:?}" wgmanaged_expected_endpoint="${4:?}"
+  local wgmanaged_parent wgmanaged_base wgmanaged_temporary wgmanaged_metadata
+  [[ $# == 4 ]] || return 1
+  managed_transaction_context_is_safe || return 1
+  managed_profile_copy_paths_are_fixed "$wgmanaged_source" "$wgmanaged_destination" ||
+    return 1
+  managed_journal_parent_is_secure || return 1
+  wgmanaged_parent="${WG_CONF%/*}"
+  [[ "${wgmanaged_source%/*}" == "$wgmanaged_parent" &&
+     "${wgmanaged_destination%/*}" == "$wgmanaged_parent" ]] || return 1
+  managed_verify_profile_binding "$wgmanaged_source" "$wgmanaged_expected_digest" \
+    "$wgmanaged_expected_endpoint" || return 1
+  if [[ -e "$wgmanaged_destination" || -L "$wgmanaged_destination" ]]; then
+    managed_profile_file_is_secure "$wgmanaged_destination" || return 1
+  fi
+  wgmanaged_base="${wgmanaged_destination##*/}"
+  wgmanaged_temporary="$(mktemp "$wgmanaged_parent/.${wgmanaged_base}.profile.XXXXXX")" ||
+    return 1
+  if ! chmod 600 -- "$wgmanaged_temporary" ||
+      ! { (( EUID != 0 )) || chown 0:0 -- "$wgmanaged_temporary"; } ||
+      ! managed_copy_profile_bytes "$wgmanaged_source" "$wgmanaged_temporary" ||
+      ! chmod 600 -- "$wgmanaged_temporary" ||
+      ! { (( EUID != 0 )) || chown 0:0 -- "$wgmanaged_temporary"; }; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  wgmanaged_metadata="$(owner_mode "$wgmanaged_temporary")" || {
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  }
+  if [[ "$wgmanaged_metadata" != 0:600 ]] ||
+      ! managed_verify_profile_binding "$wgmanaged_temporary" \
+        "$wgmanaged_expected_digest" "$wgmanaged_expected_endpoint" ||
+      ! managed_sync_file "$wgmanaged_temporary" ||
+      ! managed_profile_move "$wgmanaged_temporary" "$wgmanaged_destination"; then
+    rm -f -- "$wgmanaged_temporary"
+    return 1
+  fi
+  wgmanaged_temporary=''
+  managed_verify_profile_binding "$wgmanaged_destination" \
+    "$wgmanaged_expected_digest" "$wgmanaged_expected_endpoint" || return 1
+  managed_sync_file "$wgmanaged_destination" || return 1
+  managed_sync_artifact_parent "$wgmanaged_parent"
+}
+
+managed_profiles_are_identical() {
+  local wgmanaged_first="${1:?}" wgmanaged_second="${2:?}"
+  managed_profile_file_is_secure "$wgmanaged_first" || return 1
+  managed_profile_file_is_secure "$wgmanaged_second" || return 1
+  command cmp -s -- "$wgmanaged_first" "$wgmanaged_second"
+}
+
+managed_prepare_profile_backup() {
+  local transaction_active_digest transaction_active_digest_again transaction_old_endpoint
+  local wgmanaged_backup="${WG_CONF}.bak-healthcheck"
+  managed_sha256_file transaction_active_digest "$WG_CONF" || return 1
+  transaction_old_endpoint="$(configured_endpoint "$WG_CONF")" || return 1
+  managed_sha256_file transaction_active_digest_again "$WG_CONF" || return 1
+  [[ "$transaction_active_digest" == "$transaction_active_digest_again" ]] || return 1
+  managed_install_profile_atomically "$WG_CONF" "$wgmanaged_backup" \
+    "$transaction_active_digest" "$transaction_old_endpoint" || return 1
+  managed_profiles_are_identical "$WG_CONF" "$wgmanaged_backup"
+}
+
+managed_ensure_interface_down() {
+  if interface_exists; then
+    run_wg_quick_down || return 1
+    ! interface_exists
+  fi
+}
+
+managed_ensure_interface_up() {
+  ! interface_exists || return 1
+  run_wg_quick_up || return 1
+  interface_exists
+}
+
+managed_verify_profile_network() {
+  local wgmanaged_path="${1:?}" wgmanaged_endpoint="${2:?}"
+  local wgmanaged_verify_speed="${3:-0}"
+  [[ $# == 3 && ( "$wgmanaged_verify_speed" == 0 || "$wgmanaged_verify_speed" == 1 ) ]] ||
+    return 1
+  managed_verify_live_profile_identity "$wgmanaged_path" || return 1
+  verify_tunnel "$wgmanaged_endpoint" || return 1
+  [[ "$wgmanaged_verify_speed" == 0 ]] || verify_post_rotation_speed
+}
+
+managed_unlink_path() {
+  command rm -f -- "${1:?}"
+}
+
+managed_remove_candidate_durable() {
+  local transaction_candidate_class wgmanaged_parent="${WG_CONF%/*}"
+  managed_classify_candidate_profile transaction_candidate_class \
+    "$MANAGED_JOURNAL_CANDIDATE_SHA256" || return 1
+  case "$transaction_candidate_class" in
+    missing) return 0 ;;
+    present)
+      managed_verify_profile_binding "$MANAGED_CANDIDATE" \
+        "$MANAGED_JOURNAL_CANDIDATE_SHA256" "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" ||
+        return 1
+      managed_unlink_path "$MANAGED_CANDIDATE" || return 1
+      managed_sync_artifact_parent "$wgmanaged_parent"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_remove_pending_journal_durable() {
+  local wgmanaged_parent
+  if [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]]; then
+    return 0
+  fi
+  managed_journal_load || return 1
+  wgmanaged_parent="${ROTATION_PENDING%/*}"
+  managed_unlink_path "$ROTATION_PENDING" || return 1
+  managed_sync_journal_parent "$wgmanaged_parent"
+}
+
+managed_remove_safety_candidate_durable() {
+  local transaction_candidate_class wgmanaged_parent="${WG_CONF%/*}"
+  managed_classify_candidate_profile transaction_candidate_class \
+    "$MANAGED_SAFETY_CANDIDATE_SHA256" || return 1
+  case "$transaction_candidate_class" in
+    missing) return 0 ;;
+    present)
+      managed_verify_profile_binding "$MANAGED_CANDIDATE" \
+        "$MANAGED_SAFETY_CANDIDATE_SHA256" "$MANAGED_SAFETY_CANDIDATE_ENDPOINT" ||
+        return 1
+      managed_unlink_path "$MANAGED_CANDIDATE" || return 1
+      managed_sync_artifact_parent "$wgmanaged_parent"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_remove_safety_durable() {
+  local wgmanaged_parent="${MANAGED_SAFETY%/*}"
+  if [[ ! -e "$MANAGED_SAFETY" && ! -L "$MANAGED_SAFETY" ]]; then
+    return 0
+  fi
+  managed_safety_file_is_secure || return 1
+  managed_unlink_path "$MANAGED_SAFETY" || return 1
+  managed_sync_safety_parent "$wgmanaged_parent"
+}
+
+managed_journal_matches_safety() {
+  local wgmanaged_expected_qb
+  managed_journal_load || return 1
+  case "$MANAGED_SAFETY_QB_INTENT" in
+    running) wgmanaged_expected_qb=1 ;;
+    stopped|unmanaged) wgmanaged_expected_qb=0 ;;
+    *) return 1 ;;
+  esac
+  [[ "$MANAGED_JOURNAL_BACKUP_SHA256" == "$MANAGED_SAFETY_BACKUP_SHA256" &&
+     "$MANAGED_JOURNAL_CANDIDATE_SHA256" == "$MANAGED_SAFETY_CANDIDATE_SHA256" &&
+     "$MANAGED_JOURNAL_OLD_ENDPOINT" == "$MANAGED_SAFETY_OLD_ENDPOINT" &&
+     "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" == "$MANAGED_SAFETY_CANDIDATE_ENDPOINT" &&
+     "$MANAGED_JOURNAL_QB_WAS_RUNNING" == "$wgmanaged_expected_qb" ]] || return 1
+  _managed_journal_recovery_state_is_consistent
+}
+
+managed_contain_configured_qb() {
+  local qb_inspection qb_observed_id qb_observed_state
+  [[ -n "${QBITTORRENT_CONTAINER-}" ]] || return 0
+  validate_managed_container_name "$QBITTORRENT_CONTAINER" || return 1
+  MANAGED_QB_CHECKPOINT=contain-current
+  managed_docker_stop_name "$QBITTORRENT_CONTAINER" || return 1
+  managed_docker_inspect_name qb_inspection "$QBITTORRENT_CONTAINER" || return 1
+  managed_qb_parse_inspection qb_observed_id qb_observed_state "$qb_inspection" || return 1
+  [[ "$qb_observed_state" == stopped ]]
+}
+
+managed_rollback_failure() {
+  local wgmanaged_reason="${1:-managed_profile_rollback_failed}"
+  if managed_safety_memory_is_valid >/dev/null 2>&1; then
+    managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+  else
+    managed_contain_configured_qb >/dev/null 2>&1 || true
+  fi
+  write_status failed "$wgmanaged_reason" || true
+  log "Managed-profile rollback is incomplete; recovery state was retained"
+  return 1
+}
+
+managed_rollback_profile_transaction() {
+  local wgmanaged_cleanup_allowed="${1:-1}"
+  [[ $# -le 1 && ( "$wgmanaged_cleanup_allowed" == 0 || "$wgmanaged_cleanup_allowed" == 1 ) ]] ||
+    return 1
+  managed_transaction_context_is_safe || return 1
+  managed_safety_load_record || {
+    managed_rollback_failure invalid_managed_rotation_safety_or_permissions
+    return 1
+  }
+  [[ "$MANAGED_SAFETY_STATE" == pending ]] || {
+    managed_rollback_failure managed_rotation_not_pending
+    return 1
+  }
+  managed_qb_contain_recorded_and_current || {
+    managed_rollback_failure managed_rotation_qb_stop_failed
+    return 1
+  }
+  managed_safety_artifacts_are_valid || {
+    managed_rollback_failure managed_rotation_digest_or_artifact_mismatch
+    return 1
+  }
+  if [[ -e "$ROTATION_PENDING" || -L "$ROTATION_PENDING" ]]; then
+    managed_journal_matches_safety || {
+      managed_rollback_failure managed_rotation_digest_or_artifact_mismatch
+      return 1
+    }
+  fi
+  managed_verify_profile_binding "${WG_CONF}.bak-healthcheck" \
+    "$MANAGED_SAFETY_BACKUP_SHA256" "$MANAGED_SAFETY_OLD_ENDPOINT" || {
+    managed_rollback_failure managed_rotation_backup_revalidation_failed
+    return 1
+  }
+  managed_qb_containment_checkpoint rollback-before-down || {
+    managed_rollback_failure managed_rotation_qb_checkpoint_failed
+    return 1
+  }
+  managed_ensure_interface_down || {
+    managed_rollback_failure managed_rotation_candidate_down_failed
+    return 1
+  }
+  managed_qb_containment_checkpoint rollback-after-down || {
+    managed_rollback_failure managed_rotation_qb_checkpoint_failed
+    return 1
+  }
+  managed_verify_profile_binding "${WG_CONF}.bak-healthcheck" \
+    "$MANAGED_SAFETY_BACKUP_SHA256" "$MANAGED_SAFETY_OLD_ENDPOINT" || {
+    managed_rollback_failure managed_rotation_backup_revalidation_failed
+    return 1
+  }
+  managed_qb_containment_checkpoint rollback-before-install || {
+    managed_rollback_failure managed_rotation_qb_checkpoint_failed
+    return 1
+  }
+  managed_install_profile_atomically "${WG_CONF}.bak-healthcheck" "$WG_CONF" \
+    "$MANAGED_SAFETY_BACKUP_SHA256" "$MANAGED_SAFETY_OLD_ENDPOINT" || {
+    managed_rollback_failure managed_rotation_backup_restore_failed
+    return 1
+  }
+  managed_qb_containment_checkpoint rollback-after-install || {
+    managed_rollback_failure managed_rotation_qb_checkpoint_failed
+    return 1
+  }
+  managed_profiles_are_identical "${WG_CONF}.bak-healthcheck" "$WG_CONF" || {
+    managed_rollback_failure managed_rotation_backup_byte_comparison_failed
+    return 1
+  }
+  managed_qb_containment_checkpoint rollback-before-up || {
+    managed_rollback_failure managed_rotation_qb_checkpoint_failed
+    return 1
+  }
+  managed_ensure_interface_up || {
+    managed_rollback_failure managed_rotation_old_tunnel_start_failed
+    return 1
+  }
+  managed_qb_containment_checkpoint rollback-after-up || {
+    managed_rollback_failure managed_rotation_qb_checkpoint_failed
+    return 1
+  }
+  managed_qb_containment_checkpoint rollback-before-network || {
+    managed_rollback_failure managed_rotation_qb_checkpoint_failed
+    return 1
+  }
+  managed_verify_profile_network "$WG_CONF" "$MANAGED_SAFETY_OLD_ENDPOINT" 0 || {
+    managed_rollback_failure managed_rotation_old_network_verification_failed
+    return 1
+  }
+  managed_qb_containment_checkpoint rollback-after-network || {
+    managed_rollback_failure managed_rotation_qb_checkpoint_failed
+    return 1
+  }
+  managed_qb_containment_checkpoint rollback-pre-cleanup || {
+    managed_rollback_failure managed_rotation_qb_checkpoint_failed
+    return 1
+  }
+  if [[ "$wgmanaged_cleanup_allowed" == 0 ]]; then
+    managed_rollback_failure managed_rotation_exclusion_not_durable
+    return 1
+  fi
+  managed_verify_profile_binding "$WG_CONF" \
+    "$MANAGED_SAFETY_BACKUP_SHA256" "$MANAGED_SAFETY_OLD_ENDPOINT" || {
+    managed_rollback_failure managed_rotation_restored_profile_changed
+    return 1
+  }
+  managed_profiles_are_identical "${WG_CONF}.bak-healthcheck" "$WG_CONF" || {
+    managed_rollback_failure managed_rotation_restored_bytes_changed
+    return 1
+  }
+  managed_remove_safety_candidate_durable || {
+    managed_rollback_failure managed_rotation_candidate_cleanup_failed
+    return 1
+  }
+  managed_remove_pending_journal_durable || {
+    managed_rollback_failure managed_rotation_marker_cleanup_failed
+    return 1
+  }
+  managed_qb_containment_checkpoint rollback-post-cleanup || {
+    managed_rollback_failure managed_rotation_qb_checkpoint_failed
+    return 1
+  }
+  managed_verify_profile_binding "$WG_CONF" \
+    "$MANAGED_SAFETY_BACKUP_SHA256" "$MANAGED_SAFETY_OLD_ENDPOINT" || {
+    managed_rollback_failure managed_rotation_restored_profile_changed
+    return 1
+  }
+  managed_verify_profile_network "$WG_CONF" "$MANAGED_SAFETY_OLD_ENDPOINT" 0 || {
+    managed_rollback_failure managed_rotation_old_network_verification_failed
+    return 1
+  }
+  managed_qb_restore_recorded_intent || {
+    managed_rollback_failure managed_rotation_qb_restore_or_binding_failed
+    return 1
+  }
+  # Bookkeeping is deliberately outside the rollback commit boundary. Re-prove every
+  # postcondition after it so no arbitrary status I/O sits between proof and safety unlink.
+  write_status recovered managed_profile_rollback_verified || true
+  managed_verify_profile_binding "$WG_CONF" \
+    "$MANAGED_SAFETY_BACKUP_SHA256" "$MANAGED_SAFETY_OLD_ENDPOINT" || {
+    managed_rollback_failure managed_rotation_restored_profile_changed
+    return 1
+  }
+  managed_verify_profile_network "$WG_CONF" "$MANAGED_SAFETY_OLD_ENDPOINT" 0 || {
+    managed_rollback_failure managed_rotation_old_network_verification_failed
+    return 1
+  }
+  managed_qb_verify_recorded_intent rollback-final-proof || {
+    managed_rollback_failure managed_rotation_qb_restore_or_binding_failed
+    return 1
+  }
+  managed_remove_safety_durable || {
+    managed_rollback_failure managed_rotation_safety_cleanup_failed
+    return 1
+  }
+  RECONCILED_PENDING=1
+  log "Managed-profile rollback verified at $MANAGED_SAFETY_OLD_ENDPOINT"
+}
+
+managed_preexclude_candidate() {
+  local wgmanaged_server="${1:?}" wgmanaged_now
+  wgmanaged_now="$(current_epoch)" || return 1
+  managed_epoch_is_valid "$wgmanaged_now" || return 1
+  managed_api_state_add_exclusion "$wgmanaged_server" "$wgmanaged_now" || return 1
+  managed_api_state_write
+}
+
+managed_refresh_exclusion_and_rollback() {
+  local wgmanaged_server="${1:?}" wgmanaged_now wgmanaged_durable=1
+  wgmanaged_now="$(current_epoch)" || wgmanaged_durable=0
+  if (( wgmanaged_durable == 1 )); then
+    managed_epoch_is_valid "$wgmanaged_now" || wgmanaged_durable=0
+  fi
+  if (( wgmanaged_durable == 1 )); then
+    managed_api_state_add_exclusion "$wgmanaged_server" "$wgmanaged_now" ||
+      wgmanaged_durable=0
+  fi
+  if (( wgmanaged_durable == 1 )); then
+    managed_api_state_write || wgmanaged_durable=0
+  fi
+  managed_rollback_profile_transaction "$wgmanaged_durable" || true
+  return 1
+}
+
+managed_abort_profile_transaction() {
+  local wgmanaged_candidate_failure="${1:?}" wgmanaged_server="${2-}"
+  [[ $# == 2 ]] || return 1
+  if [[ "$wgmanaged_candidate_failure" == 1 && -n "$wgmanaged_server" ]]; then
+    managed_refresh_exclusion_and_rollback "$wgmanaged_server"
+  else
+    managed_rollback_profile_transaction 1 || true
+    return 1
+  fi
+}
+
+managed_postcommit_bookkeeping() {
+  local wgmanaged_server="${1-}" wgmanaged_now
+  [[ $# -le 1 ]] || return 1
+  write_status recovered managed_profile_rotation_verified ||
+    log "Committed candidate success status could not be updated"
+  write_stamp "$ROTATE_STAMP" ||
+    log "Committed candidate rotation cooldown could not be updated"
+  if [[ -n "$wgmanaged_server" ]]; then
+    if ! managed_server_name_is_valid "$wgmanaged_server"; then
+      return 1
+    fi
+    wgmanaged_now="$(current_epoch)" || wgmanaged_now=''
+    if [[ -n "$wgmanaged_now" ]] && managed_epoch_is_valid "$wgmanaged_now"; then
+      managed_api_state_remove_exclusion "$wgmanaged_server" "$wgmanaged_now" ||
+        log "Committed candidate remains conservatively excluded until expiry"
+    else
+      log "Committed candidate remains conservatively excluded until expiry"
+    fi
+  fi
+}
+
+managed_qb_ensure_recorded_intent() {
+  local qb_inspection qb_observed_id qb_observed_state
+  # Consumed dynamically by the Docker inspection/containment seams.
+  # shellcheck disable=SC2034
+  MANAGED_QB_CHECKPOINT=finalizing
+  case "${MANAGED_SAFETY_QB_INTENT-}" in
+    unmanaged|stopped)
+      managed_qb_verify_recorded_intent finalizing
+      ;;
+    running)
+      managed_qb_current_tuple_matches_record || {
+        managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+        return 1
+      }
+      managed_docker_inspect_name qb_inspection "$MANAGED_SAFETY_QB_CONTAINER" || {
+        managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+        return 1
+      }
+      managed_qb_parse_inspection qb_observed_id qb_observed_state "$qb_inspection" || {
+        managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+        return 1
+      }
+      [[ "$qb_observed_id" == "$MANAGED_SAFETY_QB_CONTAINER_ID" ]] || {
+        managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+        return 1
+      }
+      case "$qb_observed_state" in
+        running) managed_qb_verify_recorded_intent finalizing ;;
+        stopped)
+          managed_qb_restore_recorded_intent &&
+            managed_qb_verify_recorded_intent finalizing
+          ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_finalize_committed_transaction() {
+  local wgmanaged_server="${1-}"
+  [[ $# -le 1 ]] || return 1
+  managed_transaction_context_is_safe || return 1
+  managed_safety_load || return 1
+  case "$MANAGED_SAFETY_STATE" in committed|finalizing) ;; *) return 1 ;; esac
+  [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]] || {
+    managed_rollback_failure managed_rotation_impossible_committed_marker
+    return 1
+  }
+  managed_verify_profile_network "$WG_CONF" "$MANAGED_SAFETY_CANDIDATE_ENDPOINT" 0 || {
+    managed_rollback_failure managed_rotation_committed_network_failed
+    return 1
+  }
+  managed_qb_ensure_recorded_intent || {
+    managed_rollback_failure managed_rotation_committed_qb_failed
+    return 1
+  }
+  if [[ "$MANAGED_SAFETY_STATE" == committed ]]; then
+    managed_postcommit_bookkeeping "$wgmanaged_server" || true
+    if ! managed_safety_transition finalizing; then
+      if ! managed_safety_load; then
+        managed_rollback_failure managed_rotation_finalizing_state_invalid
+        return 1
+      fi
+      [[ "$MANAGED_SAFETY_STATE" == finalizing ]] || {
+        log "Committed candidate remains owned for a later finalization retry"
+        return 1
+      }
+    fi
+  fi
+  managed_verify_profile_binding "$WG_CONF" \
+    "$MANAGED_SAFETY_CANDIDATE_SHA256" "$MANAGED_SAFETY_CANDIDATE_ENDPOINT" || {
+    managed_rollback_failure managed_rotation_final_candidate_changed
+    return 1
+  }
+  managed_verify_profile_network "$WG_CONF" "$MANAGED_SAFETY_CANDIDATE_ENDPOINT" 0 || {
+    managed_rollback_failure managed_rotation_final_network_failed
+    return 1
+  }
+  managed_qb_verify_recorded_intent finalizing || {
+    managed_rollback_failure managed_rotation_final_qb_failed
+    return 1
+  }
+  managed_remove_safety_durable || {
+    log "Committed candidate remains safe but final safety cleanup is incomplete"
+    return 1
+  }
+  RECONCILED_PENDING=1
+}
+
+managed_resolve_commit_transition_error() {
+  local wgmanaged_visible_state
+  if ! managed_safety_load_record; then
+    managed_contain_configured_qb >/dev/null 2>&1 || true
+    write_status failed managed_rotation_commit_state_invalid || true
+    return 1
+  fi
+  wgmanaged_visible_state="$MANAGED_SAFETY_STATE"
+  case "$wgmanaged_visible_state" in
+    pending)
+      managed_reconcile_pending >/dev/null 2>&1 || true
+      return 1
+      ;;
+    committed|finalizing)
+      managed_reconcile_pending
+      ;;
+    *)
+      managed_qb_contain_recorded_and_current >/dev/null 2>&1 || true
+      return 1
+      ;;
+  esac
+}
+
+managed_profile_transaction() {
+  local wgmanaged_server="${1-}" wgmanaged_verify_speed="${2-}"
+  local transaction_qb_was_running transaction_candidate_digest
+  local transaction_candidate_endpoint
+  [[ $# == 2 ]] || return 1
+  [[ -z "$wgmanaged_server" ]] || managed_server_name_is_valid "$wgmanaged_server" || return 1
+  [[ "$wgmanaged_verify_speed" == 0 || "$wgmanaged_verify_speed" == 1 ]] || return 1
+  managed_transaction_context_is_safe || return 1
+  managed_sha256_file transaction_candidate_digest "$MANAGED_CANDIDATE" || return 1
+  transaction_candidate_endpoint="$(configured_endpoint "$MANAGED_CANDIDATE")" || return 1
+  managed_verify_profile_binding "$MANAGED_CANDIDATE" "$transaction_candidate_digest" \
+    "$transaction_candidate_endpoint" || return 1
+  managed_profiles_have_same_private_identity "$WG_CONF" || return 1
+  managed_qb_snapshot || return 1
+  managed_prepare_profile_backup || return 1
+  managed_profiles_have_same_private_identity "${WG_CONF}.bak-healthcheck" || return 1
+  if [[ -n "$wgmanaged_server" ]]; then
+    managed_preexclude_candidate "$wgmanaged_server" || return 1
+  fi
+  if ! managed_safety_prepare; then
+    if [[ -e "$MANAGED_SAFETY" || -L "$MANAGED_SAFETY" ]]; then
+      managed_reconcile_pending >/dev/null 2>&1 || true
+    fi
+    return 1
+  fi
+  case "$MANAGED_SAFETY_QB_INTENT" in
+    running) transaction_qb_was_running=1 ;;
+    stopped|unmanaged) transaction_qb_was_running=0 ;;
+    *) managed_abort_profile_transaction 0 "$wgmanaged_server"; return 1 ;;
+  esac
+  if ! managed_journal_prepare "$transaction_qb_was_running"; then
+    managed_reconcile_pending >/dev/null 2>&1 || true
+    return 1
+  fi
+  managed_journal_matches_safety || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  if [[ "$MANAGED_SAFETY_QB_INTENT" == running ]]; then
+    managed_docker_stop_id "$MANAGED_SAFETY_QB_CONTAINER_ID" || {
+      managed_abort_profile_transaction 0 "$wgmanaged_server"
+      return 1
+    }
+  fi
+  managed_qb_containment_checkpoint after-stop || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_journal_transition client-stopped || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_verify_profile_binding "$WG_CONF" "$MANAGED_JOURNAL_BACKUP_SHA256" \
+    "$MANAGED_JOURNAL_OLD_ENDPOINT" || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_qb_containment_checkpoint before-down || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_ensure_interface_down || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_qb_containment_checkpoint after-down || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_journal_transition tunnel-down || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_qb_containment_checkpoint before-install || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_verify_profile_binding "$MANAGED_CANDIDATE" \
+    "$MANAGED_JOURNAL_CANDIDATE_SHA256" "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_install_profile_atomically "$MANAGED_CANDIDATE" "$WG_CONF" \
+    "$MANAGED_JOURNAL_CANDIDATE_SHA256" "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_qb_containment_checkpoint after-install || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_journal_transition candidate-installed || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_qb_containment_checkpoint before-up || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_ensure_interface_up || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_qb_containment_checkpoint after-up || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_journal_transition candidate-up || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_qb_containment_checkpoint before-network || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_verify_profile_network "$WG_CONF" "$MANAGED_JOURNAL_CANDIDATE_ENDPOINT" \
+    "$wgmanaged_verify_speed" || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_qb_containment_checkpoint after-network || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_qb_restore_recorded_intent || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_journal_transition verified || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_verify_profile_binding "$WG_CONF" "$MANAGED_SAFETY_CANDIDATE_SHA256" \
+    "$MANAGED_SAFETY_CANDIDATE_ENDPOINT" || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_verify_profile_network "$WG_CONF" "$MANAGED_SAFETY_CANDIDATE_ENDPOINT" 0 || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_qb_verify_recorded_intent pre-cleanup || {
+    managed_abort_profile_transaction 1 "$wgmanaged_server"
+    return 1
+  }
+  managed_remove_safety_candidate_durable || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_remove_pending_journal_durable || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_verify_profile_binding "$WG_CONF" "$MANAGED_SAFETY_CANDIDATE_SHA256" \
+    "$MANAGED_SAFETY_CANDIDATE_ENDPOINT" || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_verify_profile_network "$WG_CONF" "$MANAGED_SAFETY_CANDIDATE_ENDPOINT" 0 || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  managed_qb_verify_recorded_intent post-cleanup || {
+    managed_abort_profile_transaction 0 "$wgmanaged_server"
+    return 1
+  }
+  if ! managed_safety_transition committed; then
+    managed_resolve_commit_transition_error
+    return
+  fi
+  managed_finalize_committed_transaction "$wgmanaged_server"
+}
+
+managed_reconcile_pending() {
+  # Sourced runtime consumes this reconciliation signal after managed dispatch returns.
+  # shellcheck disable=SC2034
+  RECONCILED_PENDING=0
+  managed_transaction_context_is_safe || return 1
+  if [[ ! -e "$MANAGED_SAFETY" && ! -L "$MANAGED_SAFETY" ]]; then
+    if [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]]; then
+      return 0
+    fi
+    managed_contain_configured_qb >/dev/null 2>&1 || true
+    write_status failed orphan_managed_rotation_journal || true
+    return 1
+  fi
+  if ! managed_safety_load_record; then
+    managed_contain_configured_qb >/dev/null 2>&1 || true
+    write_status failed invalid_managed_rotation_safety_or_permissions || true
+    return 1
+  fi
+  if ! managed_qb_contain_recorded_and_current; then
+    managed_rollback_failure managed_rotation_qb_stop_failed
+    return 1
+  fi
+  if [[ "$MANAGED_SAFETY_STATE" == pending ]] &&
+      ! managed_safety_rebarrier_pending; then
+    write_status failed managed_rotation_pending_safety_not_durable || true
+    return 1
+  fi
+  if ! managed_safety_artifacts_are_valid; then
+    managed_rollback_failure managed_rotation_digest_or_artifact_mismatch
+    return 1
+  fi
+  case "$MANAGED_SAFETY_STATE" in
+    pending)
+      if [[ -e "$ROTATION_PENDING" || -L "$ROTATION_PENDING" ]]; then
+        managed_journal_matches_safety || {
+          managed_rollback_failure managed_rotation_digest_or_artifact_mismatch
+          return 1
+        }
+      fi
+      managed_rollback_profile_transaction 1
+      ;;
+    committed|finalizing)
+      if [[ -e "$ROTATION_PENDING" || -L "$ROTATION_PENDING" ]]; then
+        managed_rollback_failure managed_rotation_impossible_committed_marker
+        return 1
+      fi
+      managed_finalize_committed_transaction
+      ;;
+    *)
+      managed_rollback_failure invalid_managed_rotation_safety_or_permissions
+      return 1
+      ;;
+  esac
+}
+
+managed_noclobber_paths_are_fixed() {
+  local source="${1:?}" destination="${2:?}"
+  [[ "$source" == "$MANAGED_CANDIDATE" && "$destination" == "$WG_CONF" ]] && return 0
+  [[ "$source" == "$WG_CONF" && "$destination" == "$PRE_MANAGED_CONF" ]] && return 0
+  [[ "$source" == "$PRE_MANAGED_CONF" && "$destination" == "$MANAGED_CANDIDATE" ]]
+}
+
+managed_install_profile_noclobber() {
+  local source="${1:?}" destination="${2:?}" expected_digest="${3:?}"
+  local expected_endpoint="${4:?}" parent base temporary metadata
+  [[ $# == 4 ]] || return 1
+  managed_transaction_context_is_safe || return 1
+  managed_noclobber_paths_are_fixed "$source" "$destination" || return 1
+  managed_journal_parent_is_secure || return 1
+  parent="${WG_CONF%/*}"
+  [[ "${source%/*}" == "$parent" && "${destination%/*}" == "$parent" ]] || return 1
+  [[ ! -e "$destination" && ! -L "$destination" ]] || return 1
+  managed_verify_profile_binding "$source" "$expected_digest" "$expected_endpoint" || return 1
+  base="${destination##*/}"
+  umask 077
+  temporary="$(mktemp "$parent/.${base}.profile.XXXXXX")" || return 1
+  if ! chmod 600 -- "$temporary" ||
+      ! { (( EUID != 0 )) || chown 0:0 -- "$temporary"; } ||
+      ! managed_copy_profile_bytes "$source" "$temporary" ||
+      ! chmod 600 -- "$temporary" ||
+      ! { (( EUID != 0 )) || chown 0:0 -- "$temporary"; }; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  metadata="$(owner_mode "$temporary")" || {
+    rm -f -- "$temporary"
+    return 1
+  }
+  if [[ "$metadata" != 0:600 ]] ||
+      ! managed_verify_profile_binding "$temporary" "$expected_digest" "$expected_endpoint" ||
+      ! managed_sync_file "$temporary" ||
+      ! managed_profile_move_noclobber "$temporary" "$destination" ||
+      [[ -e "$temporary" || -L "$temporary" ]]; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  if ! managed_verify_profile_binding "$destination" "$expected_digest" "$expected_endpoint" ||
+      ! managed_profiles_are_identical "$source" "$destination" ||
+      ! managed_sync_file "$destination" ||
+      ! managed_sync_artifact_parent "$parent" ||
+      ! managed_verify_profile_binding "$destination" "$expected_digest" "$expected_endpoint" ||
+      ! managed_profiles_are_identical "$source" "$destination"; then
+    return 1
+  fi
+}
+
+managed_remove_generated_candidate() {
+  local parent="${WG_CONF%/*}" metadata size
+  managed_journal_paths_are_fixed || return 1
+  if [[ ! -e "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]]; then return 0; fi
+  [[ -f "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]] || return 1
+  metadata="$(owner_mode "$MANAGED_CANDIDATE")" || return 1
+  [[ "$metadata" == 0:600 ]] || return 1
+  size="$(managed_file_size "$MANAGED_CANDIDATE")" || return 1
+  managed_uint_is_canonical "$size" 65536 || return 1
+  managed_unlink_path "$MANAGED_CANDIDATE" || return 1
+  managed_sync_artifact_parent "$parent"
+}
+
+managed_orphan_candidate_is_safe() {
+  local metadata size
+  managed_journal_paths_are_fixed || return 1
+  managed_journal_parent_is_secure || return 1
+  [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" &&
+     ! -e "$MANAGED_SAFETY" && ! -L "$MANAGED_SAFETY" ]] || return 1
+  [[ -f "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]] || return 1
+  metadata="$(owner_mode "$MANAGED_CANDIDATE")" || return 1
+  [[ "$metadata" == 0:600 ]] || return 1
+  size="$(managed_file_size "$MANAGED_CANDIDATE")" || return 1
+  managed_uint_is_canonical "$size" 65536
+}
+
+managed_cleanup_orphan_candidate() {
+  if [[ ! -e "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]]; then return 0; fi
+  managed_orphan_candidate_is_safe || return 1
+  managed_unlink_path "$MANAGED_CANDIDATE" || return 1
+  managed_sync_artifact_parent "${WG_CONF%/*}"
+}
+
+managed_command_cleanup_candidate() {
+  local action="${1:-}"
+  [[ "$action" == apply ]] || return 1
+  [[ "${SETUP_LEASE_ADOPTED:-0}" == 1 && "${GUARD_LOCKED:-0}" == 1 &&
+     "${CONTEXT_LOCKED:-0}" == 1 ]] || return 1
+  managed_cleanup_orphan_candidate || return 1
+  [[ ! -e "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]]
+}
+
+managed_create_pre_managed_snapshot() {
+  local digest endpoint
+  managed_journal_paths_are_fixed || return 1
+  managed_journal_parent_is_secure || return 1
+  managed_profile_file_is_secure "$WG_CONF" || return 1
+  if [[ -e "$PRE_MANAGED_CONF" || -L "$PRE_MANAGED_CONF" ]]; then
+    managed_profile_file_is_secure "$PRE_MANAGED_CONF" || return 1
+    managed_profiles_are_identical "$WG_CONF" "$PRE_MANAGED_CONF" || return 1
+    managed_sync_file "$PRE_MANAGED_CONF" || return 1
+    managed_sync_artifact_parent "${PRE_MANAGED_CONF%/*}" || return 1
+    managed_journal_parent_is_secure || return 1
+    managed_profile_file_is_secure "$PRE_MANAGED_CONF" || return 1
+    managed_profiles_are_identical "$WG_CONF" "$PRE_MANAGED_CONF"
+    return
+  fi
+  managed_sha256_file digest "$WG_CONF" || return 1
+  endpoint="$(configured_endpoint "$WG_CONF")" || return 1
+  managed_install_profile_noclobber "$WG_CONF" "$PRE_MANAGED_CONF" "$digest" "$endpoint" ||
+    return 1
+  managed_profiles_are_identical "$WG_CONF" "$PRE_MANAGED_CONF"
+}
+
+managed_pre_managed_identity_matches() {
+  managed_journal_paths_are_fixed || return 1
+  [[ "$PRE_MANAGED_CONF" == "${WG_CONF}.pre-managed" ]] || return 1
+  _managed_profiles_have_same_private_identity_pair "$WG_CONF" "$PRE_MANAGED_CONF"
+}
+
+managed_stage_pre_managed_candidate() {
+  local digest endpoint
+  managed_profile_file_is_secure "$PRE_MANAGED_CONF" || return 1
+  [[ ! -e "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]] || return 1
+  managed_sha256_file digest "$PRE_MANAGED_CONF" || return 1
+  endpoint="$(configured_endpoint "$PRE_MANAGED_CONF")" || return 1
+  managed_install_profile_noclobber "$PRE_MANAGED_CONF" "$MANAGED_CANDIDATE" \
+    "$digest" "$endpoint"
+}
+
+managed_rewrite_profile_source() {
+  local new_source="${1:?}" parent base temporary metadata
+  [[ "$new_source" == static || "$new_source" == api ]] || return 1
+  validate_secure_parent_directory "$CFG" "health-check configuration directory" 700 ||
+    return 1
+  managed_profile_file_is_secure "$CFG" || return 1
+  parent="${CFG%/*}"; base="${CFG##*/}"
+  umask 077
+  temporary="$(mktemp "$parent/.${base}.rewrite.XXXXXX")" || return 1
+  if ! command awk -v source="$new_source" '
+      BEGIN { found=0 }
+      /^[[:space:]]*AIRVPN_PROFILE_SOURCE[[:space:]]*=/ {
+        found++
+        if (found > 1) exit 2
+        print "AIRVPN_PROFILE_SOURCE=" source
+        next
+      }
+      { print }
+      END { if (found == 0) print "AIRVPN_PROFILE_SOURCE=" source }
+    ' "$CFG" > "$temporary" ||
+      ! chmod 600 -- "$temporary" ||
+      ! { (( EUID != 0 )) || chown 0:0 -- "$temporary"; }; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  metadata="$(owner_mode "$temporary")" || {
+    rm -f -- "$temporary"
+    return 1
+  }
+  if [[ "$metadata" != 0:600 ]] ||
+      ! managed_sync_file "$temporary" ||
+      ! validate_secure_parent_directory "$CFG" \
+          "health-check configuration directory" 700 ||
+      ! command mv -fT -- "$temporary" "$CFG"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  managed_profile_file_is_secure "$CFG" || return 1
+  managed_sync_file "$CFG" || return 1
+  managed_sync_directory "$parent" || return 1
+  validate_secure_parent_directory "$CFG" "health-check configuration directory" 700 ||
+    return 1
+  managed_profile_file_is_secure "$CFG"
+}
+
+managed_open_candidate_exclusive() {
+  local output_variable="${1:?}" opened_candidate_fd had_noclobber=0 metadata
+  managed_output_variable_is_valid "$output_variable" || return 1
+  managed_journal_paths_are_fixed || return 1
+  managed_journal_parent_is_secure || return 1
+  [[ ! -e "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]] || return 1
+  [[ -o noclobber ]] && had_noclobber=1
+  umask 077
+  set -o noclobber
+  if ! exec {opened_candidate_fd}>"$MANAGED_CANDIDATE"; then
+    (( had_noclobber )) || set +o noclobber
+    return 1
+  fi
+  (( had_noclobber )) || set +o noclobber
+  if ! chmod 600 -- "$MANAGED_CANDIDATE" ||
+      ! { (( EUID != 0 )) || chown 0:0 -- "$MANAGED_CANDIDATE"; }; then
+    exec {opened_candidate_fd}>&-
+    rm -f -- "$MANAGED_CANDIDATE"
+    return 1
+  fi
+  metadata="$(owner_mode "$MANAGED_CANDIDATE")" || {
+    exec {opened_candidate_fd}>&-
+    rm -f -- "$MANAGED_CANDIDATE"
+    return 1
+  }
+  [[ "$metadata" == 0:600 ]] || {
+    exec {opened_candidate_fd}>&-
+    rm -f -- "$MANAGED_CANDIDATE"
+    return 1
+  }
+  printf -v "$output_variable" '%s' "$opened_candidate_fd"
+}
+
+managed_invoke_generator_closed() {
+  local original_fd="${1:?}" key_fd="${2:?}" output_fd="${3:?}" pin="${4:?}"
+  local -a pin_args=()
+  close_private_fd "$original_fd" || return 1
+  exec 3<&"$key_fd" 4>&"$output_fd" || return 1
+  if [[ "$pin" == 1 ]]; then exec 5<"$WG_CONF" || return 1; else exec 5<&-; fi
+  exec {key_fd}<&- {output_fd}>&-
+  [[ "$pin" == 1 ]] && pin_args=(--pin-identity)
+  env -i PATH="$PATH" LC_ALL=C "$AIRVPN_API_HELPER" generate-profile \
+    --server "$MANAGED_PROFILE_SERVER" \
+    --device "$AIRVPN_DEVICE" \
+    --expected-endpoint "$MANAGED_PROFILE_ENDPOINT" \
+    --timeout "$AIRVPN_API_TIMEOUT" \
+    "${pin_args[@]}"
+}
+
+managed_prepare_candidate_preflight() {
+  local now="${1:?}" selection current_endpoint='' staged_fd
+  [[ $# == 1 ]] || return 1
+  managed_epoch_is_valid "$now" || return 1
+  validate_secure_executable "$AIRVPN_API_HELPER" || return 1
+  case "${MANAGED_PROFILE_OPERATION-}" in
+    provision|adopt) ;;
+    rotate) current_endpoint="$(configured_endpoint "$WG_CONF")" || return 1 ;;
+    *) return 1 ;;
+  esac
+  managed_open_candidate_exclusive staged_fd || return 1
+  exec {staged_fd}>&-
+  if ! managed_select_airvpn_candidate selection "$now" '' "$current_endpoint" ||
+      ! parse_candidate "$selection"; then
+    managed_record_preflight_backoff "$now" || return 1
+    return 1
+  fi
+  MANAGED_PROFILE_SERVER="$CANDIDATE_NAME"
+  MANAGED_PROFILE_ENDPOINT="$CANDIDATE_ENDPOINT"
+  MANAGED_API_PROVIDER_FAILED_SERVER="$CANDIDATE_NAME"
+  if [[ "$MANAGED_PROFILE_OPERATION" == provision ]]; then
+    MANAGED_PROFILE_PIN=0
+  else
+    MANAGED_PROFILE_PIN=1
+  fi
+}
+
+managed_record_preflight_backoff() {
+  local now="${1:?}"
+  managed_epoch_is_valid "$now" || return 1
+  MANAGED_API_STATE_NOW="$now"
+  MANAGED_API_OBSERVED_AT="$now"
+  MANAGED_API_FAILURE_CLASS=transient
+  MANAGED_API_BACKOFF_UNTIL=$((10#$now + 300))
+  managed_api_state_write
+}
+
+managed_preflight_candidate_cleanup() {
+  managed_remove_generated_candidate
+}
+
+managed_validate_generator_paths_closed() {
+  local metadata size
+  validate_secure_executable "$AIRVPN_API_HELPER" || return 1
+  [[ -f "$MANAGED_CANDIDATE" && ! -L "$MANAGED_CANDIDATE" ]] || return 1
+  metadata="$(owner_mode "$MANAGED_CANDIDATE")" || return 1
+  size="$(managed_file_size "$MANAGED_CANDIDATE")" || return 1
+  [[ "$metadata" == 0:600 && "$size" == 0 ]]
+}
+
+managed_validate_open_candidate_closed() {
+  local candidate_fd="${1:?}" fd_identity path_identity metadata size
+  [[ ! -L "$MANAGED_CANDIDATE" && -f "$MANAGED_CANDIDATE" ]] || return 1
+  fd_identity="$(managed_candidate_fd_identity "$candidate_fd")" || return 1
+  path_identity="$(stat -Lc '%d:%i' -- "$MANAGED_CANDIDATE" 2>/dev/null)" || return 1
+  metadata="$(owner_mode "$MANAGED_CANDIDATE")" || return 1
+  size="$(managed_file_size "$MANAGED_CANDIDATE")" || return 1
+  [[ "$fd_identity" == "$path_identity" && "$metadata" == 0:600 && "$size" == 0 ]]
+}
+
+managed_finalize_generated_candidate_closed() {
+  managed_profile_file_is_secure "$MANAGED_CANDIDATE" || return 1
+  managed_sync_file "$MANAGED_CANDIDATE" || return 1
+  managed_sync_artifact_parent "${WG_CONF%/*}"
+}
+
+managed_duplicate_credential_fd() {
+  local output_variable="${1:?}" source_fd="${2:?}" duplicated_fd
+  managed_output_variable_is_valid "$output_variable" || return 1
+  validate_credential_fd_number "$source_fd" || return 1
+  exec {duplicated_fd}<&"$source_fd" || return 1
+  printf -v "$output_variable" '%s' "$duplicated_fd"
+}
+
+managed_secure_sha256_stream() {
+  local executable
+  executable="$(type -P sha256sum)" || return 1
+  validate_secure_executable "$executable" || return 1
+  "$executable"
+}
+
+managed_print_text() { printf '%s' "${1-}"; }
+
+managed_secure_sha256_stream_closed() {
+  local first_fd="${1:?}" second_fd="${2-}" third_fd="${3-}" private_fd
+  (( $# >= 1 && $# <= 3 )) || return 1
+  validate_credential_fd_number "$first_fd" || return 1
+  [[ -z "$second_fd" ]] || validate_credential_fd_number "$second_fd" || return 1
+  [[ -z "$third_fd" ]] || validate_credential_fd_number "$third_fd" || return 1
+  [[ -z "$second_fd" || "$first_fd" != "$second_fd" ]] || return 1
+  [[ -z "$third_fd" || ( "$first_fd" != "$third_fd" && "$second_fd" != "$third_fd" ) ]] ||
+    return 1
+  for private_fd in "$first_fd" "$second_fd" "$third_fd"; do
+    [[ -z "$private_fd" ]] || close_private_fd "$private_fd" || return 1
+  done
+  managed_secure_sha256_stream
+}
+
+managed_print_text_closed() {
+  local private_fd="${1:?}" value="${2-}"
+  close_private_fd "$private_fd" || return 1
+  managed_print_text "$value"
+}
+
+managed_sha256_text() {
+  local output_variable="${1:?}" value="${2-}" private_fd="${3:?}" result digest
+  managed_output_variable_is_valid "$output_variable" || return 1
+  validate_credential_fd_number "$private_fd" || return 1
+  result="$(
+    managed_print_text_closed "$private_fd" "$value" |
+      managed_secure_sha256_stream_closed "$private_fd"
+  )" || return 1
+  [[ "$result" =~ ^[0-9a-f]{64}\ \ -$ ]] || return 1
+  digest="${result%% *}"
+  managed_sha256_is_valid "$digest" || return 1
+  printf -v "$output_variable" '%s' "$digest"
+}
+
+managed_capture_generator_digest() {
+  local digest_variable="${1:?}" rc_variable="${2:?}" credential_fd="${3:?}"
+  local key_fd="${4:?}" candidate_fd="${5:?}" pin="${6:?}"
+  local capture digest_line status_line provider_status hasher_status digest
+  local -a statuses=()
+  [[ $# == 6 && "$digest_variable" != "$rc_variable" ]] || return 1
+  managed_output_variable_is_valid "$digest_variable" || return 1
+  managed_output_variable_is_valid "$rc_variable" || return 1
+  capture="$(
+    set +e
+    managed_invoke_generator_closed "$credential_fd" "$key_fd" "$candidate_fd" \
+      "$pin" 2>/dev/null |
+      managed_secure_sha256_stream_closed "$credential_fd" "$key_fd" "$candidate_fd"
+    statuses=("${PIPESTATUS[@]}")
+    printf 'provider=%s\thasher=%s\n' "${statuses[0]}" "${statuses[1]}"
+  )" || return 1
+  [[ "$capture" == *$'\n'* ]] || return 1
+  digest_line="${capture%%$'\n'*}"
+  status_line="${capture#*$'\n'}"
+  [[ "$status_line" != *$'\n'* && "$status_line" == provider=*$'\t'hasher=* ]] || return 1
+  provider_status="${status_line#provider=}"
+  provider_status="${provider_status%%$'\t'*}"
+  hasher_status="${status_line##*$'\t'hasher=}"
+  [[ "$status_line" == "provider=$provider_status"$'\t'"hasher=$hasher_status" ]] || return 1
+  managed_uint_is_canonical "$provider_status" 255 || return 1
+  [[ "$hasher_status" == 0 && "$digest_line" =~ ^[0-9a-f]{64}\ \ -$ ]] || return 1
+  digest="${digest_line%% *}"
+  managed_sha256_is_valid "$digest" || return 1
+  printf -v "$digest_variable" '%s' "$digest"
+  printf -v "$rc_variable" '%s' "$provider_status"
+}
+
+managed_classify_generator_failure() {
+  local credential_fd="${1:?}" provider_rc="${2:?}" manifest_digest="${3-}"
+  local expected_digest failure_phase='' failure_reason=''
+  managed_call_without_private_fd "$credential_fd" \
+    managed_remove_generated_candidate >/dev/null 2>&1 || true
+  case "$provider_rc" in
+    4) MANAGED_API_PROVIDER_FAILURE_CLASS=auth; return 4 ;;
+    5) return 5 ;;
+    7) MANAGED_API_PROVIDER_FAILURE_CLASS=device; return 7 ;;
+    6)
+      for failure_phase in transport profile internal; do
+        managed_sha256_text expected_digest \
+          $'failure\ttransient\tphase='"$failure_phase"$'\n' "$credential_fd" || {
+          failure_phase=''
+          break
+        }
+        [[ "$manifest_digest" == "$expected_digest" ]] && break
+        failure_phase=''
+      done
+      if [[ -z "$failure_phase" ]]; then
+        managed_sha256_text expected_digest \
+          $'failure\ttransient\tphase=response\n' "$credential_fd" || expected_digest=''
+        [[ -n "$expected_digest" && "$manifest_digest" == "$expected_digest" ]] &&
+          failure_phase=response
+      fi
+      if [[ -z "$failure_phase" ]]; then
+        for failure_reason in \
+          status encoding media_missing media_multiple media_invalid media_type \
+          media_parameter read size json protocol; do
+          managed_sha256_text expected_digest \
+            $'failure\ttransient\tphase=response\treason='"$failure_reason"$'\n' \
+            "$credential_fd" || {
+            failure_reason=''
+            break
+          }
+          if [[ "$manifest_digest" == "$expected_digest" ]]; then
+            failure_phase=response
+            break
+          fi
+          failure_reason=''
+        done
+      fi
+      MANAGED_API_PROVIDER_FAILURE_PHASE="$failure_phase"
+      MANAGED_API_PROVIDER_FAILURE_REASON="$failure_reason"
+      MANAGED_API_PROVIDER_FAILED_SERVER="$MANAGED_PROFILE_SERVER"
+      ;;
+    *) MANAGED_API_PROVIDER_FAILED_SERVER="$MANAGED_PROFILE_SERVER" ;;
+  esac
+  return 1
+}
+
+managed_generate_candidate_provider() {
+  local credential_fd="${1:?}" candidate_fd key_fd
+  local manifest manifest_digest expected_digest provider_rc expected_pin
+  validate_credential_fd_number "$credential_fd" || return 1
+  MANAGED_API_PROVIDER_FAILURE_PHASE=''
+  MANAGED_API_PROVIDER_FAILURE_REASON=''
+  managed_call_without_private_fd "$credential_fd" managed_validate_generator_paths_closed ||
+    return 1
+  exec {candidate_fd}<>"$MANAGED_CANDIDATE" || return 1
+  managed_call_without_private_fd "$credential_fd" \
+    managed_validate_open_candidate_closed "$candidate_fd" || {
+    exec {candidate_fd}>&-
+    return 1
+  }
+  managed_duplicate_credential_fd key_fd "$credential_fd" || {
+    exec {candidate_fd}>&-
+    managed_call_without_private_fd "$credential_fd" \
+      managed_remove_generated_candidate >/dev/null 2>&1 || true
+    return 1
+  }
+  managed_capture_generator_digest manifest_digest provider_rc "$credential_fd" \
+    "$key_fd" "$candidate_fd" "$MANAGED_PROFILE_PIN" || {
+    manifest_digest=''
+    provider_rc=1
+  }
+  exec {key_fd}<&- {candidate_fd}>&-
+  if (( provider_rc != 0 )); then
+    managed_classify_generator_failure "$credential_fd" "$provider_rc" "$manifest_digest"
+    return $?
+  fi
+  expected_pin="$MANAGED_PROFILE_PIN"
+  manifest=$'generated\t'"$MANAGED_PROFILE_SERVER"$'\t'"$MANAGED_PROFILE_ENDPOINT"$'\tpinned='"$expected_pin"$'\n'
+  if ! managed_sha256_text expected_digest "$manifest" "$credential_fd" ||
+      [[ "$manifest_digest" != "$expected_digest" ]]; then
+    managed_call_without_private_fd "$credential_fd" \
+      managed_remove_generated_candidate >/dev/null 2>&1 || true
+    return 1
+  fi
+  managed_call_without_private_fd "$credential_fd" managed_finalize_generated_candidate_closed ||
+    return 1
+  MANAGED_PROFILE_MANIFEST="${manifest%$'\n'}"
+}
+
+managed_candidate_fd_identity() {
+  stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/${1:?}" 2>/dev/null
+}
+
+managed_emit_profile_manifest() {
+  [[ "${MANAGED_PROFILE_EMIT_MANIFEST:-1}" == 1 ]] || return 0
+  [[ -n "${MANAGED_PROFILE_MANIFEST-}" ]] || return 0
+  printf '%s\n' "$MANAGED_PROFILE_MANIFEST"
+}
+
+managed_finish_provision() {
+  local action="${1:?}" digest endpoint
+  [[ "$action" == dry-run || "$action" == apply ]] || return 1
+  managed_profile_file_is_secure "$MANAGED_CANDIDATE" || return 1
+  managed_sha256_file digest "$MANAGED_CANDIDATE" || return 1
+  endpoint="$(configured_endpoint "$MANAGED_CANDIDATE")" || return 1
+  if [[ "$action" == dry-run ]]; then
+    managed_remove_generated_candidate || return 1
+  else
+    [[ ! -e "$WG_CONF" && ! -L "$WG_CONF" ]] || return 1
+    managed_install_profile_noclobber "$MANAGED_CANDIDATE" "$WG_CONF" "$digest" "$endpoint" ||
+      return 1
+    managed_remove_generated_candidate || return 1
+    managed_rewrite_profile_source api || return 1
+    AIRVPN_PROFILE_SOURCE=api
+  fi
+  managed_emit_profile_manifest
+}
+
+managed_finish_adopt() {
+  local action="${1:?}"
+  [[ "$action" == dry-run || "$action" == apply ]] || return 1
+  managed_profiles_have_same_private_identity "$WG_CONF" || return 1
+  if [[ "$action" == dry-run ]]; then
+    managed_remove_generated_candidate || return 1
+  else
+    managed_create_pre_managed_snapshot || return 1
+    managed_profiles_have_same_private_identity "$WG_CONF" || return 1
+    managed_profiles_are_identical "$WG_CONF" "$PRE_MANAGED_CONF" || return 1
+    managed_remove_generated_candidate || return 1
+    managed_rewrite_profile_source api || return 1
+    AIRVPN_PROFILE_SOURCE=api
+  fi
+  managed_emit_profile_manifest
+}
+
+managed_finish_rotate() {
+  local action="${1:?}" server="${2:?}" verify_speed="${3:?}"
+  [[ "$action" == dry-run || "$action" == apply ]] || return 1
+  if [[ "$action" == dry-run ]]; then
+    managed_remove_generated_candidate || return 1
+  else
+    managed_profile_transaction "$server" "$verify_speed" || return 1
+  fi
+  managed_emit_profile_manifest
+}
+
+managed_profile_attempt_downstream() {
+  case "$MANAGED_PROFILE_OPERATION" in
+    provision) managed_finish_provision "$MANAGED_PROFILE_ACTION" ;;
+    adopt) managed_finish_adopt "$MANAGED_PROFILE_ACTION" ;;
+    rotate) managed_finish_rotate "$MANAGED_PROFILE_ACTION" "$MANAGED_PROFILE_SERVER" \
+      "$MANAGED_PROFILE_VERIFY_SPEED" ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_profile_admin_config_is_valid() {
+  local line country_keys=0
+  declare -F validate_prospective_api_settings >/dev/null || return 1
+  validate_prospective_api_settings || return 1
+  validate_secure_parent_directory "$CFG" "health-check configuration directory" 700 ||
+    return 1
+  [[ -f "$CFG" && ! -L "$CFG" ]] || return 1
+  if [[ "${PROPOSED_SETTINGS_READY:-0}" != 1 ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" =~ ^[[:space:]]*AIRVPN_COUNTRIES[[:space:]]*= ]] &&
+        country_keys=$((country_keys + 1))
+    done < "$CFG"
+    (( country_keys == 1 )) || return 1
+  fi
+}
+
+managed_profile_attempt_precheck() {
+  local operation="${1:?}" action="${2:?}" supplied_credential="${3:?}" rc
+  [[ "$action" == dry-run || "$action" == apply ]] || return 1
+  [[ "$supplied_credential" == 0 || "$supplied_credential" == 1 ]] || return 1
+  managed_profile_admin_config_is_valid || return 1
+  if [[ -e "$MANAGED_CANDIDATE" || -L "$MANAGED_CANDIDATE" ]]; then
+    if [[ "$action" == dry-run ]]; then
+      if managed_orphan_candidate_is_safe; then
+        log "Managed candidate recovery requires an apply operation"
+      else
+        log "Managed candidate is unsafe and requires operator repair"
+      fi
+      return 1
+    fi
+    managed_cleanup_orphan_candidate || return 1
+  fi
+  case "$operation" in
+    provision) [[ ! -e "$WG_CONF" && ! -L "$WG_CONF" ]] ;;
+    adopt)
+      managed_profile_file_is_secure "$WG_CONF" || return 1
+      if [[ "$action" == dry-run ]]; then
+        [[ "$AIRVPN_PROFILE_SOURCE" == static ||
+           ( "$AIRVPN_PROFILE_SOURCE" == api && "$supplied_credential" == 1 &&
+             "${PROPOSED_SETTINGS_READY:-0}" == 1 ) ]]
+      else
+        [[ "$AIRVPN_PROFILE_SOURCE" == static ]]
+      fi
+      ;;
+    rotate)
+      [[ "$AIRVPN_PROFILE_SOURCE" == api ]] && managed_profile_file_is_secure "$WG_CONF" ||
+        return 1
+      if cooldown_allows "$ROTATE_STAMP" "$AIRVPN_ROTATE_COOLDOWN"; then return 0; fi
+      rc=$?
+      return "$rc"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_apply_credential_ready() {
+  local supplied_fd="${1-}"
+  if [[ -n "$supplied_fd" ]]; then
+    validate_credential_fd_number "$supplied_fd" || return 1
+    run_with_private_fd_closed "$supplied_fd" managed_validate_installed_key_closed ||
+      return 1
+    [[ "$AIRVPN_API_KEY_FILE" -ef "/proc/$BASHPID/fd/$supplied_fd" ]] || return 1
+  else
+    managed_validate_installed_key_closed || return 1
+  fi
+}
+
+managed_validate_installed_key_closed() {
+  local installed_fd=''
+  open_installed_api_key installed_fd || return 1
+  close_private_fd "$installed_fd"
+}
+
+managed_run_profile_attempt() {
+  local operation="${1:?}" action="${2:?}" credential_fd="${3-}"
+  local verify_speed="${5:-0}" bypass=0 supplied_credential=0 rc
+  [[ $# == 5 && ( "$action" == dry-run || "$action" == apply ) ]] || return 1
+  [[ "$verify_speed" == 0 || "$verify_speed" == 1 ]] || return 1
+  [[ -z "$credential_fd" ]] || validate_credential_fd_number "$credential_fd" || return 1
+  [[ -z "$credential_fd" ]] || supplied_credential=1
+  if [[ "$action" == apply && ( "$operation" == provision || "$operation" == adopt ) ]]; then
+    if ! managed_apply_credential_ready "$credential_fd"; then
+      [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd"
+      return 1
+    fi
+  fi
+  if managed_call_without_private_fd "$credential_fd" \
+      managed_profile_attempt_precheck "$operation" "$action" "$supplied_credential"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if (( rc != 0 )); then
+    [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd"
+    return "$rc"
+  fi
+  [[ "$action" == dry-run ]] && bypass=1
+  MANAGED_PROFILE_OPERATION="$operation"
+  MANAGED_PROFILE_ACTION="$action"
+  MANAGED_PROFILE_VERIFY_SPEED="$verify_speed"
+  MANAGED_PROFILE_SERVER=''
+  MANAGED_PROFILE_ENDPOINT=''
+  MANAGED_PROFILE_MANIFEST=''
+  managed_run_authenticated_attempt "$bypass" "$credential_fd" \
+    managed_generate_candidate_provider managed_profile_attempt_downstream \
+    managed_prepare_candidate_preflight managed_preflight_candidate_cleanup
+  rc=$?
+  if (( rc != 0 )) && [[ -e "$MANAGED_CANDIDATE" || -L "$MANAGED_CANDIDATE" ]] &&
+      [[ ! -e "$MANAGED_SAFETY" && ! -L "$MANAGED_SAFETY" &&
+         ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]]; then
+    managed_remove_generated_candidate >/dev/null 2>&1 || true
+  fi
+  return "$rc"
+}
+
+managed_command_provision() {
+  MANAGED_PROFILE_EMIT_MANIFEST=1
+  managed_run_profile_attempt provision "${1:?}" "${2-}" provision 0
+}
+
+managed_command_adopt() {
+  MANAGED_PROFILE_EMIT_MANIFEST=1
+  managed_run_profile_attempt adopt "${1:?}" "${2-}" adopt 0
+}
+
+managed_command_rotate() {
+  [[ "$AIRVPN_PROFILE_SOURCE" == api ]] || return 1
+  MANAGED_PROFILE_EMIT_MANIFEST=1
+  managed_run_profile_attempt rotate "${1:?}" '' manual_rotation 0
+}
+
+managed_rotate_profile() {
+  local reason="${1:?}" verify_speed="${2:?}"
+  [[ "$AIRVPN_PROFILE_SOURCE" == api ]] || return 1
+  truthy "$AIRVPN_ROTATE_ENABLED" || return 1
+  MANAGED_PROFILE_EMIT_MANIFEST=0
+  managed_run_profile_attempt rotate apply '' "$reason" "$verify_speed"
+}
+
+managed_command_restore_static() {
+  local action="${1:?}"
+  [[ "$action" == dry-run || "$action" == apply ]] || return 1
+  managed_profile_file_is_secure "$WG_CONF" || return 1
+  managed_profile_file_is_secure "$PRE_MANAGED_CONF" || return 1
+  configured_endpoint "$WG_CONF" >/dev/null || return 1
+  configured_endpoint "$PRE_MANAGED_CONF" >/dev/null || return 1
+  managed_pre_managed_identity_matches || return 1
+  if [[ -e "$MANAGED_CANDIDATE" || -L "$MANAGED_CANDIDATE" ]]; then
+    managed_orphan_candidate_is_safe || return 1
+  fi
+  if [[ "$action" == dry-run ]]; then return 0; fi
+  managed_cleanup_orphan_candidate || return 1
+  managed_rewrite_profile_source static || return 1
+  AIRVPN_PROFILE_SOURCE=static
+  if managed_profiles_are_identical "$WG_CONF" "$PRE_MANAGED_CONF"; then return 0; fi
+  managed_stage_pre_managed_candidate || return 1
+  managed_profiles_have_same_private_identity "$WG_CONF" || return 1
+  managed_profile_transaction '' 0
+}
+
+managed_systemctl() {
+  systemctl "$@"
+}
+
+managed_status_timer() {
+  local rc output
+  if output="$(managed_systemctl is-enabled "wg-healthcheck@${IFACE}.timer" 2>/dev/null)"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [[ "$rc" == 0 && "$output" == enabled ]]; then
+    printf 'enabled\n'
+  elif [[ "$rc" == 1 && "$output" == disabled ]]; then
+    printf 'disabled\n'
+  else
+    printf 'unknown\n'
+  fi
+}
+
+managed_status_observe_check() {
+  local metadata observation
+  if [[ ! -e "$STATUS_FILE" && ! -L "$STATUS_FILE" ]]; then printf 'none|0\n'; return; fi
+  [[ -f "$STATUS_FILE" && ! -L "$STATUS_FILE" ]] || { printf 'invalid|0\n'; return; }
+  metadata="$(owner_mode "$STATUS_FILE")" || { printf 'invalid|0\n'; return; }
+  [[ "$metadata" == 0:600 ]] || { printf 'invalid|0\n'; return; }
+  observation="$(command awk -F= '
+    /^outcome=(healthy|recovered|suppressed|degraded|failed)$/ { outcomes++; outcome=substr($0,9) }
+    /^reason=/ { reasons++ }
+    /^timestamp=(0|[1-9][0-9]*)$/ { timestamps++; value=substr($0,11) }
+    END {
+      if (NR == 3 && outcomes == 1 && reasons == 1 && timestamps == 1 && length(value) <= 10)
+        print outcome "|" value
+      else print "invalid|0"
+    }
+  ' "$STATUS_FILE" 2>/dev/null)" || observation='invalid|0'
+  [[ "$observation" =~ ^(healthy|recovered|suppressed|degraded|failed)\|[0-9]+$ ]] ||
+    observation='invalid|0'
+  printf '%s\n' "$observation"
+}
+
+managed_status_observe_rotation() {
+  local metadata value
+  if [[ ! -e "$ROTATE_STAMP" && ! -L "$ROTATE_STAMP" ]]; then printf 'none|0\n'; return; fi
+  [[ -f "$ROTATE_STAMP" && ! -L "$ROTATE_STAMP" ]] || { printf 'invalid|0\n'; return; }
+  metadata="$(owner_mode "$ROTATE_STAMP")" || { printf 'invalid|0\n'; return; }
+  [[ "$metadata" == 0:600 ]] || { printf 'invalid|0\n'; return; }
+  value="$(read_stamp "$ROTATE_STAMP" 2>/dev/null)" || { printf 'invalid|0\n'; return; }
+  printf 'recorded|%s\n' "$value"
+}
+
+managed_status_credential_present() {
+  local metadata size parent="${AIRVPN_API_KEY_FILE%/*}"
+  [[ -d "$parent" && ! -L "$parent" ]] || return 1
+  [[ "$(owner_mode "$parent")" == 0:700 ]] || return 1
+  [[ -f "$AIRVPN_API_KEY_FILE" && ! -L "$AIRVPN_API_KEY_FILE" ]] || return 1
+  metadata="$(owner_mode "$AIRVPN_API_KEY_FILE")" || return 1
+  [[ "$metadata" == 0:600 ]] || return 1
+  size="$(managed_file_size "$AIRVPN_API_KEY_FILE")" || return 1
+  [[ "$size" == 65 ]]
+}
+
+managed_status_pending() {
+  if [[ -e "$MANAGED_SAFETY" || -L "$MANAGED_SAFETY" ]]; then
+    managed_safety_load >/dev/null 2>&1 || { printf 'invalid\n'; return; }
+    case "$MANAGED_SAFETY_STATE" in
+      pending)
+        if [[ -e "$ROTATION_PENDING" || -L "$ROTATION_PENDING" ]]; then
+          managed_journal_matches_safety >/dev/null 2>&1 || { printf 'invalid\n'; return; }
+        fi
+        printf 'managed-pending\n'
+        ;;
+      committed|finalizing)
+        [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]] || {
+          printf 'invalid\n'; return;
+        }
+        printf 'managed-%s\n' "$MANAGED_SAFETY_STATE"
+        ;;
+      *) printf 'invalid\n' ;;
+    esac
+    return
+  fi
+  if [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" ]]; then
+    if [[ -e "$MANAGED_CANDIDATE" || -L "$MANAGED_CANDIDATE" ]]; then
+      managed_orphan_candidate_is_safe >/dev/null 2>&1 &&
+        printf 'orphan-candidate\n' || printf 'invalid\n'
+    else
+      printf 'none\n'
+    fi
+    return
+  fi
+  classify_pending_marker >/dev/null 2>&1 || true
+  if [[ "$PENDING_KIND" == v1 ]]; then printf 'endpoint-v1\n'; return; fi
+  managed_journal_load >/dev/null 2>&1 && printf 'orphan\n' || printf 'invalid\n'
+}
+
+managed_render_status() {
+  local json="${1:-0}" mode timer tunnel check_observation rotation_observation
+  local last_check last_check_timestamp last_rotation last_rotation_timestamp credential pending qb
+  [[ "$json" == 0 || "$json" == 1 ]] || return 1
+  mode="$AIRVPN_PROFILE_SOURCE"
+  timer="$(managed_status_timer)" || timer=unknown
+  if interface_exists; then tunnel=up; else tunnel=down; fi
+  check_observation="$(managed_status_observe_check)"
+  IFS='|' read -r last_check last_check_timestamp <<< "$check_observation"
+  rotation_observation="$(managed_status_observe_rotation)"
+  IFS='|' read -r last_rotation last_rotation_timestamp <<< "$rotation_observation"
+  if managed_status_credential_present; then credential=true; else credential=false; fi
+  pending="$(managed_status_pending)"
+  if [[ -z "$QBITTORRENT_CONTAINER" ]]; then
+    qb=unmanaged
+  elif qbittorrent_binding_present >/dev/null 2>&1; then
+    qb=proved
+  else
+    qb=failed
+  fi
+  if [[ "$json" == 1 ]]; then
+    printf '{"mode":"%s","timer":"%s","tunnel":"%s","last_check":"%s","last_check_timestamp":%s,"last_rotation":"%s","last_rotation_timestamp":%s,"credential_present":%s,"pending":"%s","qbittorrent":"%s"}\n' \
+      "$mode" "$timer" "$tunnel" "$last_check" "$last_check_timestamp" \
+      "$last_rotation" "$last_rotation_timestamp" "$credential" "$pending" "$qb"
+  else
+    printf 'mode=%s\ntimer=%s\ntunnel=%s\nlast_check=%s\nlast_check_timestamp=%s\nlast_rotation=%s\nlast_rotation_timestamp=%s\ncredential_present=%s\npending=%s\nqbittorrent=%s\n' \
+      "$mode" "$timer" "$tunnel" "$last_check" "$last_check_timestamp" \
+      "$last_rotation" "$last_rotation_timestamp" "$credential" "$pending" "$qb"
+  fi
+}
+
+managed_units_are_inactive() {
+  local unit rc
+  for unit in "wg-healthcheck@${IFACE}.timer" "wg-healthcheck@${IFACE}.service"; do
+    if managed_systemctl is-active --quiet "$unit" >/dev/null 2>&1; then
+      rc=0
+    else
+      rc=$?
+    fi
+    case "$rc" in
+      3) ;;
+      0) return 75 ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+managed_reset_global_lock_acquire() {
+  local action="${1:-apply}" metadata fd_metadata path_metadata created=0
+  managed_transaction_context_is_safe || return 1
+  [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]] || return 1
+  [[ "$AIRVPN_API_LOCK" == "$STATE_DIR/airvpn-api.lock" ]] || return 1
+  [[ "$(owner_mode "$STATE_DIR")" == 0:700 ]] || return 1
+  if [[ -e "$AIRVPN_API_LOCK" || -L "$AIRVPN_API_LOCK" ]]; then
+    [[ -f "$AIRVPN_API_LOCK" && ! -L "$AIRVPN_API_LOCK" ]] || return 1
+  else
+    if [[ "$action" == dry-run ]]; then
+      MANAGED_RESET_LOCK_FD=absent
+      return 0
+    fi
+    ( set -o noclobber; umask 077; : > "$AIRVPN_API_LOCK" ) 2>/dev/null ||
+      { [[ -f "$AIRVPN_API_LOCK" && ! -L "$AIRVPN_API_LOCK" ]] || return 1; }
+    created=1
+  fi
+  if (( created )); then chmod 600 -- "$AIRVPN_API_LOCK" || return 1; fi
+  metadata="$(owner_mode "$AIRVPN_API_LOCK")" || return 1
+  [[ "$metadata" == 0:600 ]] || return 1
+  exec {MANAGED_RESET_LOCK_FD}<>"$AIRVPN_API_LOCK" || return 1
+  if [[ ! -f "$AIRVPN_API_LOCK" || -L "$AIRVPN_API_LOCK" ]]; then
+    exec {MANAGED_RESET_LOCK_FD}>&-
+    MANAGED_RESET_LOCK_FD=''
+    return 1
+  fi
+  fd_metadata="$(managed_reset_lock_fd_identity "$MANAGED_RESET_LOCK_FD")" || {
+    exec {MANAGED_RESET_LOCK_FD}>&-
+    MANAGED_RESET_LOCK_FD=''
+    return 1
+  }
+  path_metadata="$(stat -Lc '%d:%i' -- "$AIRVPN_API_LOCK" 2>/dev/null)" || {
+    exec {MANAGED_RESET_LOCK_FD}>&-
+    MANAGED_RESET_LOCK_FD=''
+    return 1
+  }
+  if [[ "$fd_metadata" != "$path_metadata" || "$(owner_mode "$AIRVPN_API_LOCK")" != 0:600 ]]; then
+    exec {MANAGED_RESET_LOCK_FD}>&-
+    MANAGED_RESET_LOCK_FD=''
+    return 1
+  fi
+  flock -n "$MANAGED_RESET_LOCK_FD" || {
+    exec {MANAGED_RESET_LOCK_FD}>&-
+    MANAGED_RESET_LOCK_FD=''
+    return 75
+  }
+}
+
+managed_reset_lock_fd_identity() {
+  stat -Lc '%d:%i' -- "/proc/$BASHPID/fd/${1:?}" 2>/dev/null
+}
+
+managed_reset_global_lock_release() {
+  local fd="${MANAGED_RESET_LOCK_FD-}" rc=0
+  [[ "$fd" == absent ]] && { MANAGED_RESET_LOCK_FD=''; return 0; }
+  [[ "$fd" =~ ^[0-9]+$ ]] || return 1
+  flock -u "$fd" || rc=1
+  exec {fd}>&- || rc=1
+  MANAGED_RESET_LOCK_FD=''
+  return "$rc"
+}
+
+managed_reset_api_state() {
+  local action="${1:?}" rc=0 release_rc=0 parent metadata
+  [[ "$action" == dry-run || "$action" == apply ]] || return 1
+  [[ "$AIRVPN_API_STATE_FILE" == */"${IFACE}.api-state" ]] || return 1
+  managed_api_state_parent_is_secure || return 1
+  [[ ! -e "$ROTATION_PENDING" && ! -L "$ROTATION_PENDING" &&
+     ! -e "$MANAGED_SAFETY" && ! -L "$MANAGED_SAFETY" ]] || return 1
+  managed_units_are_inactive || { rc=$?; [[ "$rc" == 0 ]] && rc=1; return "$rc"; }
+  managed_reset_global_lock_acquire "$action" || return $?
+  if ! managed_api_state_parent_is_secure || ! managed_units_are_inactive ||
+      [[ -e "$ROTATION_PENDING" || -L "$ROTATION_PENDING" ||
+         -e "$MANAGED_SAFETY" || -L "$MANAGED_SAFETY" ]]; then
+    rc=1
+  fi
+  parent="${AIRVPN_API_STATE_FILE%/*}"
+  if (( rc == 0 )) && [[ -e "$AIRVPN_API_STATE_FILE" || -L "$AIRVPN_API_STATE_FILE" ]]; then
+    if [[ ! -f "$AIRVPN_API_STATE_FILE" || -L "$AIRVPN_API_STATE_FILE" ]]; then
+      rc=1
+    else
+      metadata="$(owner_mode "$AIRVPN_API_STATE_FILE")" || rc=1
+      [[ "$metadata" == 0:600 ]] || rc=1
+    fi
+  fi
+  if (( rc == 0 )) && [[ "$action" == apply ]]; then
+    if [[ -e "$AIRVPN_API_STATE_FILE" ]]; then
+      managed_unlink_path "$AIRVPN_API_STATE_FILE" || rc=1
+    fi
+    (( rc != 0 )) || managed_sync_directory "$parent" || rc=1
+  fi
+  managed_reset_global_lock_release || release_rc=1
+  (( rc == 0 && release_rc == 0 ))
+}
+
+managed_dispatch_command() {
+  local command="${1:-}" action="${2:-}" status_json="${3:-0}" credential_fd="${4:-}"
+  case "$command" in
+    check|provision|adopt|rotate|restore-static|reset-api-state|cleanup-candidate|status) ;;
+    *)
+      [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd" || return 1
+      log "Unknown managed command"
+      return 64
+      ;;
+  esac
+  if [[ -n "$credential_fd" && "$command" != provision && "$command" != adopt ]]; then
+    close_private_fd "$credential_fd" || return 1
+    return 1
+  fi
+  if [[ "$command" != status && "$command" != check ]] && ! is_root; then
+    [[ -z "$credential_fd" ]] || close_private_fd "$credential_fd" || return 1
+    return 1
+  fi
+  case "$command" in
+    check) run_healthcheck ;;
+    provision) managed_command_provision "$action" "$credential_fd" ;;
+    adopt) managed_command_adopt "$action" "$credential_fd" ;;
+    rotate) managed_command_rotate "$action" ;;
+    restore-static) managed_command_restore_static "$action" ;;
+    reset-api-state) managed_reset_api_state "$action" ;;
+    cleanup-candidate) managed_command_cleanup_candidate "$action" ;;
+    status) managed_render_status "$status_json" ;;
+  esac
+}

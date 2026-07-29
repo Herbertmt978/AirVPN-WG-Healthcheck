@@ -1,0 +1,62 @@
+#!/usr/bin/python3 -I
+"""Hardened entrypoint for guided wg-healthcheck setup."""
+
+from __future__ import annotations
+
+import resource
+import sys
+
+
+sys.dont_write_bytecode = True
+try:
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+except (OSError, ValueError):
+    print(
+        "wg-healthcheck-setup: could not disable core dumps; no secret was read",
+        file=sys.stderr,
+    )
+    raise SystemExit(64)
+
+
+import os  # noqa: E402  # Imported only after core dumps are disabled.
+
+
+_INSTALLED_ENTRYPOINT = "/usr/local/sbin/wg-healthcheck-setup"
+_INSTALLED_PARENT = "/usr/local/libexec/wg-healthcheck"
+_ENTRYPOINT = os.path.realpath(__file__)
+_SOURCE_PARENT = os.path.realpath(
+    os.path.join(os.path.dirname(_ENTRYPOINT), os.pardir, "libexec")
+)
+
+if _ENTRYPOINT == _INSTALLED_ENTRYPOINT:
+    _PACKAGE_PARENT = _INSTALLED_PARENT
+else:
+    _PACKAGE_PARENT = _SOURCE_PARENT
+if not os.path.isfile(
+    os.path.join(_PACKAGE_PARENT, "wg_healthcheck_setup", "__init__.py")
+):
+    print("wg-healthcheck-setup: fixed setup package is unavailable", file=sys.stderr)
+    raise SystemExit(64)
+
+
+def _is_interpreter_path(entry: str) -> bool:
+    try:
+        return os.path.commonpath(
+            (os.path.realpath(sys.base_prefix), os.path.realpath(entry))
+        ) == os.path.realpath(sys.base_prefix)
+    except (OSError, ValueError):
+        return False
+
+
+_original_import_path = list(sys.path)
+sys.path[:] = [_PACKAGE_PARENT] + [
+    entry for entry in _original_import_path if entry and _is_interpreter_path(entry)
+]
+try:
+    from wg_healthcheck_setup import *  # noqa: F403
+finally:
+    sys.path[:] = _original_import_path
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())  # noqa: F405

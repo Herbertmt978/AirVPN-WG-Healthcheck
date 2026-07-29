@@ -34,19 +34,19 @@ while (( $# )); do
   esac
 done
 
-for command_name in git gzip install mktemp sha256sum; do
+for command_name in git gzip install mktemp python3 sha256sum; do
   command -v "$command_name" >/dev/null 2>&1 || {
     printf 'package-release.sh: required command not found: %s\n' "$command_name" >&2
     exit 1
   }
 done
 
-git -C "$ROOT" rev-parse --verify --quiet "$REF^{tree}" >/dev/null || {
-  printf 'package-release.sh: invalid Git ref: %s\n' "$REF" >&2
+commit="$(git -C "$ROOT" rev-parse --verify --quiet "$REF^{commit}" 2>/dev/null)" || {
+  printf 'package-release.sh: Git ref must resolve to a commit: %s\n' "$REF" >&2
   exit 1
 }
 
-version="$(git -C "$ROOT" show "$REF:VERSION")" || {
+version="$(git -C "$ROOT" show "$commit:VERSION")" || {
   printf 'package-release.sh: VERSION is missing from %s\n' "$REF" >&2
   exit 1
 }
@@ -59,20 +59,35 @@ release_notes="docs/releases/v${version}.md"
 files=(
   CHANGELOG.md
   CONTRIBUTING.md
+  LICENSE
   README.md
   SECURITY.md
   VERSION
   bin/wg-healthcheck
+  bin/wg-healthcheck-setup
   config/wg0.conf.example
+  docs/operations.md
   "$release_notes"
   install.sh
   libexec/airvpn-api
+  libexec/wg-healthcheck-managed
+  libexec/wg_healthcheck_setup/__init__.py
+  libexec/wg_healthcheck_setup/application.py
+  libexec/wg_healthcheck_setup/apply_config.py
+  libexec/wg_healthcheck_setup/apply_journal.py
+  libexec/wg_healthcheck_setup/apply_system.py
+  libexec/wg_healthcheck_setup/cli.py
+  libexec/wg_healthcheck_setup/clients.py
+  libexec/wg_healthcheck_setup/credential_state.py
+  libexec/wg_healthcheck_setup/model.py
+  libexec/wg_healthcheck_setup/private_io.py
+  libexec/wg_healthcheck_setup/store.py
   systemd/wg-healthcheck@.service
   systemd/wg-healthcheck@.timer
 )
 
 for path in "${files[@]}"; do
-  git -C "$ROOT" cat-file -e "$REF:$path" 2>/dev/null || {
+  git -C "$ROOT" cat-file -e "$commit:$path" 2>/dev/null || {
     printf 'package-release.sh: required release path is missing from %s: %s\n' "$REF" "$path" >&2
     exit 1
   }
@@ -100,26 +115,45 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if commit="$(git -C "$ROOT" rev-parse --verify --quiet "$REF^{commit}" 2>/dev/null)"; then
-  archive_time="$(git -C "$ROOT" show -s --format=%cI "$commit")"
-else
-  archive_time='2000-01-01T00:00:00Z'
-fi
+archive_time="$(git -C "$ROOT" show -s --format=%cI "$commit")"
 
-git -C "$ROOT" archive \
+git -c tar.umask=0022 -C "$ROOT" archive \
   --format=tar \
-  --mtime="$archive_time" \
   --prefix="$prefix/" \
-  "$REF" -- "${files[@]}" > "$tmp/${prefix}.tar"
+  "$commit" -- "${files[@]}" > "$tmp/${prefix}.tar"
 gzip -n -9 < "$tmp/${prefix}.tar" > "$tmp/$tar_name"
 
-git -C "$ROOT" archive \
-  --format=zip \
-  -9 \
-  --mtime="$archive_time" \
-  --prefix="$prefix/" \
-  --output="$tmp/$zip_name" \
-  "$REF" -- "${files[@]}"
+python3 - "$tmp/${prefix}.tar" "$tmp/$zip_name" "$archive_time" <<'PY'
+import datetime
+import stat
+import sys
+import tarfile
+import zipfile
+
+tar_path, zip_path, archive_time = sys.argv[1:]
+timestamp = datetime.datetime.fromisoformat(archive_time.replace("Z", "+00:00"))
+timestamp = timestamp.astimezone(datetime.timezone.utc)
+year = min(max(timestamp.year, 1980), 2107)
+zip_time = (year, timestamp.month, timestamp.day, timestamp.hour, timestamp.minute, timestamp.second)
+
+with tarfile.open(tar_path, "r:") as source, zipfile.ZipFile(
+    zip_path,
+    "w",
+    compression=zipfile.ZIP_DEFLATED,
+    compresslevel=9,
+) as destination:
+    for member in sorted(source.getmembers(), key=lambda item: item.name):
+        if not member.isfile():
+            continue
+        payload = source.extractfile(member)
+        if payload is None:
+            raise SystemExit(f"could not read archived file: {member.name}")
+        info = zipfile.ZipInfo(member.name, zip_time)
+        info.create_system = 3
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = (stat.S_IFREG | (member.mode & 0o777)) << 16
+        destination.writestr(info, payload.read(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+PY
 
 for target in "$OUTPUT/$tar_name" "$OUTPUT/$zip_name" "$OUTPUT/SHA256SUMS"; do
   [[ ! -L "$target" && ( ! -e "$target" || -f "$target" ) ]] || {

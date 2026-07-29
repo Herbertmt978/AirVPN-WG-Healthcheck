@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+
+# Intentional test patterns: dynamic sourcing, immediate trap capture, literal
+# generated-helper source, subshell-isolated fixtures, and security-boundary
+# function doubles.
+# shellcheck disable=SC1090,SC2016,SC2031,SC2034,SC2064,SC2317,SC2329
+
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT="$ROOT/bin/wg-healthcheck"
+MODULE="$ROOT/libexec/wg-healthcheck-managed"
+
+source "$ROOT/tests/lib/wg_managed_test_support.sh"
+source "$ROOT/tests/wg_managed/01_managed_profiles.sh"
+source "$ROOT/tests/wg_managed/02_managed_profiles.sh"
+source "$ROOT/tests/wg_managed/03_managed_profiles.sh"
+source "$ROOT/tests/wg_managed/04_managed_profiles.sh"
+source "$ROOT/tests/wg_managed/05_managed_profiles.sh"
+source "$ROOT/tests/wg_managed/06_managed_profiles.sh"
+source "$ROOT/tests/wg_managed/07_managed_profiles.sh"
+source "$ROOT/tests/wg_managed/08_managed_profiles.sh"
+source "$ROOT/tests/wg_managed/09_managed_profiles.sh"
+source "$ROOT/tests/wg_managed/10_managed_profiles.sh"
+
+tests=(
+  test_managed_module_exports_minimal_task4_contract
+  test_managed_module_validation_requires_root_owned_0644_trusted_source
+  test_installed_key_rejects_every_unsafe_shape_before_downstream_events
+  test_installed_key_opens_one_valid_record_on_a_private_descriptor
+  test_unknown_dispatch_closes_credential_before_logging
+  test_api_state_exports_complete_task5_contract
+  test_api_state_round_trip_is_canonical_bounded_and_durable
+  test_api_state_defaults_are_memory_only_until_identity_refresh
+  test_api_state_rejects_unknown_duplicate_malformed_control_and_future_data
+  test_api_state_rolling_attempt_cap_and_window_reset
+  test_api_state_rejects_post_write_clock_regression
+  test_api_state_backoff_is_exponential_jitter_bounded_and_retry_after_capped
+  test_output_variable_helpers_replace_collision_sentinels_and_reject_reserved_names
+  test_failed_credential_output_assignment_closes_new_descriptor
+  test_managed_selector_replaces_every_collision_name_with_and_without_credential
+  test_api_state_auth_device_reset_only_on_identity_change
+  test_api_state_exclusions_are_unique_bounded_and_expire
+  test_api_state_rejects_noncanonical_failure_classes_and_metadata
+  test_api_state_memory_rejects_future_mtime_and_zero_failure_backoff
+  test_api_state_admin_bypass_outcomes_and_timer_suppression
+  test_api_state_failed_server_persists_then_expires_into_selector_argv
+  test_failed_candidate_always_attempts_exactly_one_ordered_rollback
+  test_suppressed_attempts_persist_pruned_high_water_and_surface_write_failure
+  test_authenticated_suppression_persists_before_releasing_global_lock
+  test_authenticated_attempt_samples_private_fresh_time_after_lock_and_provider
+  test_linux_managed_selector_persists_failure_rotates_and_reenables
+  test_api_state_corruption_blocks_authenticated_and_downstream_callbacks
+  test_api_global_lock_requires_interface_lock_and_releases_before_downstream
+  test_authenticated_attempt_closes_supplied_credential_around_state_and_downstream
+  test_linux_global_lock_fd_never_aliases_supplied_credential
+  test_linux_credential_identity_uses_exact_provider_fd_across_replacement
+  test_linux_supplied_credential_fd_is_private_until_managed_owner
+  test_linux_module_owner_and_mode_semantics
+  test_linux_installed_key_owner_and_mode_semantics
+  test_linux_api_state_parent_file_owner_mode_and_symlink_semantics
+  test_managed_journal_round_trip_is_exact_and_rejects_noop_transactions
+  test_managed_journal_rejects_noncanonical_bytes_fields_and_security_shapes
+  test_managed_journal_write_is_same_directory_atomic_and_fully_durable
+  test_managed_journal_artifacts_are_durable_before_first_digest
+  test_managed_journal_artifact_barrier_failures_leave_no_journal_or_mutation
+  test_managed_journal_classifiers_are_collision_safe_and_failure_atomic
+  test_managed_journal_phase_transitions_revalidate_all_digests_and_classify_factually
+  test_managed_journal_rejects_digest_bound_false_endpoints_before_transition_or_recovery
+  test_private_identity_comparator_is_status_only_strict_and_secret_safe
+  test_managed_safety_contract_is_strict_and_exact
+  test_managed_docker_identity_inspect_uses_an_unambiguous_template
+  test_managed_qb_inspection_parser_requires_exact_docker_boolean_tuple
+  test_managed_qb_rejects_ambiguous_configured_name_before_every_effect
+  test_managed_safety_rejects_ambiguous_recorded_name_without_network_guess
+  test_managed_containment_never_treats_ambiguous_current_name_as_an_id
+  test_managed_qb_immutable_identity_checkpoints_and_exact_restore
+  test_managed_qbittorrent_state_is_exact_and_fail_closed
+  test_managed_live_identity_requires_exact_address_and_peer_key
+  test_managed_atomic_profile_install_is_digest_bound_and_durable
+  test_managed_profile_transaction_orders_every_qb_and_tunnel_effect
+  test_amended_transaction_keeps_a_durable_owner_through_commit_and_finalization
+  test_managed_candidate_exclusion_removal_is_exact_and_durable
+  test_managed_transaction_context_and_preexclusion_fail_before_mutation
+  test_managed_transaction_identity_ordering_precedes_every_effect
+  test_managed_transaction_rechecks_backup_identity_before_preexclusion
+  test_managed_stop_failure_aborts_before_tunnel_downtime
+  test_managed_every_phase_failure_rolls_back_exact_old_profile
+  test_pending_rollback_never_writes_or_removes_rotation_success_stamp
+  test_rollback_status_seam_cannot_reopen_qb_before_safety_removal
+  test_pending_safety_creation_barriers_reclassify_the_visible_owner
+  test_visible_pending_safety_requires_successful_rebarrier_before_recovery_effects
+  test_journal_unlink_parent_sync_failure_never_recreates_v2_marker
+  test_commit_transition_durability_reclassifies_pending_vs_committed
+  test_finalizing_transition_durability_never_rolls_back_committed_candidate
+  test_final_safety_unlink_and_parent_sync_are_reboot_idempotent
+  test_managed_staged_digest_mismatch_is_never_installed_or_guessed
+  test_managed_rollback_failure_retains_marker_candidate_and_stopped_qb
+  test_managed_exclusion_refresh_failure_rolls_back_but_preserves_pending_state
+  test_managed_reconciliation_rolls_back_every_factual_crash_shape
+  test_safety_record_drives_the_complete_recovery_classification_matrix
+  test_fresh_process_recovery_uses_only_visible_safety_state
+  test_managed_unknown_or_mismatched_recovery_stops_qb_without_network_guessing
+  test_managed_recovery_contains_qb_before_journal_or_digest_reads
+  test_managed_reconciliation_is_idempotent_across_cleanup_crash
+  test_managed_qb_config_drift_restores_network_but_retains_safety
+  test_managed_provision_install_is_atomic_durable_and_no_clobber
+  test_pre_managed_snapshot_is_immutable_exact_and_durable_before_mode_change
+  test_adopt_retry_rebarriers_visible_snapshot_after_install_sync_failures
+  test_adopt_retry_rereads_snapshot_after_rebarrier
+  test_managed_config_rewrite_preserves_unrelated_keys_and_is_durable
+  test_config_rewrite_refuses_untrusted_parent_before_mutation
+  test_config_rewrite_rechecks_parent_before_and_after_commit
+  test_adopt_dry_run_and_apply_pin_identity_snapshot_without_network_mutation
+  test_provision_and_adopt_commands_run_authenticated_redacted_flows
+  test_generator_callback_handles_reserved_fd_collisions_and_clean_child_environment
+  test_generator_failure_cleanup_closes_reserved_credential_descriptors
+  test_generator_transient_failure_manifest_is_exact_and_secret_safe
+  test_generator_dup_failure_cleanup_closes_reserved_credential_descriptors
+  test_api_administration_requires_explicit_country_policy_before_provider
+  test_apply_requires_installed_credential_and_override_identity_match
+  test_selector_and_candidate_staging_failures_do_not_consume_authenticated_attempts
+  test_orphan_candidate_recovery_is_durable_bounded_and_symlink_safe
+  test_setup_owned_candidate_cleanup_requires_exclusive_lease_and_interface_lock
+  test_provision_dry_run_preserves_preexisting_orphan_candidate
+  test_adopt_dry_run_preserves_preexisting_orphan_candidate
+  test_rotate_dry_run_preserves_preexisting_orphan_candidate
+  test_profile_apply_precheck_cleans_safe_orphan_before_accounting
+  test_timer_rotation_precheck_cleans_safe_orphan_before_accounting
+  test_generator_provider_preserves_caller_errexit_state
+  test_status_timer_preserves_caller_errexit_state
+  test_unit_inactivity_probe_preserves_caller_errexit_state
+  test_real_preflight_backoff_is_nonincrementing_and_local_staging_precedes_network
+  test_six_argument_attempt_uses_one_preflight_epoch_across_second_boundary
+  test_managed_attempt_stages_close_key_everywhere_except_exact_provider
+  test_transient_failure_phase_requires_durable_outcome_and_lock_release
+  test_rotate_dry_run_apply_and_static_restore_use_explicit_safe_ordering
+  test_same_endpoint_different_peer_uses_full_transaction_commit_rollback_and_recovery
+  test_restore_retry_recovers_safe_staged_orphan_before_mode_and_transaction
+  test_managed_status_is_stat_only_redacted_deterministic_and_valid_json
+  test_managed_status_handles_invalid_metadata_pending_and_malformed_observations
+  test_status_pending_enums_strictly_distinguish_owned_orphan_and_invalid_states
+  test_reset_api_state_is_quiesced_exact_durable_and_preserves_every_other_artifact
+  test_reset_api_state_rejects_unknown_units_and_unsafe_state_metadata_but_absent_is_idempotent
+  test_reset_apply_retry_syncs_parent_after_unlink_sync_failure
+  test_reset_rejects_unsafe_state_parent_and_global_lock_swap_without_mutation
+  test_managed_dispatch_keeps_supplied_credential_private_and_refuses_nonroot_mutation
+  test_unexpected_credential_fd_is_closed_before_noncredential_dispatch
+  test_linux_managed_journal_real_owner_mode_and_symlink_semantics
+  test_proposed_settings_replace_only_country_presence_and_validate_api_cross_fields
+  test_managed_profile_requires_a_private_root_owned_parent
+)
+
+if [[ -n "${WG_MANAGED_TEST_ONLY:-}" ]]; then
+  read -r -a tests <<< "$WG_MANAGED_TEST_ONLY"
+fi
+
+failures=0
+passes=0
+skips=0
+for test_name in "${tests[@]}"; do
+  ("$test_name")
+  rc=$?
+  case "$rc" in
+    0)
+      printf 'ok - %s\n' "$test_name"
+      passes=$((passes + 1))
+      ;;
+    77)
+      printf 'ok - %s # SKIP requires Linux root ownership semantics\n' "$test_name"
+      skips=$((skips + 1))
+      ;;
+    *)
+      printf 'not ok - %s\n' "$test_name"
+      failures=$((failures + 1))
+      ;;
+  esac
+done
+
+if (( failures > 0 )); then
+  printf '%d test(s) failed; %d passed; %d skipped\n' "$failures" "$passes" "$skips" >&2
+  exit 1
+fi
+
+printf '%d test(s) passed; %d skipped\n' "$passes" "$skips"

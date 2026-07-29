@@ -31,7 +31,7 @@ jobs:
       - name: Install release verification tools
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes shellcheck
+          sudo apt-get install --no-install-recommends --yes shellcheck unzip
 
       - name: Verify annotated version tag
         run: |
@@ -42,14 +42,42 @@ jobs:
 
       - name: Run deterministic release checks
         run: |
-          bash -n bin/wg-healthcheck install.sh scripts/*.sh tests/*.sh
-          python3 -m unittest discover -s tests -p 'test_*.py' -v
-          bash tests/test_wg_healthcheck.sh
-          bash tests/test_install.sh
-          bash tests/test_release.sh --ref "$GITHUB_REF_NAME"
-          shellcheck -x -S style bin/wg-healthcheck install.sh scripts/*.sh tests/*.sh
+          PYTHON_BIN="${pythonLocation:?}/bin/python"
+          SAFE_PATH="${pythonLocation:?}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          bash scripts/build-managed-module.sh --check
+          bash -n bin/wg-healthcheck libexec/wg-healthcheck-managed libexec/wg-healthcheck-managed.d/*.bash install.sh scripts/*.sh tests/*.sh tests/lib/*.sh tests/install/*.sh tests/wg_healthcheck/*.sh tests/wg_managed/*.sh
+          sudo env -i PATH="$SAFE_PATH" LC_ALL=C TMPDIR=/tmp PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 HOME=/root \
+            "$PYTHON_BIN" -m unittest discover -s tests -p 'test_*.py' -v
+          sudo env -i PATH="$SAFE_PATH" LC_ALL=C TMPDIR=/tmp PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 HOME=/root /bin/bash tests/test_wg_healthcheck.sh
+          sudo env -i PATH="$SAFE_PATH" LC_ALL=C TMPDIR=/tmp PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 HOME=/root /bin/bash tests/test_wg_managed_profiles.sh
+          sudo env -i PATH="$SAFE_PATH" LC_ALL=C TMPDIR=/tmp PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 HOME=/root /bin/bash tests/test_install.sh
+          env -i PATH="$SAFE_PATH" LC_ALL=C TMPDIR=/tmp PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 HOME="$HOME" /bin/bash tests/test_wg_healthcheck.sh
+          env -i PATH="$SAFE_PATH" LC_ALL=C TMPDIR=/tmp PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 HOME="$HOME" /bin/bash tests/test_wg_managed_profiles.sh
+          env -i PATH="$SAFE_PATH" LC_ALL=C TMPDIR=/tmp PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 HOME="$HOME" /bin/bash tests/test_install.sh
+          env -i PATH="$SAFE_PATH" LC_ALL=C TMPDIR=/tmp PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 HOME="$HOME" /bin/bash tests/test_release.sh --ref "$GITHUB_REF_NAME"
+          # test_install.sh follows its fixed split manifest with shared context; the other split groups are listed directly.
+          shellcheck -s bash -x -S style bin/wg-healthcheck libexec/wg-healthcheck-managed install.sh scripts/*.sh tests/*.sh tests/lib/wg_healthcheck_test_support.sh tests/lib/wg_managed_test_support.sh tests/wg_healthcheck/*.sh tests/wg_managed/*.sh
+          # The complete generated module retains SC2034 analysis; isolated fragments cannot see sibling references.
+          shellcheck -s bash -x -S style -e SC2034 libexec/wg-healthcheck-managed.d/*.bash
           sudo install -D -m 0755 bin/wg-healthcheck /usr/local/sbin/wg-healthcheck
+          sudo install -D -m 0755 bin/wg-healthcheck-setup /usr/local/sbin/wg-healthcheck-setup
           sudo install -D -m 0755 libexec/airvpn-api /usr/local/libexec/wg-healthcheck/airvpn-api
+          sudo install -D -m 0644 libexec/wg-healthcheck-managed /usr/local/libexec/wg-healthcheck/wg-healthcheck-managed
+          sudo install -d -m 0755 /usr/local/libexec/wg-healthcheck/wg_healthcheck_setup
+          sudo install -D -m 0644 libexec/wg_healthcheck_setup/*.py /usr/local/libexec/wg-healthcheck/wg_healthcheck_setup/
+          cmp -s bin/wg-healthcheck /usr/local/sbin/wg-healthcheck
+          cmp -s bin/wg-healthcheck-setup /usr/local/sbin/wg-healthcheck-setup
+          cmp -s libexec/airvpn-api /usr/local/libexec/wg-healthcheck/airvpn-api
+          cmp -s libexec/wg-healthcheck-managed /usr/local/libexec/wg-healthcheck/wg-healthcheck-managed
+          test "$(stat -c '%a' /usr/local/sbin/wg-healthcheck)" = 755
+          test "$(stat -c '%a' /usr/local/sbin/wg-healthcheck-setup)" = 755
+          test "$(stat -c '%a' /usr/local/libexec/wg-healthcheck/airvpn-api)" = 755
+          test "$(stat -c '%a' /usr/local/libexec/wg-healthcheck/wg-healthcheck-managed)" = 644
+          test "$(stat -c '%a' /usr/local/libexec/wg-healthcheck/wg_healthcheck_setup)" = 755
+          for setup_module in libexec/wg_healthcheck_setup/*.py; do
+            cmp -s "$setup_module" "/usr/local/libexec/wg-healthcheck/wg_healthcheck_setup/${setup_module##*/}"
+            test "$(stat -c '%a' "/usr/local/libexec/wg-healthcheck/wg_healthcheck_setup/${setup_module##*/}")" = 644
+          done
           systemd-analyze verify systemd/wg-healthcheck@.service systemd/wg-healthcheck@.timer
 
       - name: Scan tagged history for secrets
@@ -65,12 +93,17 @@ jobs:
       - name: Scan packaged release for secrets
         run: |
           version="$(<VERSION)"
-          mkdir -m 0700 release-audit
-          tar -xzf "dist/airvpn-wg-healthcheck-${version}.tar.gz" -C release-audit
+          mkdir -m 0700 release-audit release-audit/tar release-audit/zip
+          tar -xzf "dist/airvpn-wg-healthcheck-${version}.tar.gz" -C release-audit/tar
+          unzip -q "dist/airvpn-wg-healthcheck-${version}.zip" -d release-audit/zip
           docker run --rm \
             --volume "$GITHUB_WORKSPACE/release-audit:/scan:ro" \
             zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-            dir /scan --redact=100 --no-banner --no-color
+            dir /scan/tar --redact=100 --no-banner --no-color
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/release-audit:/scan:ro" \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            dir /scan/zip --redact=100 --no-banner --no-color
 
       - name: Preserve verified release inputs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
