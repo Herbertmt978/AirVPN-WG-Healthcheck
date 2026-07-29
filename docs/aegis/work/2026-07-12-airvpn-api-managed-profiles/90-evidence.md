@@ -917,3 +917,30 @@ paired rollback drill and controlled successful rotation.
   contract run reached and passed that merged workflow assertion; its POSIX-mode and
   `flock` cases remain delegated to the required Ubuntu 22.04/24.04 release matrix rather
   than being waived.
+- Exact integrated candidate `0fd9848e96a47df4788288781e930c834fdcf8ea`
+  contained current public `main` as an ancestor and was clean before release verification.
+  Immutable Ubuntu images
+  `ubuntu@sha256:0e0a0fc6d18feda9db1590da249ac93e8d5abfea8f4c3c0c849ce512b5ef8982`
+  (22.04) and
+  `ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90`
+  (24.04) independently passed generated-runtime equivalence, Bash syntax, all Python
+  contracts, root and normal-user health/managed/installer suites, release-package tests,
+  both ShellCheck passes, exact installed-layout modes and bytes, systemd verification,
+  package construction, and checksum verification. The root installer pass recorded
+  58 passed and one deliberate privilege skip; the normal-user pass recorded 59 passed
+  with no skip or failure.
+- Both Ubuntu builds emitted byte-identical 27-file release archives and checksum manifests.
+  SHA-256 values are
+  `778dd612007e513a8a3e21ff5f34a97c48bf2dee847a7b914621e811a326ef7b`
+  for tar, `f107909be5f45ed3eb613475b602a7199dae3302903eab742a40ef449c056d7b`
+  for ZIP, and `da0494bc4f9e1f90caaeac439e4721df6af0f91d349c431de2d5c4f8e0ad3c31`
+  for `SHA256SUMS`. Complete-history bundle SHA-256 is
+  `6d66d7f767cdc1ccb20585722b1c3a4bf0e7c71736ddd4b78cf51863f0039d1f`.
+  Release-pinned Gitleaks 8.30.1 digest
+  `c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f`
+  found no leak in complete reachable history or either extracted archive.
+- A fresh remote pre-merge check confirmed a public repository, default branch `main`,
+  strict protected status check `deterministic-checks`, administrator enforcement, zero
+  open GitHub secret-scanning alerts, and no existing `v1.1.0` tag. No VM intervention,
+  authenticated provider request, credential read, or provider-ledger action occurred
+  during repository release verification.

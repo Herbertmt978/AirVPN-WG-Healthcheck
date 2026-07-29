@@ -126,20 +126,24 @@ Updated: 2026-07-29
   request used no API key and made no authenticated provider call. No response, address,
   server, endpoint, profile material, credential, or attempt epoch was retained or
   disclosed.
-- **Pending:** implementation Task 16 from the approved plan.
+- **Pending:** the protected-main, annotated-tag, and published-asset portions of Task 16.
 - **Evidence refs:** France removal commit `a11dd5d`; exact installed corrected runtime
-  candidate `f0beafc`; complete-history bundle digest
-  `7d0657a974e8443d23501a1b96af31287b8c3ebcafc0eff3939a9a671035ca5e`.
-  Exact package hashes are
-  `eba46513cd454cf829489c5607c453f165ac64e68f55da6574a19c7ac5765095`
-  for tar, `2453a854c1478873723802279aedefb0453e6f6cbc1a803d8fdf0017fa25e038`
-  for ZIP, and `398b6f1423e6f238e13ebd8bc0791ea4f15903438fc02b5a98dbdf6239feb253`
-  for the authoritative `SHA256SUMS`. Pinned Gitleaks 8.30.1 passed reachable history and
-  both extracted archives.
-- **Blocked on:** no live-acceptance blocker remains. Publication still requires the exact
-  local/package/secret matrix, protected-main CI, annotated tag CI, and downloaded-asset
+  candidate `f0beafc`; exact integrated repository candidate
+  `0fd9848e96a47df4788288781e930c834fdcf8ea`; complete-history bundle digest
+  `6d66d7f767cdc1ccb20585722b1c3a4bf0e7c71736ddd4b78cf51863f0039d1f`.
+  Ubuntu 22.04 and 24.04 independently passed the complete root/non-root release matrix and
+  emitted byte-identical assets. Exact candidate package hashes are
+  `778dd612007e513a8a3e21ff5f34a97c48bf2dee847a7b914621e811a326ef7b`
+  for tar, `f107909be5f45ed3eb613475b602a7199dae3302903eab742a40ef449c056d7b`
+  for ZIP, and `da0494bc4f9e1f90caaeac439e4721df6af0f91d349c431de2d5c4f8e0ad3c31`
+  for the authoritative `SHA256SUMS`. Pinned Gitleaks 8.30.1 passed complete reachable
+  history and both extracted archives. The public repository has zero open secret-scanning
+  alerts, protected `main` still requires the strict `deterministic-checks` context, and no
+  `v1.1.0` tag exists.
+- **Blocked on:** no local, package, secret, or live-acceptance blocker remains. Publication
+  still requires protected-main CI, annotated-tag release CI, and fresh downloaded-asset
   verification.
-- **Next step:** run the complete integrated-candidate release gates, merge through the
+- **Next step:** commit this evidence-only gate, push the feature branch, merge through the
   protected `main` check, create and push only annotated `v1.1.0`, then verify the published
   assets. Do not disable the VM timer during repository release administration.
 

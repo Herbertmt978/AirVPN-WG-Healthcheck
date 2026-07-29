@@ -800,7 +800,7 @@ qBittorrent ownership, and route probes.
 **Verification:** exact commit IDs across local main, origin/main, tag, CI, release, and
 downloaded assets.
 
-- [ ] **Pre-merge gate.** Require clean branch, reviewed staged/commit history, complete
+- [x] **Pre-merge gate.** Require clean branch, reviewed staged/commit history, complete
   local/package/secret/VM evidence, and no open GitHub secret-scanning alerts.
 - [ ] **Merge and verify main.** Merge `Herb/airvpn-api-profiles` locally into `main`, rerun
   the release bundle on the merge commit, push only `main`, and require green CI on that
