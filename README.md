@@ -162,6 +162,12 @@ Recovery is bounded and transactional. It can restart WireGuard, repair one expl
 
 This verifies health after configuration changes, but it does not redirect traffic and is not a firewall kill switch. Bind qBittorrent to the WireGuard address and test an independent firewall policy that blocks non-VPN egress.
 
+`qbittorrent=proved` confirms the configured TCP and UDP listener binding; it does not
+prove tracker, peer, DHT, or container internet connectivity. A host tunnel probe can
+succeed while a container-specific firewall rejects the client's traffic. See
+[healthy tunnel but disconnected qBittorrent](docs/operations.md#healthy-tunnel-but-disconnected-qbittorrent)
+for diagnosis and firewall validation.
+
 ## Configuration and safe defaults
 
 `/etc/wireguard/healthcheck.d/<iface>.conf` is parsed as data, never sourced as shell. Each non-comment line must be an allowlisted `UPPER_CASE_KEY=value` assignment. Unknown or duplicate keys, shell expansion, command substitution, control characters, and oversized input are rejected.
