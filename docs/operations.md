@@ -168,6 +168,67 @@ AirVPN; it is not a whole-host IPv6 leak test. If the host or container has IPv6
 independent firewall policy that blocks non-tunnel IPv6 (or disable IPv6 intentionally) and
 test that policy before unattended downloads.
 
+## Healthy tunnel but disconnected qBittorrent
+
+`last_check=healthy` and `qbittorrent=proved` do not establish container internet
+connectivity. The qBittorrent check verifies its configured TCP and UDP listeners.
+The tunnel egress probe originates from the health-check process, which may have
+different firewall permissions from the container. Zero DHT nodes alone also does
+not prove a tunnel failure: check whether DHT is enabled and whether the client can
+resolve its bootstrap names and contact trackers.
+
+Compare a bounded, IPv4 HTTPS request bound to the tunnel from the host with the
+same request from inside the container, using the application's user. To distinguish
+DNS from packet filtering, repeat with a current known destination address while
+preserving the HTTPS hostname and certificate verification. Inspect the relevant
+firewall counters. Keep diagnostics free of credentials, torrent identifiers,
+tracker passkeys, and provider profiles.
+
+A cgroup-based OUTPUT firewall can allow an application packet through the
+WireGuard interface, then reject its encrypted outer UDP packet when it traverses
+the physical interface. The outer packet can retain the application cgroup. This
+produces a healthy host probe alongside failed container connections; repeated
+local network-unreachable errors for the VPN transport are evidence to check.
+
+Repair this at the independent firewall owner. Inspect the current WireGuard mark,
+the profile's `Table` setting, and the policy rules before changing anything. With
+an absent or `auto` `Table` and a default route, `wg-quick` selects a mark and builds
+routing and connection-mark rules around it. Reuse that existing mark in the
+firewall's UDP transport allowance; read it again after tunnel recreation rather
+than assuming a fixed value. Do not replace it in `PostUp`: the existing rules would
+still match the old mark and could route the encrypted transport into the tunnel.
+See [wg-quick's routing implementation](https://git.zx2c4.com/wireguard-tools/tree/src/wg-quick/linux.bash).
+
+For an explicit routing table with independently managed policy rules, a dedicated,
+conflict-free WireGuard mark is an option only after verifying those rules still
+route the marked transport through the intended uplink. Permit that marked UDP
+transport while retaining rejection of unmarked non-VPN client traffic.
+Treat permission to set packet marks as privileged: check the application's actual
+user and capabilities against the running kernel. Do not grant it privileges or
+remove the final reject to make connectivity pass. Do not assume an endpoint-only
+exception survives endpoint rotation.
+
+If that explicit-routing configuration needs a mark assignment, API-managed
+profiles can retain it in a reviewed installed `PostUp` hook, which profile
+generation preserves. This is not a standalone mark override for automatic routing.
+Version 1.1 does not accept a `FwMark` profile directive. A systemd-only startup
+hook is insufficient because
+recovery invokes `wg-quick` directly. Preserve existing local hooks, DNS, and routing
+policy; coordinate edits with the health-check timer and lock, retain a private
+rollback copy, and apply firewall changes without an unprotected interval.
+
+Before declaring recovery, verify:
+
+- The application can resolve names and complete a tunnel-bound request.
+- DHT and tracker activity recover where enabled and applicable.
+- A direct non-VPN request from the same application context remains blocked.
+- IPv6 cannot bypass the intended policy.
+- Firewall refresh and container recreation retain the protection.
+- Tunnel recreation and profile rotation retain the transport mark and routing.
+
+These are independent firewall acceptance checks. They do not expand the runtime
+meaning of `qbittorrent=proved` or authorize automated firewall mutation.
+
 ## Upgrade and rollback
 
 For a normal v1.1 upgrade, verify and extract the target release, then run:
