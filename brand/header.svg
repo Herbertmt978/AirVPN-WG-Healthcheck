@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="190" viewBox="0 0 1000 190" role="img" aria-labelledby="title desc">
+  <title id="title">AirVPN WireGuard Healthcheck</title>
+  <desc id="desc">A protected network tunnel beside the project name.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#0B1730"/>
+      <stop offset="1" stop-color="#172B52"/>
+    </linearGradient>
+    <linearGradient id="signal" x2="1" y2="1">
+      <stop stop-color="#42D8E8"/>
+      <stop offset="1" stop-color="#A78BFA"/>
+    </linearGradient>
+  </defs>
+  <rect width="1000" height="190" rx="24" fill="url(#background)"/>
+  <path d="M760 0h240v190H680z" fill="#233A68" opacity=".28"/>
+  <path d="M827 0h173v190H748z" fill="#A78BFA" opacity=".06"/>
+  <path d="M97 33 147 52v39c0 38-18 62-50 77-32-15-50-39-50-77V52z" fill="#102647" stroke="url(#signal)" stroke-width="4"/>
+  <path d="M67 99h61" stroke="#BCEFF5" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="67" cy="99" r="7" fill="#43D5E5"/>
+  <circle cx="97" cy="99" r="7" fill="#D4FBFF"/>
+  <circle cx="128" cy="99" r="7" fill="#A78BFA"/>
+  <path d="m82 126 11 10 21-24" fill="none" stroke="#BCEFF5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="183" y="111" fill="#F5F9FF" font-family="Segoe UI, Arial, sans-serif" font-size="43" font-weight="700">AirVPN WireGuard Healthcheck</text>
+</svg>
