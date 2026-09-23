@@ -1,7 +1,18 @@
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/Herbertmt978/AirVPN-WG-Healthcheck/main/brand/header.svg" alt="AirVPN WireGuard Healthcheck wordmark with a protected tunnel motif" width="760">
+
 # AirVPN WireGuard Healthcheck
+
+Keep a single-peer AirVPN WireGuard tunnel healthy with fail-closed checks and bounded recovery.
 
 [![CI](https://github.com/Herbertmt978/airvpn-wg-healthcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/Herbertmt978/airvpn-wg-healthcheck/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/Herbertmt978/airvpn-wg-healthcheck?sort=semver)](https://github.com/Herbertmt978/airvpn-wg-healthcheck/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-0F766E.svg)](LICENSE)
+
+[Quick start](#choose-a-mode) | [Checks and recovery](#what-it-checks-and-repairs) | [Requirements](#requirements) | [Operator guide](docs/operations.md) | [Security](SECURITY.md) | [Development](#development-checks)
+
+</div>
 
 `wg-healthcheck` is a root-run systemd health check for a single-peer AirVPN WireGuard tunnel. It verifies the tunnel, selected routing checks, and an optional qBittorrent binding; bounded recovery can restart the tunnel and, when explicitly configured, rotate an endpoint.
 
