@@ -508,6 +508,72 @@ for suite in (
 ):
     if release.count(suite) < 2:
         raise SystemExit(f"release verification must run root and non-root variants: {suite}")
+
+# GitHub Actions must use immutable full-length commit pins and retain the
+# upstream release tag as a human-readable audit hint. Validate the structure
+# rather than duplicating current dependency versions here, so routine pin
+# updates do not make the release contract test stale.
+action_pattern = re.compile(
+    r"(?m)^\s*(?:-\s*)?uses:\s*(?P<action>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@"
+    r"(?P<sha>[0-9a-f]{40})\s+#\s*v(?P<version>[0-9]+\.[0-9]+\.[0-9]+)\s*$"
+)
+
+def is_valid_action_line(line):
+    return action_pattern.fullmatch(line) is not None
+
+def release_action_count(workflow, action):
+    return len(re.findall(
+        rf"(?m)^\s*(?:-\s*)?uses:\s*{re.escape(action)}@",
+        workflow,
+    ))
+
+invalid_action_lines = (
+    "uses: actions/upload-artifact@v7.0.2 # v7.0.2",
+    "uses: actions/upload-artifact@" + "a" * 39 + " # v7.0.2",
+    "uses: actions/upload-artifact@" + "a" * 40,
+    "  - uses: actions/upload-artifact@v7.0.2 # v7.0.2",
+)
+if any(is_valid_action_line(line) for line in invalid_action_lines):
+    raise SystemExit("action pin validation accepts a mutable, abbreviated, or unannotated ref")
+if not is_valid_action_line(
+    "- uses: actions/upload-artifact@" + "a" * 40 + " # v7.9.4"
+):
+    raise SystemExit("action pin validation rejects a valid future patch release")
+
+for workflow_name, workflow in (("CI", ci), ("release", release)):
+    action_lines = [
+        line for line in workflow.splitlines()
+        if re.match(r"^\s*(?:-\s*)?uses:", line)
+    ]
+    if not action_lines:
+        raise SystemExit(f"{workflow_name} workflow has no pinned actions")
+    for line in action_lines:
+        if action_pattern.fullmatch(line) is None:
+            raise SystemExit(
+                f"{workflow_name} workflow action must use a full commit SHA and version comment: {line.strip()}"
+            )
+
+for action in ("actions/upload-artifact", "actions/download-artifact"):
+    if release_action_count(release, action) != 1:
+        raise SystemExit(f"release workflow must use exactly one {action} action")
+
+fixture = "  - uses: actions/upload-artifact@" + "a" * 40 + " # v7.0.2\n"
+fixture += "  - uses: actions/download-artifact@" + "b" * 40 + " # v8.0.2\n"
+for action in ("actions/upload-artifact", "actions/download-artifact"):
+    if release_action_count(fixture, action) != 1:
+        raise SystemExit(f"action count probe has an invalid fixture for {action}")
+    missing = fixture.replace(next(
+        line for line in fixture.splitlines(keepends=True)
+        if action in line
+    ), "")
+    duplicate = fixture + next(
+        line for line in fixture.splitlines(keepends=True)
+        if action in line
+    )
+    if release_action_count(missing, action) == 1:
+        raise SystemExit(f"action count accepts missing {action}")
+    if release_action_count(duplicate, action) == 1:
+        raise SystemExit(f"action count accepts duplicate {action}")
 PY
 
 # Literal workflow expressions must not expand in the test process.
@@ -518,8 +584,6 @@ for expected in \
   'contents: read' \
   'contents: write' \
   'persist-credentials: false' \
-  'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1' \
-  'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1' \
   'test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag' \
   'bash tests/test_release.sh --ref "$GITHUB_REF_NAME"' \
   'zricethezav/gitleaks:v8.30.1@sha256:' \
