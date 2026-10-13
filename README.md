@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/Herbertmt978/AirVPN-WG-Healthcheck/main/brand/header.svg" alt="AirVPN WireGuard Healthcheck wordmark with a protected tunnel motif" width="760">
+<img src="https://raw.githubusercontent.com/Herbertmt978/AirVPN-WG-Healthcheck/main/brand/header.svg" alt="AirVPN WireGuard Healthcheck: a protected tunnel with a heartbeat and a healthy status unit" width="880">
 
 # AirVPN WireGuard Healthcheck
 
